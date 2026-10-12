@@ -57,6 +57,8 @@ final class WallpaperController: NSObject {
         didSet { if speed != oldValue { updatePlayback() } }
     }
 
+    var currentPlayer: AVPlayer? { player }
+
     var isPlaying: Bool {
         player != nil && !userPaused && !autoPaused
     }

@@ -32,6 +32,8 @@ final class Library: ObservableObject {
     @Published private(set) var recordingAction: HotkeyAction?
     @Published private(set) var busyCount = 0
     @Published private(set) var pauseReason: String?
+    @Published var section: LibrarySection = .wallpapers
+    @Published var hoveredID: UUID?
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
     }
