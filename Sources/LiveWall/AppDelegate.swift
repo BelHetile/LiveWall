@@ -63,36 +63,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         let lib = Library.shared
 
-        let header = NSMenuItem(title: lib.current?.name ?? "No wallpaper", action: nil, keyEquivalent: "")
-        header.isEnabled = false
+        // шапка: миниатюра + название + статус
+        let header = NSMenuItem()
+        let hosting = NSHostingView(rootView: MenuHeaderView(library: lib))
+        hosting.frame = NSRect(x: 0, y: 0, width: 290, height: 70)
+        header.view = hosting
         menu.addItem(header)
-        if let reason = lib.pauseReason {
-            let r = NSMenuItem(title: "Paused: \(reason)", action: nil, keyEquivalent: "")
-            r.isEnabled = false
-            menu.addItem(r)
-        }
         menu.addItem(.separator())
 
-        menu.addItem(menuItem("Next", #selector(nextWallpaper)))
-        menu.addItem(menuItem("Previous", #selector(previousWallpaper)))
-        menu.addItem(menuItem("Random", #selector(randomWallpaper)))
-        menu.addItem(menuItem(lib.paused ? "Resume video" : "Pause video", #selector(togglePause)))
+        menu.addItem(menuItem("Next Wallpaper", #selector(nextWallpaper), symbol: "forward.fill"))
+        menu.addItem(menuItem("Previous Wallpaper", #selector(previousWallpaper), symbol: "backward.fill"))
+        menu.addItem(menuItem("Random Wallpaper", #selector(randomWallpaper), symbol: "shuffle"))
+        menu.addItem(menuItem(lib.paused ? "Resume Video" : "Pause Video", #selector(togglePause),
+                              symbol: lib.paused ? "play.fill" : "pause.fill"))
 
         if !lib.items.isEmpty {
             menu.addItem(.separator())
+            let title = NSMenuItem(title: "Library", action: nil, keyEquivalent: "")
+            title.isEnabled = false
+            menu.addItem(title)
             for it in lib.items.prefix(30) {
                 let m = menuItem(it.name, #selector(pickWallpaper(_:)), state: it.id == lib.currentID ? .on : .off)
                 m.representedObject = it.id
+                if let thumb = lib.thumbs[it.id] {
+                    m.image = AppDelegate.roundedThumb(thumb, size: NSSize(width: 40, height: 25))
+                } else {
+                    m.image = AppDelegate.symbol(it.kind.symbol)
+                    Task { await lib.loadThumbnail(for: it) }
+                }
                 menu.addItem(m)
             }
         }
 
         menu.addItem(.separator())
 
-        let modeParent = NSMenuItem(title: "Fill mode", action: nil, keyEquivalent: "")
+        let modeParent = NSMenuItem(title: "Fill Mode", action: nil, keyEquivalent: "")
+        modeParent.image = AppDelegate.symbol("rectangle.expand.vertical")
         let modeMenu = NSMenu()
         for m in FillMode.allCases {
-            let mi = menuItem(m.title, #selector(pickMode(_:)), state: lib.current?.mode == m ? .on : .off)
+            let mi = menuItem(m.title, #selector(pickMode(_:)), state: lib.current?.mode == m ? .on : .off, symbol: m.symbol)
             mi.representedObject = m.rawValue
             modeMenu.addItem(mi)
         }
@@ -100,16 +109,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modeParent.isEnabled = lib.current != nil
         menu.addItem(modeParent)
 
-        menu.addItem(menuItem("Mute video", #selector(toggleMute), state: lib.settings.muted ? .on : .off))
+        menu.addItem(menuItem("Mute Video", #selector(toggleMute), state: lib.settings.muted ? .on : .off,
+                              symbol: lib.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Open Library…", #selector(openLibrary)))
-        menu.addItem(menuItem("Quit LiveWall", #selector(quit)))
+        menu.addItem(menuItem("Open LiveWall…", #selector(openLibrary), symbol: "macwindow"))
+        menu.addItem(menuItem("Settings…", #selector(openSettings), symbol: "gearshape"))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Quit LiveWall", #selector(quit), symbol: "power"))
     }
 
-    private func menuItem(_ title: String, _ action: Selector, state: NSControl.StateValue = .off) -> NSMenuItem {
+    static func symbol(_ name: String) -> NSImage? {
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        img?.isTemplate = true
+        return img
+    }
+
+    static func roundedThumb(_ image: NSImage, size: NSSize) -> NSImage {
+        NSImage(size: size, flipped: false) { rect in
+            let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+            path.addClip()
+            // aspect-fill
+            let src = image.size
+            guard src.width > 0, src.height > 0 else { return true }
+            let scale = max(rect.width / src.width, rect.height / src.height)
+            let w = src.width * scale, h = src.height * scale
+            image.draw(in: NSRect(x: (rect.width - w) / 2, y: (rect.height - h) / 2, width: w, height: h))
+            return true
+        }
+    }
+
+    private func menuItem(_ title: String, _ action: Selector, state: NSControl.StateValue = .off,
+                          symbol: String? = nil) -> NSMenuItem {
         let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
         m.target = self
         m.state = state
+        if let symbol = symbol { m.image = AppDelegate.symbol(symbol) }
         return m
     }
 
@@ -118,7 +152,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func randomWallpaper() { Library.shared.random() }
     @objc private func togglePause() { Library.shared.togglePause() }
     @objc private func toggleMute() { Library.shared.toggleMute() }
-    @objc private func openLibrary() { showLibrary() }
+    @objc private func openLibrary() {
+        Library.shared.section = .wallpapers
+        showLibrary()
+    }
+    @objc private func openSettings() {
+        Library.shared.section = .settings
+        showLibrary()
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func pickWallpaper(_ sender: NSMenuItem) {
@@ -130,5 +171,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let mode = FillMode(rawValue: raw),
               let cur = Library.shared.current else { return }
         Library.shared.setMode(mode, for: cur.id)
+    }
+}
+
+// MARK: - Menu header
+
+struct MenuHeaderView: View {
+    @ObservedObject var library: Library
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.accentGradient)
+                if let item = library.current, let thumb = library.thumbs[item.id] {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 80, height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(library.current?.name ?? "No wallpaper")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                    Text(statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(width: 290, height: 70, alignment: .leading)
+    }
+
+    private var statusText: String {
+        guard let item = library.current else { return "Add wallpapers in LiveWall" }
+        if library.paused { return "Paused by you" }
+        if let r = library.pauseReason { return "Paused · \(r)" }
+        return item.kind == .video ? "Playing · \(item.mode.title)" : "\(item.kind.title) · \(item.mode.title)"
+    }
+
+    private var statusColor: Color {
+        if library.current == nil { return .secondary }
+        if library.paused || library.pauseReason != nil { return .orange }
+        return .green
     }
 }
