@@ -25,6 +25,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/LiveWall"
 cp Info.plist "$APP/Contents/Info.plist"
+if [[ -d Resources/AppIcon.iconset ]]; then
+  iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+fi
 codesign --force --deep -s - "$APP"
 
 echo "Готово: $APP"

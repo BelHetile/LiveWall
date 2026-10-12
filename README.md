@@ -1,8 +1,16 @@
-# LiveWall
+<p align="center"><img src="docs/icon.png" width="128" alt="LiveWall icon"></p>
+
+<h1 align="center">LiveWall</h1>
 
 Menu bar app for macOS 13+: videos, images and GIFs as desktop wallpaper, per-wallpaper fill modes, global hotkeys.
 
-## Build
+## Download
+
+Every push to `main` is built on macOS by GitHub Actions. Open the latest run in the **Actions** tab and download the
+**LiveWall-macOS** artifact, unzip it and move `LiveWall.app` to `/Applications`
+(first launch: right-click → Open, because the app is ad-hoc signed).
+
+## Build from source
 
 1. Install the Command Line Tools once: `xcode-select --install`
 2. In this folder run:
