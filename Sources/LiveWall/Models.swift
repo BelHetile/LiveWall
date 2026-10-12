@@ -35,6 +35,10 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var file: String          // имя файла внутри папки хранилища
     var kind: MediaKind
     var mode: FillMode
+    // свои настройки воспроизведения у каждых обоев (nil — берутся значения по умолчанию)
+    var volume: Double?
+    var speed: Double?
+    var muted: Bool?
 }
 
 // MARK: - Hotkeys

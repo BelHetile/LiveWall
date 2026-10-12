@@ -45,6 +45,7 @@ struct VisualEffectBackground: NSViewRepresentable {
 /// Живое превью: тот же AVPlayer, что крутит обои на рабочем столе.
 struct PlayerPreview: NSViewRepresentable {
     let player: AVPlayer?
+    var gravity: AVLayerVideoGravity = .resizeAspectFill
 
     final class PlayerHostView: NSView {
         let playerLayer = AVPlayerLayer()
@@ -72,12 +73,16 @@ struct PlayerPreview: NSViewRepresentable {
     func makeNSView(context: Context) -> PlayerHostView {
         let v = PlayerHostView()
         v.playerLayer.player = player
+        v.playerLayer.videoGravity = gravity
         return v
     }
 
     func updateNSView(_ nsView: PlayerHostView, context: Context) {
         if nsView.playerLayer.player !== player {
             nsView.playerLayer.player = player
+        }
+        if nsView.playerLayer.videoGravity != gravity {
+            nsView.playerLayer.videoGravity = gravity
         }
     }
 }

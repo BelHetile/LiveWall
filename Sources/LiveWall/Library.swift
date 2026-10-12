@@ -34,6 +34,9 @@ final class Library: ObservableObject {
     @Published private(set) var pauseReason: String?
     @Published var section: LibrarySection = .wallpapers
     @Published var hoveredID: UUID?
+    @Published private(set) var lockScreenID: UUID?
+    @Published private(set) var detailID: UUID?
+    @Published private(set) var previewPlayer: AVQueuePlayer?
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
     }
@@ -48,10 +51,13 @@ final class Library: ObservableObject {
     private var recordMonitor: Any?
     private var spaceObserver: NSObjectProtocol?
     private var lockSyncGeneration = 0
+    private var previewLooper: AVPlayerLooper?
+    private var imageCache: [UUID: NSImage] = [:]
 
     private struct Index: Codable {
         var items: [WallpaperItem]
         var currentID: UUID?
+        var lockScreenID: UUID?
     }
 
     var current: WallpaperItem? {
@@ -84,6 +90,7 @@ final class Library: ObservableObject {
             // отбрасываем записи, чей файл пропал
             items = idx.items.filter { FileManager.default.fileExists(atPath: filesDir.appendingPathComponent($0.file).path) }
             currentID = items.contains(where: { $0.id == idx.currentID }) ? idx.currentID : items.first?.id
+            lockScreenID = items.contains(where: { $0.id == idx.lockScreenID }) ? idx.lockScreenID : nil
         }
         if let data = UserDefaults.standard.data(forKey: "settings"),
            let s = try? JSONDecoder().decode(Settings.self, from: data) {
@@ -92,7 +99,7 @@ final class Library: ObservableObject {
     }
 
     private func save() {
-        let idx = Index(items: items, currentID: currentID)
+        let idx = Index(items: items, currentID: currentID, lockScreenID: lockScreenID)
         if let data = try? JSONEncoder().encode(idx) {
             try? data.write(to: indexURL, options: .atomic)
         }
@@ -135,17 +142,21 @@ final class Library: ObservableObject {
 
     private func applyControllerSettings() {
         let c = WallpaperController.shared
-        c.muted = settings.muted
-        c.volume = Float(settings.volume)
-        c.speed = Float(settings.speed)
+        applyPlayback(of: current)
         c.userPaused = paused
         PauseMonitor.shared.settings = settings
     }
 
     // MARK: Экран блокировки / системные обои
 
+    /// Обои для экрана блокировки: выбранные явно, иначе — те же, что на рабочем столе.
+    var lockItem: WallpaperItem? {
+        if let id = lockScreenID, let item = items.first(where: { $0.id == id }) { return item }
+        return settings.syncSystemWallpaper ? current : nil
+    }
+
     func syncLockScreen() {
-        guard settings.syncSystemWallpaper, let item = current else { return }
+        guard settings.syncSystemWallpaper || lockScreenID != nil, let item = lockItem else { return }
         let src = url(for: item)
         let dir = stillsDir
         lockSyncGeneration += 1
@@ -153,7 +164,7 @@ final class Library: ObservableObject {
         Task { @MainActor [weak self] in
             guard let still = await LockScreenSync.stillImage(for: item, source: src, dir: dir) else { return }
             guard let self = self, generation == self.lockSyncGeneration else { return }
-            let mode = self.current?.mode ?? item.mode
+            let mode = self.lockItem?.mode ?? item.mode
             LockScreenSync.apply(url: still, mode: mode)
         }
     }
@@ -308,6 +319,12 @@ final class Library: ObservableObject {
         try? FileManager.default.removeItem(at: thumbsDir.appendingPathComponent("\(id.uuidString).png"))
         try? FileManager.default.removeItem(at: stillsDir.appendingPathComponent("\(id.uuidString).png"))
         thumbs[id] = nil
+        imageCache[id] = nil
+        if detailID == id { closeDetail() }
+        if lockScreenID == id {
+            lockScreenID = nil
+            syncLockScreen()
+        }
         let wasCurrent = (id == currentID)
         items.remove(at: idx)
         if wasCurrent {
@@ -333,8 +350,115 @@ final class Library: ObservableObject {
         guard let item = items.first(where: { $0.id == id }) else { return }
         currentID = id
         save()
+        applyPlayback(of: item)
         WallpaperController.shared.apply(item: item, url: url(for: item))
+        if detailID == id { releasePreview() }
         syncLockScreen()
+    }
+
+    // MARK: Рабочий стол / экран блокировки
+
+    func setDesktop(_ id: UUID) {
+        select(id)
+    }
+
+    func setLockScreen(_ id: UUID) {
+        guard items.contains(where: { $0.id == id }) else { return }
+        lockScreenID = id
+        save()
+        syncLockScreen()
+    }
+
+    /// Экран блокировки снова повторяет рабочий стол.
+    func lockScreenFollowDesktop() {
+        lockScreenID = nil
+        save()
+        syncLockScreen()
+    }
+
+    // MARK: Воспроизведение у каждых обоев
+
+    func effectiveVolume(_ item: WallpaperItem) -> Double { item.volume ?? settings.volume }
+    func effectiveSpeed(_ item: WallpaperItem) -> Double { item.speed ?? settings.speed }
+    func effectiveMuted(_ item: WallpaperItem) -> Bool { item.muted ?? settings.muted }
+
+    private func applyPlayback(of item: WallpaperItem?) {
+        let c = WallpaperController.shared
+        if let item = item {
+            c.muted = effectiveMuted(item)
+            c.volume = Float(effectiveVolume(item))
+            c.speed = Float(effectiveSpeed(item))
+        } else {
+            c.muted = settings.muted
+            c.volume = Float(settings.volume)
+            c.speed = Float(settings.speed)
+        }
+    }
+
+    private func updateItem(_ id: UUID, _ change: (inout WallpaperItem) -> Void) {
+        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
+        change(&items[idx])
+        save()
+        if id == currentID { applyPlayback(of: items[idx]) }
+        if id == detailID, let p = previewPlayer {
+            p.defaultRate = Float(effectiveSpeed(items[idx]))
+            if p.rate != 0 { p.play() }
+        }
+    }
+
+    func setVolume(_ v: Double, for id: UUID) {
+        updateItem(id) { $0.volume = min(max(v, 0), 1); if v > 0 { $0.muted = false } }
+    }
+
+    func setSpeed(_ v: Double, for id: UUID) {
+        updateItem(id) { $0.speed = v }
+    }
+
+    func setMuted(_ m: Bool, for id: UUID) {
+        updateItem(id) { $0.muted = m }
+    }
+
+    // MARK: Панель обоев
+
+    func openDetail(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        releasePreview()
+        detailID = id
+        // для не активного видео — своё беззвучное превью
+        if item.kind == .video && id != currentID {
+            let p = AVQueuePlayer()
+            p.isMuted = true
+            p.preventsDisplaySleepDuringVideoPlayback = false
+            previewLooper = AVPlayerLooper(player: p, templateItem: AVPlayerItem(url: url(for: item)))
+            p.defaultRate = Float(effectiveSpeed(item))
+            p.play()
+            previewPlayer = p
+        }
+    }
+
+    func closeDetail() {
+        releasePreview()
+        detailID = nil
+    }
+
+    func showAdjacentDetail(_ delta: Int) {
+        guard let id = detailID, let i = items.firstIndex(where: { $0.id == id }), !items.isEmpty else { return }
+        let n = items.count
+        openDetail(items[((i + delta) % n + n) % n].id)
+    }
+
+    /// Полноразмерная картинка для панели (картинки и первый кадр GIF), с кэшем.
+    func previewImage(for item: WallpaperItem) -> NSImage? {
+        if let img = imageCache[item.id] { return img }
+        guard item.kind != .video, let img = NSImage(contentsOf: url(for: item)) else { return nil }
+        imageCache[item.id] = img
+        return img
+    }
+
+    private func releasePreview() {
+        previewPlayer?.pause()
+        previewPlayer = nil
+        previewLooper = nil
     }
 
     func step(_ delta: Int) {
@@ -366,6 +490,8 @@ final class Library: ObservableObject {
         save()
         if id == currentID {
             WallpaperController.shared.updateMode(mode)
+        }
+        if id == currentID || id == lockItem?.id {
             syncLockScreen()
         }
     }
@@ -381,7 +507,11 @@ final class Library: ObservableObject {
     }
 
     func toggleMute() {
-        settings.muted.toggle()
+        if let c = current {
+            setMuted(!effectiveMuted(c), for: c.id)
+        } else {
+            settings.muted.toggle()
+        }
     }
 
     // MARK: Автосмена

@@ -34,10 +34,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.titleVisibility = .hidden
             w.titlebarAppearsTransparent = true
             w.isMovableByWindowBackground = true
-            w.minSize = NSSize(width: 900, height: 600)
+            w.minSize = NSSize(width: 980, height: 640)
             w.isReleasedWhenClosed = false
+            w.collectionBehavior.insert(.fullScreenPrimary)
             w.contentView = NSHostingView(rootView: LibraryView())
-            w.center()
+            // библиотека открывается на весь экран (видимую область без Dock и строки меню)
+            if let screen = NSScreen.main ?? NSScreen.screens.first {
+                w.setFrame(screen.visibleFrame, display: true)
+            } else {
+                w.center()
+            }
             libraryWindow = w
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -109,8 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modeParent.isEnabled = lib.current != nil
         menu.addItem(modeParent)
 
-        menu.addItem(menuItem("Mute Video", #selector(toggleMute), state: lib.settings.muted ? .on : .off,
-                              symbol: lib.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
+        let isMuted = lib.current.map { lib.effectiveMuted($0) } ?? lib.settings.muted
+        menu.addItem(menuItem("Mute Video", #selector(toggleMute), state: isMuted ? .on : .off,
+                              symbol: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
         menu.addItem(.separator())
         menu.addItem(menuItem("Open LiveWall…", #selector(openLibrary), symbol: "macwindow"))
         menu.addItem(menuItem("Settings…", #selector(openSettings), symbol: "gearshape"))

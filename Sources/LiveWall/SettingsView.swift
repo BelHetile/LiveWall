@@ -7,21 +7,9 @@ struct SettingsPage: View {
     @ObservedObject var library: Library
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Settings")
-                    .font(.system(size: 22, weight: .bold))
-                Spacer()
-                if let reason = library.pauseReason {
-                    Chip(text: "Paused · \(reason)", systemImage: "pause.circle.fill", tint: .orange)
-                        .environment(\.colorScheme, .dark)
-                }
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 40)
-            .padding(.bottom, 4)
-            SettingsTab(library: library)
-        }
+        SettingsTab(library: library)
+            .frame(maxWidth: 820)
+            .frame(maxWidth: .infinity)
     }
 }
 
@@ -32,7 +20,7 @@ struct SettingsTab: View {
 
     var body: some View {
         Form {
-            Section("Playback") {
+            Section {
                 Toggle("Mute video", isOn: $library.settings.muted)
                 HStack {
                     Text("Volume")
@@ -41,9 +29,14 @@ struct SettingsTab: View {
                 .disabled(library.settings.muted)
                 Picker("Speed", selection: $library.settings.speed) {
                     ForEach(speeds, id: \.self) { v in
-                        Text(v == v.rounded() ? "\(Int(v))x" : "\(v)x").tag(v)
+                        Text(WallpaperDetail.speedLabel(v)).tag(v)
                     }
                 }
+            } header: {
+                Text("Default playback")
+            } footer: {
+                Text("Used by wallpapers you haven't adjusted. Click a wallpaper in the library to set its own volume and speed.")
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -101,7 +94,15 @@ struct SettingsTab: View {
             }
 
             Section {
-                Toggle("Set a still frame as system & lock screen wallpaper", isOn: $library.settings.syncSystemWallpaper)
+                Toggle("Put a still frame of the desktop wallpaper on the lock screen", isOn: $library.settings.syncSystemWallpaper)
+                if let lock = library.lockItem, library.lockScreenID != nil {
+                    HStack {
+                        Text("Custom lock screen: \(lock.name)")
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Follow desktop") { library.lockScreenFollowDesktop() }
+                    }
+                }
             } header: {
                 Text("Lock screen")
             } footer: {
