@@ -1,0 +1,61 @@
+# LiveWall
+
+Menu bar app for macOS 13+: videos, images and GIFs as desktop wallpaper, per-wallpaper fill modes, global hotkeys.
+
+## Build
+
+1. Install the Command Line Tools once: `xcode-select --install`
+2. In this folder run:
+
+```bash
+chmod +x build.sh
+./build.sh --install
+```
+
+This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` and launches it. Without `--install` the app stays in `build/`.
+
+## Use
+
+- The icon sits in the menu bar (no Dock icon). **Open Library…** opens the window.
+- Add wallpapers with **Add…**, by dragging files/folders into the window, or from the menu bar later.
+  Supported: mp4 / mov / m4v (H.264, HEVC), png / jpg / heic, gif.
+  Files are copied to `~/Library/Application Support/LiveWall/`.
+- Click a card to apply it. Each card has its own fill mode: **Fill, Fit, Stretch, Center**.
+- Settings tab: volume, speed, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
+
+## Smart pause (like Wallpaper Engine's Performance settings)
+
+Video pauses automatically when:
+- another app is focused (off by default),
+- windows cover ≥90% of the desktop (maximized apps),
+- an app is in fullscreen,
+- on battery (off by default), in Low Power Mode, or when the Mac is running hot,
+- an app from **App rules** is running or in front (e.g. games),
+- the display sleeps or the screen is locked (always).
+
+The current reason is shown in the window toolbar and in the menu bar menu.
+
+## Lock screen
+
+macOS does not let third-party apps show live video on the lock screen. LiveWall sets a still frame of the
+current wallpaper as the system wallpaper, which the lock screen shows. It is re-applied when you switch
+wallpapers, change fill mode or switch Spaces.
+
+## Default hotkeys (all rebindable in Settings)
+
+| Action | Keys |
+| --- | --- |
+| Next wallpaper | ⌃⌥⌘→ |
+| Previous wallpaper | ⌃⌥⌘← |
+| Random wallpaper | ⌃⌥⌘R |
+| Pause / resume video | ⌃⌥⌘Space |
+| Cycle fill mode | ⌃⌥⌘M |
+| Mute / unmute | ⌃⌥⌘S |
+| Open library | ⌃⌥⌘L |
+| Jump to wallpaper N | ⌃⌥⌘1 … ⌃⌥⌘9 |
+
+## Notes
+
+- The wallpaper is a borderless window just above the system wallpaper and below desktop icons, on every Space and every display.
+- Videos play muted by default and without keeping the screen awake.
+- Wallpaper Engine `scene.pkg` files cannot be loaded directly: render them to mp4 first.

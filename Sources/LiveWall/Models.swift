@@ -1,0 +1,192 @@
+import Foundation
+import AppKit
+import Carbon.HIToolbox
+
+// MARK: - Fill modes
+
+enum FillMode: String, Codable, CaseIterable, Identifiable {
+    case fill, fit, stretch, center
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fill: return "Fill"
+        case .fit: return "Fit"
+        case .stretch: return "Stretch"
+        case .center: return "Center"
+        }
+    }
+
+    var next: FillMode {
+        let all = FillMode.allCases
+        let i = all.firstIndex(of: self) ?? 0
+        return all[(i + 1) % all.count]
+    }
+}
+
+enum MediaKind: String, Codable {
+    case video, image, gif
+}
+
+struct WallpaperItem: Codable, Identifiable, Equatable {
+    var id: UUID
+    var name: String
+    var file: String          // имя файла внутри папки хранилища
+    var kind: MediaKind
+    var mode: FillMode
+}
+
+// MARK: - Hotkeys
+
+enum HotkeyAction: String, Codable, CaseIterable, Identifiable {
+    case next, previous, random, togglePause, cycleMode, toggleMute, openLibrary
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .next: return "Next wallpaper"
+        case .previous: return "Previous wallpaper"
+        case .random: return "Random wallpaper"
+        case .togglePause: return "Pause / resume video"
+        case .cycleMode: return "Cycle fill mode"
+        case .toggleMute: return "Mute / unmute"
+        case .openLibrary: return "Open library"
+        }
+    }
+
+    var hotkeyID: UInt32 {
+        UInt32((HotkeyAction.allCases.firstIndex(of: self) ?? 0) + 1)
+    }
+}
+
+struct HotkeyBinding: Codable, Equatable {
+    var keyCode: UInt32
+    var modifiers: UInt32   // Carbon-модификаторы (cmdKey, optionKey, ...)
+}
+
+// MARK: - Pause rules
+
+struct AppRule: Codable, Identifiable, Equatable {
+    var bundleID: String
+    var name: String
+    var frontmostOnly: Bool      // true — только когда приложение в фокусе, false — пока оно запущено
+
+    var id: String { bundleID }
+}
+
+// MARK: - Settings
+
+struct Settings: Codable, Equatable {
+    // воспроизведение
+    var muted = true
+    var volume: Double = 0.5
+    var speed: Double = 1.0
+
+    // автосмена
+    var autoRotate = false
+    var rotateMinutes = 30
+    var shuffle = false
+
+    // умная пауза
+    var pauseWhenAppFocused = false
+    var pauseWhenMaximized = true
+    var pauseWhenFullscreen = true
+    var pauseOnBattery = false
+    var pauseInLowPower = true
+    var pauseWhenHot = true
+    var appRules: [AppRule] = []
+
+    // система
+    var syncSystemWallpaper = true
+    var launchAtLogin = false
+
+    // хоткеи
+    var numberHotkeys = true
+    var hotkeys: [String: HotkeyBinding] = Settings.defaultHotkeys
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case muted, volume, speed
+        case autoRotate, rotateMinutes, shuffle
+        case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
+        case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
+        case syncSystemWallpaper, launchAtLogin
+        case numberHotkeys, hotkeys
+    }
+
+    // терпимый к старым/неполным сохранениям декодер: отсутствующие ключи берутся по умолчанию
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Settings()
+        muted = (try? c.decodeIfPresent(Bool.self, forKey: .muted)) ?? d.muted
+        volume = (try? c.decodeIfPresent(Double.self, forKey: .volume)) ?? d.volume
+        speed = (try? c.decodeIfPresent(Double.self, forKey: .speed)) ?? d.speed
+        autoRotate = (try? c.decodeIfPresent(Bool.self, forKey: .autoRotate)) ?? d.autoRotate
+        rotateMinutes = (try? c.decodeIfPresent(Int.self, forKey: .rotateMinutes)) ?? d.rotateMinutes
+        shuffle = (try? c.decodeIfPresent(Bool.self, forKey: .shuffle)) ?? d.shuffle
+        pauseWhenAppFocused = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenAppFocused)) ?? d.pauseWhenAppFocused
+        pauseWhenMaximized = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenMaximized)) ?? d.pauseWhenMaximized
+        pauseWhenFullscreen = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenFullscreen)) ?? d.pauseWhenFullscreen
+        pauseOnBattery = (try? c.decodeIfPresent(Bool.self, forKey: .pauseOnBattery)) ?? d.pauseOnBattery
+        pauseInLowPower = (try? c.decodeIfPresent(Bool.self, forKey: .pauseInLowPower)) ?? d.pauseInLowPower
+        pauseWhenHot = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenHot)) ?? d.pauseWhenHot
+        appRules = (try? c.decodeIfPresent([AppRule].self, forKey: .appRules)) ?? d.appRules
+        syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper
+        launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
+        numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys
+        hotkeys = (try? c.decodeIfPresent([String: HotkeyBinding].self, forKey: .hotkeys)) ?? d.hotkeys
+    }
+
+    static var defaultHotkeys: [String: HotkeyBinding] {
+        let m = UInt32(controlKey | optionKey | cmdKey)
+        return [
+            HotkeyAction.next.rawValue: HotkeyBinding(keyCode: UInt32(kVK_RightArrow), modifiers: m),
+            HotkeyAction.previous.rawValue: HotkeyBinding(keyCode: UInt32(kVK_LeftArrow), modifiers: m),
+            HotkeyAction.random.rawValue: HotkeyBinding(keyCode: UInt32(kVK_ANSI_R), modifiers: m),
+            HotkeyAction.togglePause.rawValue: HotkeyBinding(keyCode: UInt32(kVK_Space), modifiers: m),
+            HotkeyAction.cycleMode.rawValue: HotkeyBinding(keyCode: UInt32(kVK_ANSI_M), modifiers: m),
+            HotkeyAction.toggleMute.rawValue: HotkeyBinding(keyCode: UInt32(kVK_ANSI_S), modifiers: m),
+            HotkeyAction.openLibrary.rawValue: HotkeyBinding(keyCode: UInt32(kVK_ANSI_L), modifiers: m),
+        ]
+    }
+}
+
+// MARK: - Hotkey formatting
+
+enum HotkeyFormat {
+    static func carbonMods(_ f: NSEvent.ModifierFlags) -> UInt32 {
+        var m = 0
+        if f.contains(.control) { m |= controlKey }
+        if f.contains(.option) { m |= optionKey }
+        if f.contains(.shift) { m |= shiftKey }
+        if f.contains(.command) { m |= cmdKey }
+        return UInt32(m)
+    }
+
+    static func string(_ b: HotkeyBinding) -> String {
+        var s = ""
+        if b.modifiers & UInt32(controlKey) != 0 { s += "⌃" }
+        if b.modifiers & UInt32(optionKey) != 0 { s += "⌥" }
+        if b.modifiers & UInt32(shiftKey) != 0 { s += "⇧" }
+        if b.modifiers & UInt32(cmdKey) != 0 { s += "⌘" }
+        s += KeyNames.table[b.keyCode] ?? "Key\(b.keyCode)"
+        return s
+    }
+}
+
+enum KeyNames {
+    static let table: [UInt32: String] = [
+        0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H", 34: "I", 38: "J",
+        40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P", 12: "Q", 15: "R", 1: "S", 17: "T",
+        32: "U", 9: "V", 13: "W", 7: "X", 16: "Y", 6: "Z",
+        29: "0", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9",
+        123: "←", 124: "→", 125: "↓", 126: "↑",
+        49: "Space", 36: "↩", 48: "⇥", 51: "⌫", 53: "⎋",
+        122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+        98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+        27: "-", 24: "=", 33: "[", 30: "]", 41: ";", 39: "'", 43: ",", 47: ".", 44: "/", 42: "\\", 50: "`",
+    ]
+}
