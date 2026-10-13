@@ -15,8 +15,8 @@ Open an [issue](https://github.com/BelHetile/LiveWall/issues/new/choose) and inc
 
 ```bash
 xcode-select --install   # once
-./build.sh               # build/LiveWall.app
-./build.sh --install     # also copy to /Applications and launch
+./scripts/build.sh               # build/LiveWall.app
+./scripts/build.sh --install     # also copy to /Applications and launch
 ```
 
 The project is a plain Swift package (`Package.swift`, sources in `Sources/LiveWall`), so you can also open the
@@ -28,7 +28,7 @@ folder in Xcode.
 - Match the existing style (SwiftUI for the interface, AppKit where macOS needs it).
 - New interface text goes through `L("…")` / `LF("…", …)`; add the Russian translation to
   `Sources/LiveWall/RussianStrings.swift`.
-- Make sure `./build.sh` succeeds — every pull request is also built by GitHub Actions.
+- Make sure `./scripts/build.sh` succeeds — every pull request is also built by GitHub Actions.
 - Mention user-visible changes in `CHANGELOG.md` under an *Unreleased* heading.
 
 ## Releasing (maintainers)

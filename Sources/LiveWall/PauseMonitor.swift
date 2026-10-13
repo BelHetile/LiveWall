@@ -13,6 +13,17 @@ final class PauseMonitor: NSObject {
 
     private(set) var reason: String?
     private var timer: Timer?
+    private var powerSource: CFRunLoopSource?
+    private var cachedOnBattery = false
+
+    /// Следить за окнами нужно только для видео и GIF: статичной картинке пауза ни к чему.
+    var needsMonitoring = false {
+        didSet {
+            guard needsMonitoring != oldValue, started else { return }
+            updateTimer()
+            evaluate()
+        }
+    }
     private var screenOff = false
     private var locked = false
     private var started = false
@@ -42,11 +53,39 @@ final class PauseMonitor: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(somethingChanged),
                                                name: NSNotification.Name.NSProcessInfoPowerStateDidChange, object: nil)
 
-        // окна двигаются без уведомлений — дешёвый опрос раз в 1.5 с
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        startPowerNotifications()
+        updateTimer()
+        evaluate()
+    }
+
+    /// Окна двигаются без уведомлений, поэтому их проверяем опросом — но только пока это нужно,
+    /// и с допуском, чтобы macOS объединяла пробуждения с другими таймерами.
+    private func updateTimer() {
+        timer?.invalidate()
+        timer = nil
+        guard needsMonitoring else { return }
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.evaluate()
         }
-        evaluate()
+        t.tolerance = 0.5
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    /// Источник питания меняется редко — узнаём об этом от системы, а не опросом.
+    private func startPowerNotifications() {
+        cachedOnBattery = PauseMonitor.onBattery()
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let callback: IOPowerSourceCallbackType = { ctx in
+            guard let ctx = ctx else { return }
+            let monitor = Unmanaged<PauseMonitor>.fromOpaque(ctx).takeUnretainedValue()
+            monitor.cachedOnBattery = PauseMonitor.onBattery()
+            monitor.evaluate()
+        }
+        if let source = IOPSNotificationCreateRunLoopSource(callback, context)?.takeRetainedValue() {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+            powerSource = source
+        }
     }
 
     @objc private func screenSlept() { screenOff = true; evaluate() }
@@ -69,6 +108,8 @@ final class PauseMonitor: NSObject {
     }
 
     private func computeReason() -> String? {
+        // статичные обои не на что ставить на паузу
+        guard needsMonitoring else { return nil }
         if screenOff { return L("Display asleep") }
         if locked { return L("Screen locked") }
 
@@ -81,7 +122,7 @@ final class PauseMonitor: NSObject {
         if s.pauseInLowPower && info.isLowPowerModeEnabled {
             return L("Low Power Mode")
         }
-        if s.pauseOnBattery && PauseMonitor.onBattery() {
+        if s.pauseOnBattery && cachedOnBattery {
             return L("On battery")
         }
 

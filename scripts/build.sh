@@ -1,13 +1,15 @@
 #!/bin/bash
 # Builds LiveWall.app from source.
 #
-#   ./build.sh               build for this Mac            -> build/LiveWall.app
-#   ./build.sh --install     build, copy to /Applications and launch
-#   ./build.sh --universal   Apple Silicon + Intel binary  (used for releases)
+#   scripts/build.sh               build for this Mac            -> build/LiveWall.app
+#   scripts/build.sh --install     build, copy to /Applications and launch
+#   scripts/build.sh --universal   Apple Silicon + Intel binary  (used for releases)
 #
-# LIVEWALL_VERSION=1.2.3 ./build.sh   sets the version shown in About.
+# LIVEWALL_VERSION=1.2.3 scripts/build.sh   sets the version shown in About.
 set -euo pipefail
-cd "$(dirname "$0")"
+SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# run from the repository root, wherever the script is called from
+cd "$(dirname "$SCRIPT")/.."
 
 INSTALL=0
 UNIVERSAL=0
@@ -15,7 +17,7 @@ for arg in "$@"; do
   case "$arg" in
     --install) INSTALL=1 ;;
     --universal) UNIVERSAL=1 ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$SCRIPT"; exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
@@ -71,7 +73,7 @@ APP="$OUT/LiveWall.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$STAGE/LiveWall" "$APP/Contents/MacOS/LiveWall"
-cp Info.plist "$APP/Contents/Info.plist"
+cp Resources/Info.plist "$APP/Contents/Info.plist"
 if [[ -n "${LIVEWALL_VERSION:-}" ]]; then
   plutil -replace CFBundleShortVersionString -string "$LIVEWALL_VERSION" "$APP/Contents/Info.plist"
 fi

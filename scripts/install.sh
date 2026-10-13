@@ -1,7 +1,7 @@
 #!/bin/bash
 # LiveWall installer — downloads the latest release and puts it into /Applications.
 #
-#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/install.sh | bash
 #
 set -euo pipefail
 

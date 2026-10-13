@@ -18,7 +18,7 @@ jobs:
           swift --version
 
       - name: Build LiveWall.app
-        run: ./build.sh
+        run: ./scripts/build.sh
 
       - name: Package
         run: |

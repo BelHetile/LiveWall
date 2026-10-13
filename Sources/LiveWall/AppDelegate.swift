@@ -99,7 +99,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.collectionBehavior.insert(.fullScreenPrimary)
-            w.contentView = NSHostingView(rootView: LibraryView())
             // библиотека открывается на весь экран (видимую область без Dock и строки меню)
             if let screen = NSScreen.main ?? NSScreen.screens.first {
                 w.setFrame(screen.visibleFrame, display: true)
@@ -108,14 +107,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             libraryWindow = w
         }
+        // интерфейс создаётся при открытии и освобождается при закрытии окна
+        if let w = libraryWindow, !(w.contentView is NSHostingView<LibraryView>) {
+            w.contentView = NSHostingView(rootView: LibraryView())
+        }
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Library.shared.flushSave()
     }
 
     /// Окно библиотеки закрыли — закрытые папки снова запираются.
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === libraryWindow {
             Library.shared.lockAll()
+            // освобождаем интерфейс, миниатюры и превью-плеер, пока окно закрыто
+            DispatchQueue.main.async { [weak self] in
+                guard let w = self?.libraryWindow, !w.isVisible else { return }
+                w.contentView = NSView()
+                Library.shared.releaseUICaches()
+            }
         }
     }
 

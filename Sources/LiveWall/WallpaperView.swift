@@ -99,6 +99,23 @@ final class WallpaperView: NSView {
         }
     }
 
+    /// Пауза анимации GIF без потери позиции.
+    func setAnimationPaused(_ paused: Bool) {
+        for l in stack where !(l is AVPlayerLayer) {
+            if paused, l.speed != 0 {
+                let t = l.convertTime(CACurrentMediaTime(), from: nil)
+                l.speed = 0
+                l.timeOffset = t
+            } else if !paused, l.speed == 0 {
+                let pausedAt = l.timeOffset
+                l.speed = 1
+                l.timeOffset = 0
+                l.beginTime = 0
+                l.beginTime = l.convertTime(CACurrentMediaTime(), from: nil) - pausedAt
+            }
+        }
+    }
+
     // MARK: Раскладка
 
     private func relayout() {

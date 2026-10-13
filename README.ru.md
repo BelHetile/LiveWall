@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="Иконка LiveWall"></p>
+<p align="center"><img src="Resources/AppIcon.iconset/icon_256x256.png" width="128" alt="Иконка LiveWall"></p>
 
 <h1 align="center">LiveWall</h1>
 
@@ -27,7 +27,7 @@ LiveWall ставит на рабочий стол видео, картинки 
 **Одной командой** (рекомендуется) — вставьте в Терминал:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/install.sh | bash
 ```
 
 Команда скачает последний релиз, положит LiveWall в **Программы** и запустит. Чтобы обновиться, выполните её ещё раз.
@@ -52,10 +52,10 @@ curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/install.sh 
 ```bash
 git clone https://github.com/BelHetile/LiveWall.git
 cd LiveWall
-./build.sh --install
+./scripts/build.sh --install
 ```
 
-`./build.sh` без флагов просто соберёт `build/LiveWall.app`; `./build.sh --universal` соберёт для Apple Silicon и Intel.
+`./scripts/build.sh` без флагов просто соберёт `build/LiveWall.app`; `./scripts/build.sh --universal` соберёт для Apple Silicon и Intel.
 
 </details>
 
@@ -135,7 +135,7 @@ cd LiveWall
 ## Удаление
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/uninstall.sh | bash
 ```
 
 Добавьте в конце ` -s -- --all`, чтобы удалить ещё и обои с настройками. Или просто перетащите LiveWall из
@@ -151,7 +151,7 @@ curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.s
 
 ## Участие в разработке
 
-Сообщения об ошибках и пул-реквесты приветствуются — см. [CONTRIBUTING.md](CONTRIBUTING.md). Список изменений —
+Сообщения об ошибках и пул-реквесты приветствуются — см. [CONTRIBUTING.md](.github/CONTRIBUTING.md). Список изменений —
 в [CHANGELOG.md](CHANGELOG.md).
 
 ## Лицензия

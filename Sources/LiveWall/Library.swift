@@ -141,12 +141,40 @@ final class Library: ObservableObject {
         }
     }
 
+    private var saveWork: DispatchWorkItem?
+
+    /// Сохранение откладывается на долю секунды: ползунки и серии изменений пишут файл один раз.
     private func save() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.writeIndex() }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Немедленно записать отложенные изменения (при выходе из приложения).
+    func flushSave() {
+        guard let work = saveWork else { return }
+        work.cancel()
+        saveWork = nil
+        writeIndex()
+    }
+
+    private func writeIndex() {
+        saveWork = nil
         let idx = Index(items: items, currentID: currentID, lockScreenID: lockScreenID,
                         folders: folders, previousID: previousID)
         if let data = try? JSONEncoder().encode(idx) {
             try? data.write(to: indexURL, options: .atomic)
         }
+    }
+
+    /// Окно библиотеки закрыли: отпускаем миниатюры, картинки и превью — при открытии они подгрузятся снова.
+    func releaseUICaches() {
+        closeDetail()
+        thumbs.removeAll()
+        imageCache.removeAll()
+        folderImageCache.removeAll()
+        hoveredID = nil
     }
 
     private func saveSettings() {
@@ -1502,7 +1530,10 @@ final class Library: ObservableObject {
 
     func loadThumbnail(for item: WallpaperItem) async {
         if thumbs[item.id] != nil { return }
+        // не больше трёх миниатюр одновременно — без рывков при первом открытии большой библиотеки
+        await ThumbnailGate.shared.enter()
         let img = await thumbnail(for: item)
+        await ThumbnailGate.shared.leave()
         await MainActor.run {
             if let img = img { self.thumbs[item.id] = img }
         }
@@ -1539,5 +1570,30 @@ final class Library: ObservableObject {
             try? data.write(to: cache)
         }
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+}
+
+/// Ограничивает число одновременно создаваемых миниатюр.
+actor ThumbnailGate {
+    static let shared = ThumbnailGate()
+    private let limit = 3
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        if running < limit {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func leave() {
+        if waiters.isEmpty {
+            running = max(0, running - 1)
+        } else {
+            // место переходит следующему ожидающему
+            waiters.removeFirst().resume()
+        }
     }
 }

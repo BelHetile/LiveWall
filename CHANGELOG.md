@@ -3,6 +3,19 @@
 All notable changes to LiveWall are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Performance
+- Window coverage is only checked while a video or GIF is on, less often and with timer tolerance; the power source
+  is reported by the system instead of being polled.
+- GIF wallpapers pause together with videos (covered desktop, fullscreen apps, battery, …).
+- Closing the library window frees its interface, thumbnails, images and the preview player.
+- At most three thumbnails are generated at a time; the library index is saved once per burst of changes.
+- Local videos start without extra buffering and keep a smaller frame buffer.
+
+### Changed
+- Repository layout: scripts live in `scripts/`, `Info.plist` in `Resources/`.
+
 ## [1.0.0] - 2026-10-13
 
 First public release.

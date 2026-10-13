@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="LiveWall icon"></p>
+<p align="center"><img src="Resources/AppIcon.iconset/icon_256x256.png" width="128" alt="LiveWall icon"></p>
 
 <h1 align="center">LiveWall</h1>
 
@@ -27,7 +27,7 @@ everything is controlled from the library window, the menu bar or global hotkeys
 **One command** (recommended) — paste into Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/install.sh | bash
 ```
 
 It downloads the latest release, puts LiveWall into **Applications** and starts it. Run the same command again to
@@ -53,10 +53,10 @@ You need the Command Line Tools (`xcode-select --install`).
 ```bash
 git clone https://github.com/BelHetile/LiveWall.git
 cd LiveWall
-./build.sh --install
+./scripts/build.sh --install
 ```
 
-`./build.sh` alone builds `build/LiveWall.app` without installing; `./build.sh --universal` builds for Apple Silicon
+`./scripts/build.sh` alone builds `build/LiveWall.app` without installing; `./scripts/build.sh --universal` builds for Apple Silicon
 and Intel.
 
 </details>
@@ -136,7 +136,7 @@ Hotkeys don't need any permissions in System Settings.
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/uninstall.sh | bash
 ```
 
 Add ` -s -- --all` at the end to also delete your wallpapers and settings. Or just drag LiveWall from Applications
@@ -152,7 +152,7 @@ Styles are small JSON files you can share (**Settings → Color style → Export
 
 ## Contributing
 
-Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md). Changes are listed in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## License

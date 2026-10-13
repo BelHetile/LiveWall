@@ -1,8 +1,8 @@
 #!/bin/bash
 # Removes LiveWall. Your wallpapers and settings are kept unless you pass --all.
 #
-#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.sh | bash -s -- --all
+#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/uninstall.sh | bash -s -- --all
 #
 set -euo pipefail
 

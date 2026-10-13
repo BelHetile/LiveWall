@@ -39,7 +39,7 @@ jobs:
       - name: Build universal app
         env:
           LIVEWALL_VERSION: ${{ steps.version.outputs.value }}
-        run: ./build.sh --universal
+        run: ./scripts/build.sh --universal
 
       - name: Check the binary
         run: |
@@ -75,7 +75,7 @@ jobs:
             echo "### Install"
             echo
             echo '```bash'
-            echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash'
+            echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash'
             echo '```'
             echo
             echo "Or download **LiveWall.dmg**, open it and drag LiveWall to Applications (see the README for the first-launch steps)."

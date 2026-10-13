@@ -108,6 +108,7 @@ final class WallpaperController: NSObject {
         guard let item = item, let url = url else {
             currentItem = nil
             currentURL = nil
+            PauseMonitor.shared.needsMonitoring = false
             player?.pause()
             player = nil
             looper = nil
@@ -124,13 +125,17 @@ final class WallpaperController: NSObject {
         currentItem = item
         currentURL = url
         currentVideoSize = .zero
+        PauseMonitor.shared.needsMonitoring = (item.kind != .image)
 
         if item.kind == .video {
             let p = AVQueuePlayer()
             p.isMuted = muted
             p.volume = volume
             p.preventsDisplaySleepDuringVideoPlayback = false
+            // локальный файл: не ждём буферизации и не держим лишний запас кадров
+            p.automaticallyWaitsToMinimizeStalling = false
             let template = AVPlayerItem(url: url)
+            template.preferredForwardBufferDuration = 2
             looper = AVPlayerLooper(player: p, templateItem: template)
             player = p
 
@@ -172,8 +177,13 @@ final class WallpaperController: NSObject {
     }
 
     private func updatePlayback() {
+        let paused = userPaused || autoPaused
+        // GIF тоже замирают, когда их не видно
+        if currentItem?.kind == .gif {
+            for w in windows.values { w.wallpaperView.setAnimationPaused(paused) }
+        }
         guard let p = player else { return }
-        if userPaused || autoPaused {
+        if paused {
             p.pause()
         } else {
             p.defaultRate = speed
