@@ -381,7 +381,7 @@ final class Library: ObservableObject {
             (NSApp.delegate as? AppDelegate)?.applyWindowMode()
         }
         if old.showInDock != settings.showInDock {
-            NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
+            (NSApp.delegate as? AppDelegate)?.updateActivationPolicy()
             NSApp.activate(ignoringOtherApps: true)
         }
         if settings.syncSystemWallpaper && !old.syncSystemWallpaper {

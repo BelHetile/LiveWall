@@ -222,6 +222,9 @@ struct SettingsTab: View {
                 if !library.settings.showInDock && !library.settings.showInMenuBar {
                     Text(L("With no Dock or menu bar icon, open LiveWall again from Spotlight or Applications to show the library."))
                         .foregroundStyle(.orange)
+                } else if !library.settings.showInDock {
+                    Text(L("The Dock icon still appears while the library window is open, so macOS can show LiveWall's menu bar."))
+                        .foregroundStyle(.secondary)
                 } else {
                     Text(L("When started at login, LiveWall stays in the background either way."))
                         .foregroundStyle(.secondary)

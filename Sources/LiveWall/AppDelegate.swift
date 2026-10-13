@@ -22,6 +22,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    // MARK: Activation policy
+
+    /// While the library window is open LiveWall is a regular app, even with the Dock icon turned off.
+    /// An accessory app with a focused window leaves macOS without a menu bar to draw when switching Spaces,
+    /// and the whole menu bar disappears.
+    func updateActivationPolicy() {
+        let libraryOpen = libraryWindow?.isVisible == true && libraryWindow?.isMiniaturized == false
+        let policy: NSApplication.ActivationPolicy = (Library.shared.settings.showInDock || libraryOpen) ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+    }
+
     // MARK: Lock screen and Spaces
 
     private var hiddenForLock = false
@@ -37,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let dnc = DistributedNotificationCenter.default()
         dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
             guard let self = self else { return }
+            self.screenLocked = true
             let wasActive = NSApp.isActive || Date().timeIntervalSince(self.resignedActiveAt) < 2
             if wasActive, self.libraryWindow?.isVisible == true, !NSApp.isHidden {
                 self.hiddenForLock = true
@@ -44,7 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
         }
         dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-            guard let self = self, self.hiddenForLock else { return }
+            guard let self = self else { return }
+            self.screenLocked = false
+            self.unlockedAt = Date()
+            guard self.hiddenForLock else { return }
             self.hiddenForLock = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 NSApp.unhideWithoutActivation()
@@ -58,8 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    private var unlockedAt = Date.distantPast
+    private var screenLocked = false
+
     private func handOffFocusIfNeeded() {
-        guard NSApp.isActive else { return }
+        // Spaces change on their own while the screen locks and unlocks: leave the focus alone then
+        guard NSApp.isActive, !screenLocked, Date().timeIntervalSince(unlockedAt) > 5 else { return }
         let ours = NSApp.windows.contains { w in
             w.isVisible && w.isOnActiveSpace && !(w is DesktopWindow) && w.level == .normal && w.canBecomeKey
         }
@@ -184,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if let w = libraryWindow, !(w.contentView is NSHostingView<LibraryView>) {
             w.contentView = NSHostingView(rootView: LibraryView())
         }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
         if !wasVisible, Library.shared.settings.libraryWindowMode == .fullScreen,
@@ -213,10 +233,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         guard (notification.object as? NSWindow) === libraryWindow else { return }
         Library.shared.closeDetail()
         Library.shared.tileDisappeared()
+        updateActivationPolicy()
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {
         guard (notification.object as? NSWindow) === libraryWindow else { return }
+        updateActivationPolicy()
         Library.shared.tileAppeared()
     }
 
@@ -229,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 guard let w = self?.libraryWindow, !w.isVisible else { return }
                 w.contentView = NSView()
                 Library.shared.releaseUICaches()
+                self?.updateActivationPolicy()
             }
         }
     }

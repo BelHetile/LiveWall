@@ -361,5 +361,6 @@ enum RussianStrings {
         "Show in the menu bar": "Показывать в строке меню",
         "With no Dock or menu bar icon, open LiveWall again from Spotlight or Applications to show the library.": "Без значков в Доке и строке меню библиотеку можно открыть, снова запустив LiveWall из Spotlight или «Программ».",
         "When started at login, LiveWall stays in the background either way.": "При запуске вместе с системой LiveWall в любом случае остаётся в фоне.",
+        "The Dock icon still appears while the library window is open, so macOS can show LiveWall's menu bar.": "Пока открыто окно библиотеки, значок в Доке всё равно появляется — иначе macOS не может показать строку меню LiveWall.",
     ]
 }
