@@ -1,11 +1,17 @@
 name: Release
 
-# Push a tag like v1.0.0 to build LiveWall and publish a GitHub release.
-# Running it by hand only builds and uploads the files as a workflow artifact.
+# Publish a release either by pushing a tag like v1.0.0, or from the Actions tab:
+# Release → Run workflow → enter a version (e.g. 1.0.0); the tag is created for you.
+# Running it by hand without a version only builds and uploads the files as an artifact.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 1.0.0 (empty = test build only)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -20,10 +26,15 @@ jobs:
         id: version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            V="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            V="${{ inputs.version }}"
+            V="${V#v}"
           else
-            echo "value=0.0.0-dev" >> "$GITHUB_OUTPUT"
+            V="0.0.0-dev"
           fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "Version: $V"
 
       - name: Build universal app
         env:
@@ -72,12 +83,14 @@ jobs:
           cat build/notes.md
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          TAG="v${{ steps.version.outputs.value }}"
+          gh release create "$TAG" \
             build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
             --title "LiveWall ${{ steps.version.outputs.value }}" \
             --notes-file build/notes.md
 

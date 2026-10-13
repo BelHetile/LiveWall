@@ -34,6 +34,7 @@ folder in Xcode.
 ## Releasing (maintainers)
 
 1. Move the *Unreleased* notes in `CHANGELOG.md` under a new version heading, e.g. `## [1.1.0] - 2026-11-01`.
-2. Tag and push: `git tag v1.1.0 && git push origin v1.1.0`.
+2. Tag and push (`git tag v1.1.0 && git push origin v1.1.0`), or open **Actions → Release → Run workflow** and enter
+   the version — the tag is created for you.
 3. GitHub Actions builds the universal app and publishes the release with `LiveWall-macOS.zip`, `LiveWall.dmg`
    and checksums. The one-line installer always picks up the newest release.
