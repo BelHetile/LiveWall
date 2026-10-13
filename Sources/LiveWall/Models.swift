@@ -11,10 +11,10 @@ enum FillMode: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .fill: return "Fill"
-        case .fit: return "Fit"
-        case .stretch: return "Stretch"
-        case .center: return "Center"
+        case .fill: return L("Fill")
+        case .fit: return L("Fit")
+        case .stretch: return L("Stretch")
+        case .center: return L("Center")
         }
     }
 
@@ -53,9 +53,9 @@ enum HotkeyScope: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .desktop: return "Desktop"
-        case .lockScreen: return "Lock Screen"
-        case .both: return "Both"
+        case .desktop: return L("Desktop")
+        case .lockScreen: return L("Lock Screen")
+        case .both: return L("Both")
         }
     }
 }
@@ -114,13 +114,13 @@ enum HotkeyAction: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .next: return "Next wallpaper"
-        case .previous: return "Previous wallpaper"
-        case .random: return "Random wallpaper"
-        case .togglePause: return "Pause / resume video"
-        case .cycleMode: return "Cycle fill mode"
-        case .toggleMute: return "Mute / unmute"
-        case .openLibrary: return "Open library"
+        case .next: return L("Next wallpaper")
+        case .previous: return L("Previous wallpaper")
+        case .random: return L("Random wallpaper")
+        case .togglePause: return L("Pause / resume video")
+        case .cycleMode: return L("Cycle fill mode")
+        case .toggleMute: return L("Mute / unmute")
+        case .openLibrary: return L("Open library")
         }
     }
 
@@ -196,6 +196,7 @@ struct Settings: Codable, Equatable {
     var syncSystemWallpaper = true
     var launchAtLogin = false
     var showInDock = true
+    var language: AppLanguage = .system
 
     // хоткеи
     var numberHotkeys = true
@@ -209,7 +210,7 @@ struct Settings: Codable, Equatable {
         case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
         case colorStyleID, customStyles
-        case syncSystemWallpaper, launchAtLogin, showInDock
+        case syncSystemWallpaper, launchAtLogin, showInDock, language
         case numberHotkeys, hotkeys
     }
 
@@ -235,6 +236,7 @@ struct Settings: Codable, Equatable {
         syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
         showInDock = (try? c.decodeIfPresent(Bool.self, forKey: .showInDock)) ?? d.showInDock
+        language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? d.language
         numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys
         hotkeys = (try? c.decodeIfPresent([String: HotkeyBinding].self, forKey: .hotkeys)) ?? d.hotkeys
     }

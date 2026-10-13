@@ -52,17 +52,17 @@ enum PasswordPrompt {
         alert.messageText = title
         if let message = message { alert.informativeText = message }
         alert.addButton(withTitle: button)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
 
         let width: CGFloat = 280
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: confirm ? 56 : 24))
         let first = NSSecureTextField(frame: NSRect(x: 0, y: confirm ? 32 : 0, width: width, height: 24))
-        first.placeholderString = "Password"
+        first.placeholderString = L("Password")
         container.addSubview(first)
         var second: NSSecureTextField?
         if confirm {
             let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: width, height: 24))
-            field.placeholderString = "Repeat password"
+            field.placeholderString = L("Repeat password")
             container.addSubview(field)
             first.nextKeyView = field
             second = field
@@ -76,8 +76,8 @@ enum PasswordPrompt {
         guard !password.isEmpty else { return nil }
         if let second = second, second.stringValue != password {
             let err = NSAlert()
-            err.messageText = "Passwords don't match"
-            err.informativeText = "The folder was not changed."
+            err.messageText = L("Passwords don't match")
+            err.informativeText = L("The folder was not changed.")
             err.runModal()
             return nil
         }

@@ -37,6 +37,7 @@ This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` 
 - **Per-wallpaper hotkey**: no wallpaper has a hotkey until you set one in its panel. Press it once to switch to that wallpaper, press it again to go back to the one that was on before. Each hotkey can switch the desktop, the lock screen or both (default). Hotkeys of wallpapers in locked folders work without entering the password; while such a wallpaper is on, LiveWall shows it as "Private wallpaper".
 - Click a wallpaper to open its panel: put it on the **Desktop** or the **Lock Screen**, pause, set its own volume and speed, choose the fill mode (**Fill, Fit, Stretch, Center**).
 - **Appearance** (Settings): 8 color styles (Violet, Ocean, Sunset, Forest, Rose, Gold, Neon, Graphite), your own styles with a color picker, import/export of styles as `.json`, and **My Icons** — import your own images once and use them as icons for any folder.
+- **Language**: English or Russian, switchable in Settings (defaults to the system language).
 - Settings: default playback, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
 
 ## Smart pause (like Wallpaper Engine's Performance settings)

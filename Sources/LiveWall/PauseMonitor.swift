@@ -69,46 +69,46 @@ final class PauseMonitor: NSObject {
     }
 
     private func computeReason() -> String? {
-        if screenOff { return "Display asleep" }
-        if locked { return "Screen locked" }
+        if screenOff { return L("Display asleep") }
+        if locked { return L("Screen locked") }
 
         let s = settings
         let info = ProcessInfo.processInfo
 
         if s.pauseWhenHot && (info.thermalState == .serious || info.thermalState == .critical) {
-            return "Mac is hot"
+            return L("Mac is hot")
         }
         if s.pauseInLowPower && info.isLowPowerModeEnabled {
-            return "Low Power Mode"
+            return L("Low Power Mode")
         }
         if s.pauseOnBattery && PauseMonitor.onBattery() {
-            return "On battery"
+            return L("On battery")
         }
 
         let front = NSWorkspace.shared.frontmostApplication
         for rule in s.appRules {
             if rule.frontmostOnly {
                 if front?.bundleIdentifier == rule.bundleID {
-                    return "\(rule.name) is in front"
+                    return LF("%@ is in front", rule.name)
                 }
             } else if !NSRunningApplication.runningApplications(withBundleIdentifier: rule.bundleID).isEmpty {
-                return "\(rule.name) is running"
+                return LF("%@ is running", rule.name)
             }
         }
 
         if s.pauseWhenAppFocused, let f = front,
            f.processIdentifier != getpid(),
            f.bundleIdentifier != "com.apple.finder" {
-            return "\(f.localizedName ?? "Another app") is focused"
+            return LF("%@ is focused", f.localizedName ?? L("Another app"))
         }
 
         if s.pauseWhenFullscreen || s.pauseWhenMaximized {
             let cov = PauseMonitor.coverage()
             if s.pauseWhenFullscreen && cov.allFullscreen {
-                return "Fullscreen app"
+                return L("Fullscreen app")
             }
             if s.pauseWhenMaximized && cov.minFraction >= 0.9 {
-                return "Desktop covered by windows"
+                return L("Desktop covered by windows")
             }
         }
         return nil

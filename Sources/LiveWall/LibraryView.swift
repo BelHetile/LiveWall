@@ -36,7 +36,7 @@ struct LibraryView: View {
             }
 
             // ⌘V в окне: добавить ссылку или файлы из буфера обмена
-            Button("Paste") { library.pasteFromClipboard() }
+            Button(L("Paste")) { library.pasteFromClipboard() }
                 .keyboardShortcut("v", modifiers: .command)
                 .opacity(0)
                 .frame(width: 0, height: 0)
@@ -49,6 +49,8 @@ struct LibraryView: View {
         }
         .frame(minWidth: 980, minHeight: 640)
         .ignoresSafeArea(.container, edges: .top)
+        // смена языка перестраивает весь интерфейс
+        .id(library.settings.language)
     }
 }
 
@@ -82,14 +84,14 @@ struct TopBar: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.left")
-                        Text("Library")
+                        Text(L("Library"))
                     }
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.violet)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Text("Settings")
+                Text(L("Settings"))
                     .font(.system(size: 17, weight: .bold))
                     .padding(.leading, 6)
             } else {
@@ -114,7 +116,7 @@ struct TopBar: View {
                 Button {
                     library.presentImportPanel()
                 } label: {
-                    Label("Add", systemImage: "plus")
+                    Label(L("Add"), systemImage: "plus")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14)
@@ -122,7 +124,7 @@ struct TopBar: View {
                         .background(Theme.accentGradient, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .help("Add wallpapers")
+                .help(L("Add wallpapers"))
 
                 Button {
                     library.showLinkPopover = true
@@ -134,7 +136,7 @@ struct TopBar: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help("Add from a link (or press ⌘V with a link copied)")
+                .help(L("Add from a link (or press ⌘V with a link copied)"))
                 .popover(isPresented: $library.showLinkPopover, arrowEdge: .bottom) {
                     LinkPopover(library: library)
                 }
@@ -154,7 +156,7 @@ struct TopBar: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .help("Settings")
+            .help(L("Settings"))
         }
         .padding(.leading, 86)   // место под кнопки окна
         .padding(.trailing, 20)
@@ -166,10 +168,10 @@ struct StatusPill: View {
     @ObservedObject var library: Library
 
     private var text: String {
-        guard let item = library.current else { return "No wallpaper" }
-        if library.paused { return "Paused by you" }
-        if let r = library.pauseReason { return "Paused · \(r)" }
-        return item.kind == .video ? "Playing" : "Showing"
+        guard let item = library.current else { return L("No wallpaper") }
+        if library.paused { return L("Paused by you") }
+        if let r = library.pauseReason { return LF("Paused · %@", r) }
+        return item.kind == .video ? L("Playing") : L("Showing")
     }
 
     private var color: Color {
@@ -226,7 +228,7 @@ struct WallpapersPage: View {
                         }
                     }
                     if library.visibleItems.isEmpty {
-                        Text("This folder is empty. Drag wallpapers onto the folder or use “Move to Folder” in a wallpaper’s menu.")
+                        Text(L("This folder is empty. Drag wallpapers onto the folder or use “Move to Folder” in a wallpaper’s menu."))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
@@ -260,35 +262,35 @@ struct WallpapersPage: View {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(.borderless)
-                .help("Rename folder")
+                .help(L("Rename folder"))
                 Button {
                     library.openIconPicker(folder.id)
                 } label: {
                     Image(systemName: "paintbrush")
                 }
                 .buttonStyle(.borderless)
-                .help("Change folder icon")
+                .help(L("Change folder icon"))
                 if folder.isProtected {
                     Button {
                         library.lockFolder(folder.id)
                     } label: {
-                        Label("Lock", systemImage: "lock.fill")
+                        Label(L("Lock"), systemImage: "lock.fill")
                     }
                     .buttonStyle(.borderless)
-                    .help("Lock the folder and hide its wallpapers")
+                    .help(L("Lock the folder and hide its wallpapers"))
                 }
             } else {
-                Text("All Wallpapers")
+                Text(L("All Wallpapers"))
                     .font(.system(size: 22, weight: .bold))
             }
             if library.busyCount > 0 {
                 ProgressView().controlSize(.small).padding(.leading, 6)
-                Text("Importing \(library.busyCount)…")
+                Text(LF("Importing %ld…", library.busyCount))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text("Click a wallpaper to adjust it")
+            Text(L("Click a wallpaper to adjust it"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -368,26 +370,26 @@ struct DesktopTile: View {
             Theme.heroScrim
 
             VStack(alignment: .leading, spacing: 8) {
-                Chip(text: "DESKTOP", systemImage: "display")
-                Text(isPrivate ? "Private wallpaper" : (library.current?.name ?? "No wallpaper"))
+                Chip(text: L("DESKTOP"), systemImage: "display")
+                Text(isPrivate ? L("Private wallpaper") : (library.current?.name ?? L("No wallpaper")))
                     .font(.system(size: 18, weight: .heavy))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
                 HStack(spacing: 12) {
                     CircleButton(systemImage: "backward.fill") { library.step(-1) }
-                        .help("Previous")
+                        .help(L("Previous"))
                     CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 36, prominent: true) {
                         library.togglePause()
                     }
-                    .help(library.paused ? "Resume" : "Pause")
+                    .help(library.paused ? L("Resume") : L("Pause"))
                     CircleButton(systemImage: "forward.fill") { library.step(1) }
-                        .help("Next")
+                        .help(L("Next"))
                     CircleButton(systemImage: "shuffle") { library.random() }
-                        .help("Random")
+                        .help(L("Random"))
                     if let item = library.current {
                         CircleButton(systemImage: "slider.horizontal.3") { library.openDetail(item.id) }
-                            .help("Adjust")
+                            .help(L("Adjust"))
                     }
                 }
             }
@@ -441,8 +443,8 @@ struct LockTile: View {
             .padding(.top, 18)
 
             VStack(alignment: .leading, spacing: 6) {
-                Chip(text: "LOCK SCREEN", systemImage: "lock.fill")
-                Text(isPrivate ? "Private wallpaper" : (item?.name ?? "Not set"))
+                Chip(text: L("LOCK SCREEN"), systemImage: "lock.fill")
+                Text(isPrivate ? L("Private wallpaper") : (item?.name ?? L("Not set")))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -465,9 +467,9 @@ struct LockTile: View {
     }
 
     private var subtitle: String {
-        if library.lockScreenID != nil { return "Custom · still frame" }
-        if library.settings.syncSystemWallpaper { return "Same as desktop · still frame" }
-        return "Off — enable in Settings or pick a wallpaper"
+        if library.lockScreenID != nil { return L("Custom · still frame") }
+        if library.settings.syncSystemWallpaper { return L("Same as desktop · still frame") }
+        return L("Off — enable in Settings or pick a wallpaper")
     }
 }
 
@@ -492,7 +494,7 @@ struct WallpaperCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .onTapGesture(count: 2) { library.renameItem(item.id) }
-                        .help("Double-click to rename")
+                        .help(L("Double-click to rename"))
                     HStack(spacing: 4) {
                         Image(systemName: item.kind.symbol)
                         Text("\(item.kind.title) · \(item.mode.title)")
@@ -508,7 +510,7 @@ struct WallpaperCard: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Theme.violet.opacity(0.12), in: Capsule())
-                        .help("Press to switch to this wallpaper, press again to go back")
+                        .help(L("Press to switch to this wallpaper, press again to go back"))
                 }
             }
             .padding(.horizontal, 2)
@@ -524,15 +526,15 @@ struct WallpaperCard: View {
             }
         }
         .contextMenu {
-            Button("Set on Desktop") { library.setDesktop(item.id) }
-            Button("Set on Lock Screen") { library.setLockScreen(item.id) }
-            Button("Adjust…") { library.openDetail(item.id) }
-            Button("Rename…") { library.renameItem(item.id) }
-            Menu("Move to Folder") {
+            Button(L("Set on Desktop")) { library.setDesktop(item.id) }
+            Button(L("Set on Lock Screen")) { library.setLockScreen(item.id) }
+            Button(L("Adjust…")) { library.openDetail(item.id) }
+            Button(L("Rename…")) { library.renameItem(item.id) }
+            Menu(L("Move to Folder")) {
                 Button {
                     library.moveItem(item.id, to: nil)
                 } label: {
-                    if item.folderID == nil { Label("No Folder", systemImage: "checkmark") } else { Text("No Folder") }
+                    if item.folderID == nil { Label(L("No Folder"), systemImage: "checkmark") } else { Text("No Folder") }
                 }
                 if !library.folders.isEmpty { Divider() }
                 ForEach(library.folders) { folder in
@@ -543,9 +545,9 @@ struct WallpaperCard: View {
                     }
                 }
                 Divider()
-                Button("New Folder…") { library.createFolder(moving: [item.id]) }
+                Button(L("New Folder…")) { library.createFolder(moving: [item.id]) }
             }
-            Menu("Fill Mode") {
+            Menu(L("Fill Mode")) {
                 ForEach(FillMode.allCases) { m in
                     Button {
                         library.setMode(m, for: item.id)
@@ -558,9 +560,9 @@ struct WallpaperCard: View {
                     }
                 }
             }
-            Button("Reveal in Finder") { library.revealInFinder(item) }
+            Button(L("Reveal in Finder")) { library.revealInFinder(item) }
             Divider()
-            Button("Remove", role: .destructive) { library.remove(item.id) }
+            Button(L("Remove"), role: .destructive) { library.remove(item.id) }
         }
         .task(id: item.id) {
             await library.loadThumbnail(for: item)
@@ -583,7 +585,7 @@ struct WallpaperCard: View {
                 VStack(spacing: 6) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 22, weight: .semibold))
-                    Text("Adjust")
+                    Text(L("Adjust"))
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(.white)
@@ -602,8 +604,8 @@ struct WallpaperCard: View {
         }
         .overlay(alignment: .topLeading) {
             HStack(spacing: 4) {
-                if isDesktop { Chip(text: "DESKTOP", systemImage: "display") }
-                if isLock { Chip(text: "LOCK", systemImage: "lock.fill") }
+                if isDesktop { Chip(text: L("DESKTOP"), systemImage: "display") }
+                if isLock { Chip(text: L("LOCK"), systemImage: "lock.fill") }
             }
             .padding(8)
         }
@@ -696,10 +698,10 @@ struct WallpaperDetail: View {
 
             HStack {
                 CircleButton(systemImage: "chevron.left", size: 36) { library.showAdjacentDetail(-1) }
-                    .help("Previous wallpaper")
+                    .help(L("Previous wallpaper"))
                 Spacer()
                 CircleButton(systemImage: "chevron.right", size: 36) { library.showAdjacentDetail(1) }
-                    .help("Next wallpaper")
+                    .help(L("Next wallpaper"))
             }
             .padding(16)
 
@@ -707,16 +709,16 @@ struct WallpaperDetail: View {
                 CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 54, prominent: true) {
                     library.togglePause()
                 }
-                .help(library.paused ? "Resume" : "Pause")
+                .help(library.paused ? L("Resume") : L("Pause"))
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .padding(.bottom, 22)
             }
         }
         .overlay(alignment: .topLeading) {
             HStack(spacing: 6) {
-                if isDesktop { Chip(text: "ON DESKTOP", systemImage: "display") }
-                if isLock { Chip(text: "ON LOCK SCREEN", systemImage: "lock.fill") }
-                if !isDesktop && item.kind == .video { Chip(text: "PREVIEW", systemImage: "eye") }
+                if isDesktop { Chip(text: L("ON DESKTOP"), systemImage: "display") }
+                if isLock { Chip(text: L("ON LOCK SCREEN"), systemImage: "lock.fill") }
+                if !isDesktop && item.kind == .video { Chip(text: L("PREVIEW"), systemImage: "eye") }
             }
             .padding(16)
         }
@@ -743,7 +745,7 @@ struct WallpaperDetail: View {
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .buttonStyle(.borderless)
-                        .help("Rename")
+                        .help(L("Rename"))
                     }
                     Label("\(item.kind.title) · \(item.mode.title)", systemImage: item.kind.symbol)
                         .font(.system(size: 12))
@@ -761,21 +763,21 @@ struct WallpaperDetail: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
-                .help("Close")
+                .help(L("Close"))
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: "Use as")
+                SectionLabel(text: L("Use as"))
                 HStack(spacing: 10) {
-                    TargetButton(title: "Desktop", symbol: "display", active: isDesktop) {
+                    TargetButton(title: L("Desktop"), symbol: "display", active: isDesktop) {
                         library.setDesktop(item.id)
                     }
-                    TargetButton(title: "Lock Screen", symbol: "lock.fill", active: isLock) {
+                    TargetButton(title: L("Lock Screen"), symbol: "lock.fill", active: isLock) {
                         library.setLockScreen(item.id)
                     }
                 }
                 if library.lockScreenID == item.id {
-                    Button("Lock screen: follow the desktop again") {
+                    Button(L("Lock screen: follow the desktop again")) {
                         library.lockScreenFollowDesktop()
                     }
                     .buttonStyle(.link)
@@ -785,13 +787,13 @@ struct WallpaperDetail: View {
 
             if item.kind == .video {
                 VStack(alignment: .leading, spacing: 10) {
-                    SectionLabel(text: "Playback")
+                    SectionLabel(text: L("Playback"))
 
                     if isDesktop {
                         Button {
                             library.togglePause()
                         } label: {
-                            Label(library.paused ? "Resume" : "Pause",
+                            Label(library.paused ? L("Resume") : L("Pause"),
                                   systemImage: library.paused ? "play.fill" : "pause.fill")
                                 .font(.system(size: 13, weight: .semibold))
                                 .frame(maxWidth: .infinity)
@@ -801,7 +803,7 @@ struct WallpaperDetail: View {
                         }
                         .buttonStyle(.plain)
                         if let reason = library.pauseReason, !library.paused {
-                            Label("Auto-paused: \(reason)", systemImage: "pause.circle")
+                            Label(LF("Auto-paused: %@", reason), systemImage: "pause.circle")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.orange)
                         }
@@ -816,10 +818,10 @@ struct WallpaperDetail: View {
                                 .frame(width: 22)
                         }
                         .buttonStyle(.plain)
-                        .help(muted ? "Unmute" : "Mute")
+                        .help(muted ? L("Unmute") : L("Mute"))
                         Slider(value: volumeBinding, in: 0...1)
                             .disabled(muted)
-                        Text(muted ? "Muted" : "\(Int((library.effectiveVolume(item) * 100).rounded()))%")
+                        Text(muted ? L("Muted") : "\(Int((library.effectiveVolume(item) * 100).rounded()))%")
                             .font(.system(size: 11, weight: .medium))
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -827,7 +829,7 @@ struct WallpaperDetail: View {
                     }
 
                     HStack {
-                        Text("Speed")
+                        Text(L("Speed"))
                             .font(.system(size: 12))
                         Spacer()
                     }
@@ -843,31 +845,31 @@ struct WallpaperDetail: View {
 
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel(text: "Folder")
+                    SectionLabel(text: L("Folder"))
                     Menu {
-                        Button("No Folder") { library.moveItem(item.id, to: nil) }
+                        Button(L("No Folder")) { library.moveItem(item.id, to: nil) }
                         if !library.folders.isEmpty { Divider() }
                         ForEach(library.folders) { folder in
                             Button(folder.name) { library.moveItem(item.id, to: folder.id) }
                         }
                         Divider()
-                        Button("New Folder…") { library.createFolder(moving: [item.id]) }
+                        Button(L("New Folder…")) { library.createFolder(moving: [item.id]) }
                     } label: {
-                        Text(library.folders.first(where: { $0.id == item.folderID })?.name ?? "No Folder")
+                        Text(library.folders.first(where: { $0.id == item.folderID })?.name ?? L("No Folder"))
                             .lineLimit(1)
                     }
                     .fixedSize()
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 8) {
-                    SectionLabel(text: "Hotkey")
+                    SectionLabel(text: L("Hotkey"))
                     WallpaperHotkeyRecorder(item: item, library: library)
                 }
             }
 
             if item.hotkey != nil {
                 HStack {
-                    Text("Hotkey switches")
+                    Text(L("Hotkey switches"))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -884,7 +886,7 @@ struct WallpaperDetail: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: "Fill mode")
+                SectionLabel(text: L("Fill mode"))
                 Picker("", selection: modeBinding) {
                     ForEach(FillMode.allCases) { m in
                         Text(m.title).tag(m)
@@ -900,13 +902,13 @@ struct WallpaperDetail: View {
                 Button {
                     library.revealInFinder(item)
                 } label: {
-                    Label("Show in Finder", systemImage: "folder")
+                    Label(L("Show in Finder"), systemImage: "folder")
                 }
                 Spacer()
                 Button(role: .destructive) {
                     library.remove(item.id)
                 } label: {
-                    Label("Remove", systemImage: "trash")
+                    Label(L("Remove"), systemImage: "trash")
                 }
                 .foregroundStyle(.red)
             }
@@ -947,7 +949,7 @@ struct TargetButton: View {
                     .font(.system(size: 18, weight: .semibold))
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                Text(active ? "Active" : "Set")
+                Text(active ? L("Active") : L("Set"))
                     .font(.system(size: 10))
                     .opacity(0.8)
             }
@@ -977,16 +979,16 @@ struct EmptyDropZone: View {
                     .font(.system(size: 32, weight: .semibold))
                     .foregroundStyle(.white)
             }
-            Text("Drop videos, images, GIFs or links here")
+            Text(L("Drop videos, images, GIFs or links here"))
                 .font(.system(size: 20, weight: .semibold))
-            Text("mp4 · mov · m4v · png · jpg · heic · gif — folders work too")
+            Text(L("mp4 · mov · m4v · png · jpg · heic · gif — folders work too"))
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button("Choose Files…") { library.presentImportPanel() }
-                Button("Add from Link…") { library.showLinkPopover = true }
+                Button(L("Choose Files…")) { library.presentImportPanel() }
+                Button(L("Add from Link…")) { library.showLinkPopover = true }
             }
             .controlSize(.large)
-            Text("Tip: copy a link to a video or image and press ⌘V here")
+            Text(L("Tip: copy a link to a video or image and press ⌘V here"))
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
         }
@@ -1015,7 +1017,7 @@ struct DropOverlay: View {
                     Image(systemName: "plus.circle.fill")
                         .font(.system(size: 44))
                         .foregroundStyle(Theme.accentGradient)
-                    Text("Drop to add to your library")
+                    Text(L("Drop to add to your library"))
                         .font(.system(size: 16, weight: .semibold))
                 }
             }
@@ -1037,13 +1039,13 @@ struct LinkPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add from link")
+            Text(L("Add from link"))
                 .font(.system(size: 15, weight: .bold))
-            Text("Paste a direct link to a video or image, or a web page that contains one.")
+            Text(L("Paste a direct link to a video or image, or a web page that contains one."))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("https://example.com/wallpaper.mp4", text: $library.linkText)
+            TextField(L("https://example.com/wallpaper.mp4"), text: $library.linkText)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { if !isEmpty { library.submitLink() } }
             HStack {
@@ -1052,16 +1054,16 @@ struct LinkPopover: View {
                         library.linkText = s.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                 } label: {
-                    Label("Paste", systemImage: "doc.on.clipboard")
+                    Label(L("Paste"), systemImage: "doc.on.clipboard")
                 }
                 Spacer()
-                Button("Cancel") { library.showLinkPopover = false }
+                Button(L("Cancel")) { library.showLinkPopover = false }
                     .keyboardShortcut(.cancelAction)
-                Button("Add") { library.submitLink() }
+                Button(L("Add")) { library.submitLink() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isEmpty)
             }
-            Text("mp4 · mov · m4v · jpg · png · heic · webp · gif")
+            Text(L("mp4 · mov · m4v · jpg · png · heic · webp · gif"))
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
@@ -1114,7 +1116,7 @@ struct DownloadsList: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help(d.error == nil ? "Cancel download" : "Dismiss")
+                    .help(d.error == nil ? L("Cancel download") : L("Dismiss"))
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -1132,13 +1134,13 @@ struct FoldersStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Folders")
+                Text(L("Folders"))
                     .font(.system(size: 15, weight: .bold))
                 Spacer()
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    FolderTile(title: "All Wallpapers",
+                    FolderTile(title: L("All Wallpapers"),
                                count: library.browsableItems.count,
                                icon: .symbol(name: "square.grid.2x2.fill", palette: 7),
                                selected: library.selectedFolderID == nil,
@@ -1163,22 +1165,22 @@ struct FoldersStrip: View {
                                 library.handleFolderDrop(providers, folderID: folder.id)
                             }
                             .contextMenu {
-                                Button("Rename…") { library.renameFolder(folder.id) }
-                                Button("Change Icon…") { library.openIconPicker(folder.id) }
+                                Button(L("Rename…")) { library.renameFolder(folder.id) }
+                                Button(L("Change Icon…")) { library.openIconPicker(folder.id) }
                                 Divider()
                                 if folder.isProtected {
                                     if library.isLocked(folder.id) {
-                                        Button("Unlock…") { library.openFolder(folder.id) }
+                                        Button(L("Unlock…")) { library.openFolder(folder.id) }
                                     } else {
-                                        Button("Lock Now") { library.lockFolder(folder.id) }
+                                        Button(L("Lock Now")) { library.lockFolder(folder.id) }
                                     }
-                                    Button("Change Password…") { library.setPassword(folder.id) }
-                                    Button("Remove Password…") { library.removePassword(folder.id) }
+                                    Button(L("Change Password…")) { library.setPassword(folder.id) }
+                                    Button(L("Remove Password…")) { library.removePassword(folder.id) }
                                 } else {
-                                    Button("Set Password…") { library.setPassword(folder.id) }
+                                    Button(L("Set Password…")) { library.setPassword(folder.id) }
                                 }
                                 Divider()
-                                Button("Delete Folder", role: .destructive) { library.deleteFolder(folder.id) }
+                                Button(L("Delete Folder"), role: .destructive) { library.deleteFolder(folder.id) }
                             }
                     }
 
@@ -1189,7 +1191,7 @@ struct FoldersStrip: View {
                             Image(systemName: "plus")
                                 .font(.system(size: 20, weight: .semibold))
                                 .frame(width: 44, height: 44)
-                            Text("New Folder")
+                            Text(L("New Folder"))
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .foregroundStyle(.secondary)
@@ -1249,7 +1251,7 @@ struct FolderTile: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(isLocked ? "Locked" : "\(count)")
+                Text(isLocked ? L("Locked") : "\(count)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -1294,17 +1296,17 @@ struct FolderIconPicker: View {
                 HStack(spacing: 14) {
                     FolderIconView(icon: folder.icon, size: 60)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Folder Icon")
+                        Text(L("Folder Icon"))
                             .font(.system(size: 16, weight: .bold))
                         Text(folder.name)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Done") { library.iconPickerFolderID = nil }
+                    Button(L("Done")) { library.iconPickerFolderID = nil }
                         .keyboardShortcut(.defaultAction)
                 }
 
-                SectionLabel(text: "Color")
+                SectionLabel(text: L("Color"))
                 HStack(spacing: 10) {
                     ForEach(0..<Theme.folderPalettes.count, id: \.self) { i in
                         Circle()
@@ -1321,7 +1323,7 @@ struct FolderIconPicker: View {
                 }
                 .padding(.leading, 4)
 
-                SectionLabel(text: "Icon")
+                SectionLabel(text: L("Icon"))
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 9), spacing: 10) {
                         ForEach(FolderIcon.basePack, id: \.self) { name in
@@ -1341,17 +1343,17 @@ struct FolderIconPicker: View {
                 .frame(height: 200)
 
                 HStack {
-                    SectionLabel(text: "My Icons")
+                    SectionLabel(text: L("My Icons"))
                     Spacer()
                     Button {
                         library.importUserIcons()
                     } label: {
-                        Label("Import Icons…", systemImage: "square.and.arrow.down")
+                        Label(L("Import Icons…"), systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderless)
                 }
                 if library.userIcons.isEmpty {
-                    Text("Import your own images once and use them for any folder.")
+                    Text(L("Import your own images once and use them for any folder."))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 } else {
@@ -1361,7 +1363,7 @@ struct FolderIconPicker: View {
                                 UserIconThumb(name: name, size: 50, library: library)
                                     .onTapGesture { library.setFolderUserIcon(name, for: folder.id) }
                                     .contextMenu {
-                                        Button("Remove from My Icons", role: .destructive) { library.removeUserIcon(name) }
+                                        Button(L("Remove from My Icons"), role: .destructive) { library.removeUserIcon(name) }
                                     }
                             }
                         }
@@ -1374,18 +1376,18 @@ struct FolderIconPicker: View {
                     Button {
                         library.chooseFolderImage(for: folder.id)
                     } label: {
-                        Label("Choose Image…", systemImage: "photo")
+                        Label(L("Choose Image…"), systemImage: "photo")
                     }
                     if case .image = folder.icon {
-                        Text("Using a custom image")
+                        Text(L("Using a custom image"))
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
             } else {
-                Text("Folder not found")
-                Button("Close") { library.iconPickerFolderID = nil }
+                Text(L("Folder not found"))
+                Button(L("Close")) { library.iconPickerFolderID = nil }
             }
         }
         .padding(22)
@@ -1408,10 +1410,10 @@ struct WallpaperHotkeyRecorder: View {
                     library.beginRecording(target: .wallpaper(item.id))
                 }
             } label: {
-                Text(recording ? "Press shortcut…" : (item.hotkey.map { HotkeyFormat.string($0) } ?? "Set Hotkey"))
+                Text(recording ? L("Press shortcut…") : (item.hotkey.map { HotkeyFormat.string($0) } ?? L("Set Hotkey")))
                     .frame(minWidth: 96)
             }
-            .help("Press once to switch to this wallpaper, press again to return to the previous one")
+            .help(L("Press once to switch to this wallpaper, press again to return to the previous one"))
             if item.hotkey != nil && !recording {
                 Button {
                     library.clearWallpaperHotkey(item.id)
@@ -1420,7 +1422,7 @@ struct WallpaperHotkeyRecorder: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Remove hotkey")
+                .help(L("Remove hotkey"))
             }
         }
     }

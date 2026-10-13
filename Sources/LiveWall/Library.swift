@@ -102,6 +102,7 @@ final class Library: ObservableObject {
         try? FileManager.default.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: stillsDir, withIntermediateDirectories: true)
         load()
+        Lang.current = settings.language
         reloadUserIcons()
         loading = false
     }
@@ -239,7 +240,7 @@ final class Library: ObservableObject {
         p.canChooseDirectories = false
         p.allowedContentTypes = [.application]
         p.directoryURL = URL(fileURLWithPath: "/Applications")
-        p.message = "Choose apps (e.g. games) that should pause the wallpaper."
+        p.message = L("Choose apps (e.g. games) that should pause the wallpaper.")
         guard p.runModal() == .OK else { return }
         for u in p.urls {
             guard let bundle = Bundle(url: u), let id = bundle.bundleIdentifier else { continue }
@@ -259,6 +260,11 @@ final class Library: ObservableObject {
 
     private func settingsChanged(old: Settings) {
         guard !loading else { return }
+        if old.language != settings.language {
+            // язык меняем первым — дальше тексты (причины паузы, меню) берутся уже на новом
+            Lang.current = settings.language
+            (NSApp.delegate as? AppDelegate)?.setupMainMenu()
+        }
         saveSettings()
         applyControllerSettings()
         if old.hotkeys != settings.hotkeys {
@@ -302,7 +308,7 @@ final class Library: ObservableObject {
         p.canChooseDirectories = true
         p.canChooseFiles = true
         p.allowedContentTypes = [.movie, .image]
-        p.message = "Choose videos (mp4/mov/m4v), images or GIFs. Folders are scanned recursively."
+        p.message = L("Choose videos (mp4/mov/m4v), images or GIFs. Folders are scanned recursively.")
         if p.runModal() == .OK {
             importFiles(p.urls)
         }
@@ -338,7 +344,7 @@ final class Library: ObservableObject {
         let supported = files.filter { Library.kind(for: $0) != nil }
         let skipped = files.count - supported.count
         if skipped > 0 {
-            message = "\(skipped) file(s) skipped: unsupported format. Use mp4/mov/m4v, png/jpg/heic or gif."
+            message = LF("%ld file(s) skipped: unsupported format. Use mp4/mov/m4v, png/jpg/heic or gif.", skipped)
         } else {
             message = nil
         }
@@ -357,7 +363,7 @@ final class Library: ObservableObject {
                 } catch {
                     DispatchQueue.main.async {
                         self?.busyCount -= 1
-                        self?.message = "Could not copy \(src.lastPathComponent): \(error.localizedDescription)"
+                        self?.message = LF("Could not copy %@: %@", src.lastPathComponent, error.localizedDescription)
                     }
                     continue
                 }
@@ -403,7 +409,7 @@ final class Library: ObservableObject {
         if let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             addFromLink(s)
         } else {
-            message = "Clipboard has no link or file to add."
+            message = L("Clipboard has no link or file to add.")
         }
     }
 
@@ -434,7 +440,7 @@ final class Library: ObservableObject {
 
     func addFromLink(_ text: String) {
         guard let url = Library.normalizeLink(text) else {
-            message = "That doesn't look like a link."
+            message = L("That doesn't look like a link.")
             return
         }
         if url.isFileURL {
@@ -518,12 +524,12 @@ final class Library: ObservableObject {
             return
         }
         guard let file = file, error == nil else {
-            failDownload(id, error?.localizedDescription ?? "Download failed.")
+            failDownload(id, error?.localizedDescription ?? L("Download failed."))
             return
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             try? FileManager.default.removeItem(at: file)
-            failDownload(id, "The server answered \(http.statusCode).")
+            failDownload(id, LF("The server answered %ld.", http.statusCode))
             return
         }
 
@@ -535,7 +541,7 @@ final class Library: ObservableObject {
             let media = depth == 0 ? Library.findMediaURL(inHTMLAt: file, base: finalURL) : nil
             try? FileManager.default.removeItem(at: file)
             guard let mediaURL = media else {
-                failDownload(id, "No video or image file found on this page. Paste a direct link to the file.")
+                failDownload(id, L("No video or image file found on this page. Paste a direct link to the file."))
                 return
             }
             if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
@@ -549,7 +555,7 @@ final class Library: ObservableObject {
         guard let ext = Library.fileExtension(url: finalURL, mime: mime, suggested: response?.suggestedFilename) else {
             try? FileManager.default.removeItem(at: file)
             let type = mime.isEmpty ? "" : " (\(mime))"
-            failDownload(id, "Unsupported file type\(type). Use mp4/mov/m4v, png/jpg/heic/webp or gif.")
+            failDownload(id, LF("Unsupported file type%@. Use mp4/mov/m4v, png/jpg/heic/webp or gif.", type))
             return
         }
 
@@ -657,7 +663,7 @@ final class Library: ObservableObject {
             try FileManager.default.moveItem(at: file, to: dest)
         } catch {
             try? FileManager.default.removeItem(at: file)
-            message = "Could not save \(name): \(error.localizedDescription)"
+            message = LF("Could not save %@: %@", name, error.localizedDescription)
             return
         }
         let item = WallpaperItem(id: id, name: name, file: dest.lastPathComponent, kind: kind, mode: .fill)
@@ -989,7 +995,7 @@ final class Library: ObservableObject {
         }
         save()
         if let from = movedFrom {
-            message = "\(HotkeyFormat.string(binding)) was moved from “\(from)”."
+            message = LF("%@ was moved from “%@”.", HotkeyFormat.string(binding), from)
         }
     }
 
@@ -1091,12 +1097,12 @@ final class Library: ObservableObject {
     func requestUnlock(_ folderID: UUID) -> Bool {
         guard let f = folder(folderID) else { return false }
         guard f.isProtected, !unlockedFolderIDs.contains(folderID) else { return true }
-        guard let password = PasswordPrompt.ask(title: "“\(f.name)” is locked",
-                                                message: "Enter the folder password.",
-                                                button: "Unlock", confirm: false) else { return false }
+        guard let password = PasswordPrompt.ask(title: LF("“%@” is locked", f.name),
+                                                message: L("Enter the folder password."),
+                                                button: L("Unlock"), confirm: false) else { return false }
         guard let salt = f.passwordSalt, let hash = f.passwordHash,
               PasswordHasher.verify(password, saltB64: salt, hashB64: hash) else {
-            message = "Wrong password for “\(f.name)”."
+            message = LF("Wrong password for “%@”.", f.name)
             return false
         }
         unlockedFolderIDs.insert(folderID)
@@ -1111,11 +1117,11 @@ final class Library: ObservableObject {
     func setPassword(_ folderID: UUID) {
         guard let i = folders.firstIndex(where: { $0.id == folderID }) else { return }
         if folders[i].isProtected && !requestUnlock(folderID) { return }
-        let title = folders[i].isProtected ? "Change Password" : "Lock “\(folders[i].name)” with a Password"
+        let title = folders[i].isProtected ? L("Change Password") : LF("Lock “%@” with a Password", folders[i].name)
         guard let password = PasswordPrompt.ask(
             title: title,
-            message: "Wallpapers in this folder will be hidden until you enter the password. Their hotkeys keep working. There is no way to recover a forgotten password.",
-            button: "Set Password", confirm: true) else { return }
+            message: L("Wallpapers in this folder will be hidden until you enter the password. Their hotkeys keep working. There is no way to recover a forgotten password."),
+            button: L("Set Password"), confirm: true) else { return }
         let salt = PasswordHasher.makeSalt()
         folders[i].passwordSalt = salt.base64EncodedString()
         folders[i].passwordHash = PasswordHasher.hash(password, salt: salt).base64EncodedString()
@@ -1164,8 +1170,8 @@ final class Library: ObservableObject {
 
     @discardableResult
     func createFolder(moving itemIDs: [UUID] = []) -> UUID? {
-        guard let name = Library.promptForName(title: "New Folder", message: "Name the folder.",
-                                               initial: "New Folder", confirm: "Create") else { return nil }
+        guard let name = Library.promptForName(title: L("New Folder"), message: L("Name the folder."),
+                                               initial: L("New Folder"), confirm: L("Create")) else { return nil }
         let folder = WallpaperFolder(id: UUID(), name: name,
                                      icon: .symbol(name: "folder.fill", palette: folders.count % Theme.folderPalettes.count))
         folders.append(folder)
@@ -1176,8 +1182,8 @@ final class Library: ObservableObject {
 
     func renameFolder(_ id: UUID) {
         guard requestUnlock(id), let i = folders.firstIndex(where: { $0.id == id }) else { return }
-        guard let name = Library.promptForName(title: "Rename Folder", message: nil,
-                                               initial: folders[i].name, confirm: "Rename") else { return }
+        guard let name = Library.promptForName(title: L("Rename Folder"), message: nil,
+                                               initial: folders[i].name, confirm: L("Rename")) else { return }
         folders[i].name = name
         save()
     }
@@ -1186,10 +1192,10 @@ final class Library: ObservableObject {
         guard requestUnlock(id), let i = folders.firstIndex(where: { $0.id == id }) else { return }
         if folders[i].isProtected {
             let alert = NSAlert()
-            alert.messageText = "Delete “\(folders[i].name)”?"
-            alert.informativeText = "\(rawCount(in: id)) wallpaper(s) will move out of the folder and become visible to everyone."
-            alert.addButton(withTitle: "Delete Folder")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = LF("Delete “%@”?", folders[i].name)
+            alert.informativeText = LF("%ld wallpaper(s) will move out of the folder and become visible to everyone.", rawCount(in: id))
+            alert.addButton(withTitle: L("Delete Folder"))
+            alert.addButton(withTitle: L("Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         unlockedFolderIDs.remove(id)
@@ -1252,7 +1258,7 @@ final class Library: ObservableObject {
         p.allowsMultipleSelection = true
         p.canChooseDirectories = false
         p.allowedContentTypes = [.image]
-        p.message = "Choose images to add to My Icons."
+        p.message = L("Choose images to add to My Icons.")
         guard p.runModal() == .OK else { return }
         var failed = 0
         for url in p.urls {
@@ -1268,7 +1274,7 @@ final class Library: ObservableObject {
             }
         }
         reloadUserIcons()
-        if failed > 0 { message = "\(failed) image(s) could not be added to My Icons." }
+        if failed > 0 { message = LF("%ld image(s) could not be added to My Icons.", failed) }
     }
 
     func removeUserIcon(_ name: String) {
@@ -1293,7 +1299,7 @@ final class Library: ObservableObject {
             try FileManager.default.copyItem(at: userIconsDir.appendingPathComponent(name),
                                              to: iconsDir.appendingPathComponent(file))
         } catch {
-            message = "Could not set the icon: \(error.localizedDescription)"
+            message = LF("Could not set the icon: %@", error.localizedDescription)
             return
         }
         if case .image(let old) = folders[i].icon { removeIconFile(old) }
@@ -1311,8 +1317,8 @@ final class Library: ObservableObject {
 
     func createStyle() {
         let base = Theme.style
-        guard let name = Library.promptForName(title: "New Color Style", message: "Pick the colors after creating it.",
-                                               initial: "My Style", confirm: "Create") else { return }
+        guard let name = Library.promptForName(title: L("New Color Style"), message: L("Pick the colors after creating it."),
+                                               initial: L("My Style"), confirm: L("Create")) else { return }
         let style = ColorStyle(id: UUID().uuidString, name: name, primary: base.primary, secondary: base.secondary)
         settings.customStyles.append(style)
         settings.colorStyleID = style.id
@@ -1326,8 +1332,8 @@ final class Library: ObservableObject {
 
     func renameStyle(_ id: String) {
         guard let i = settings.customStyles.firstIndex(where: { $0.id == id }) else { return }
-        guard let name = Library.promptForName(title: "Rename Style", message: nil,
-                                               initial: settings.customStyles[i].name, confirm: "Rename") else { return }
+        guard let name = Library.promptForName(title: L("Rename Style"), message: nil,
+                                               initial: settings.customStyles[i].name, confirm: L("Rename")) else { return }
         settings.customStyles[i].name = name
     }
 
@@ -1342,7 +1348,7 @@ final class Library: ObservableObject {
         p.allowsMultipleSelection = true
         p.canChooseDirectories = false
         p.allowedContentTypes = [.json]
-        p.message = "Choose LiveWall color style files (.json)."
+        p.message = L("Choose LiveWall color style files (.json).")
         guard p.runModal() == .OK else { return }
         var added: [ColorStyle] = []
         for url in p.urls {
@@ -1360,7 +1366,7 @@ final class Library: ObservableObject {
             }
         }
         guard !added.isEmpty else {
-            message = "No color styles found in the selected file(s)."
+            message = L("No color styles found in the selected file(s).")
             return
         }
         settings.customStyles.append(contentsOf: added)
@@ -1378,7 +1384,7 @@ final class Library: ObservableObject {
         do {
             try enc.encode(style).write(to: url, options: .atomic)
         } catch {
-            message = "Could not export the style: \(error.localizedDescription)"
+            message = LF("Could not export the style: %@", error.localizedDescription)
         }
     }
 
@@ -1414,10 +1420,10 @@ final class Library: ObservableObject {
         p.allowsMultipleSelection = false
         p.canChooseDirectories = false
         p.allowedContentTypes = [.image]
-        p.message = "Choose an image for the folder icon."
+        p.message = L("Choose an image for the folder icon.")
         guard p.runModal() == .OK, let src = p.url else { return }
         guard let image = NSImage(contentsOf: src) else {
-            message = "Could not read \(src.lastPathComponent)."
+            message = LF("Could not read %@.", src.lastPathComponent)
             return
         }
         // уменьшаем до 512 px и сохраняем как PNG
@@ -1437,7 +1443,7 @@ final class Library: ObservableObject {
         do {
             try png.write(to: iconsDir.appendingPathComponent(file), options: .atomic)
         } catch {
-            message = "Could not save the icon: \(error.localizedDescription)"
+            message = LF("Could not save the icon: %@", error.localizedDescription)
             return
         }
         if case .image(let old) = folders[i].icon { removeIconFile(old) }
@@ -1461,8 +1467,8 @@ final class Library: ObservableObject {
 
     func renameItem(_ id: UUID) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        guard let name = Library.promptForName(title: "Rename Wallpaper", message: nil,
-                                               initial: items[i].name, confirm: "Rename") else { return }
+        guard let name = Library.promptForName(title: L("Rename Wallpaper"), message: nil,
+                                               initial: items[i].name, confirm: L("Rename")) else { return }
         items[i].name = name
         save()
     }
@@ -1472,7 +1478,7 @@ final class Library: ObservableObject {
         alert.messageText = title
         if let message = message { alert.informativeText = message }
         alert.addButton(withTitle: confirm)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Cancel"))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         field.stringValue = initial
         alert.accessoryView = field

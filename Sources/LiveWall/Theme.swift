@@ -167,9 +167,9 @@ struct CircleButton: View {
 extension MediaKind {
     var title: String {
         switch self {
-        case .video: return "Video"
-        case .image: return "Image"
-        case .gif: return "GIF"
+        case .video: return L("Video")
+        case .image: return L("Image")
+        case .gif: return L("GIF")
         }
     }
 

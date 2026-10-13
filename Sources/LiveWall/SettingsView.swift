@@ -20,65 +20,76 @@ struct SettingsTab: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker(L("Language"), selection: $library.settings.language) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.nativeName).tag(lang)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text(L("Language"))
+            }
+
             AppearanceSection(library: library)
 
             Section {
-                Toggle("Mute video", isOn: $library.settings.muted)
+                Toggle(L("Mute video"), isOn: $library.settings.muted)
                 HStack {
-                    Text("Volume")
+                    Text(L("Volume"))
                     Slider(value: $library.settings.volume, in: 0...1)
                 }
                 .disabled(library.settings.muted)
-                Picker("Speed", selection: $library.settings.speed) {
+                Picker(L("Speed"), selection: $library.settings.speed) {
                     ForEach(speeds, id: \.self) { v in
                         Text(WallpaperDetail.speedLabel(v)).tag(v)
                     }
                 }
             } header: {
-                Text("Default playback")
+                Text(L("Default playback"))
             } footer: {
-                Text("Used by wallpapers you haven't adjusted. Click a wallpaper in the library to set its own volume and speed.")
+                Text(L("Used by wallpapers you haven't adjusted. Click a wallpaper in the library to set its own volume and speed."))
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                Toggle("Another app is focused", isOn: $library.settings.pauseWhenAppFocused)
-                Toggle("Windows cover the desktop (maximized apps)", isOn: $library.settings.pauseWhenMaximized)
-                Toggle("An app is in fullscreen", isOn: $library.settings.pauseWhenFullscreen)
-                Toggle("Running on battery", isOn: $library.settings.pauseOnBattery)
-                Toggle("Low Power Mode is on", isOn: $library.settings.pauseInLowPower)
-                Toggle("Mac is running hot", isOn: $library.settings.pauseWhenHot)
+                Toggle(L("Another app is focused"), isOn: $library.settings.pauseWhenAppFocused)
+                Toggle(L("Windows cover the desktop (maximized apps)"), isOn: $library.settings.pauseWhenMaximized)
+                Toggle(L("An app is in fullscreen"), isOn: $library.settings.pauseWhenFullscreen)
+                Toggle(L("Running on battery"), isOn: $library.settings.pauseOnBattery)
+                Toggle(L("Low Power Mode is on"), isOn: $library.settings.pauseInLowPower)
+                Toggle(L("Mac is running hot"), isOn: $library.settings.pauseWhenHot)
                 HStack {
-                    Text("Status")
+                    Text(L("Status"))
                     Spacer()
                     if let reason = library.pauseReason {
-                        Label("Paused: \(reason)", systemImage: "pause.circle.fill")
+                        Label(LF("Paused: %@", reason), systemImage: "pause.circle.fill")
                             .foregroundStyle(.orange)
                     } else if library.paused {
-                        Label("Paused by you", systemImage: "pause.circle.fill")
+                        Label(L("Paused by you"), systemImage: "pause.circle.fill")
                             .foregroundStyle(.secondary)
                     } else {
-                        Label("Playing", systemImage: "play.circle.fill")
+                        Label(L("Playing"), systemImage: "play.circle.fill")
                             .foregroundStyle(.green)
                     }
                 }
             } header: {
-                Text("Pause video when…")
+                Text(L("Pause video when…"))
             } footer: {
-                Text("Video is also always paused while the display sleeps or the screen is locked.")
+                Text(L("Video is also always paused while the display sleeps or the screen is locked."))
                     .foregroundStyle(.secondary)
             }
 
             Section {
                 if library.settings.appRules.isEmpty {
-                    Text("No app rules. Add games or heavy apps here.")
+                    Text(L("No app rules. Add games or heavy apps here."))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(library.settings.appRules) { rule in
                     AppRuleRow(rule: rule, library: library)
                 }
                 HStack {
-                    Menu("Add running app") {
+                    Menu(L("Add running app")) {
                         ForEach(Library.runningRegularApps(), id: \.processIdentifier) { app in
                             Button(app.localizedName ?? (app.bundleIdentifier ?? "App")) {
                                 if let id = app.bundleIdentifier {
@@ -88,45 +99,45 @@ struct SettingsTab: View {
                         }
                     }
                     .fixedSize()
-                    Button("Choose app…") { library.chooseAppForRule() }
+                    Button(L("Choose app…")) { library.chooseAppForRule() }
                     Spacer()
                 }
             } header: {
-                Text("App rules — pause while these apps are…")
+                Text(L("App rules — pause while these apps are…"))
             }
 
             Section {
-                Toggle("Put a still frame of the desktop wallpaper on the lock screen", isOn: $library.settings.syncSystemWallpaper)
+                Toggle(L("Put a still frame of the desktop wallpaper on the lock screen"), isOn: $library.settings.syncSystemWallpaper)
                 if let lock = library.lockItem, library.lockScreenID != nil {
                     HStack {
-                        Text("Custom lock screen: \(lock.name)")
+                        Text(LF("Custom lock screen: %@", lock.name))
                             .lineLimit(1)
                         Spacer()
-                        Button("Follow desktop") { library.lockScreenFollowDesktop() }
+                        Button(L("Follow desktop")) { library.lockScreenFollowDesktop() }
                     }
                 }
             } header: {
-                Text("Lock screen")
+                Text(L("Lock screen"))
             } footer: {
-                Text("macOS does not allow live video on the lock screen, so LiveWall puts a still frame of the current wallpaper there (Wallpaper Engine on Windows does the same).")
+                Text(L("macOS does not allow live video on the lock screen, so LiveWall puts a still frame of the current wallpaper there (Wallpaper Engine on Windows does the same)."))
                     .foregroundStyle(.secondary)
             }
 
-            Section("Automatic rotation") {
-                Toggle("Change wallpaper automatically", isOn: $library.settings.autoRotate)
-                Stepper("Every \(library.settings.rotateMinutes) min",
+            Section(L("Automatic rotation")) {
+                Toggle(L("Change wallpaper automatically"), isOn: $library.settings.autoRotate)
+                Stepper(LF("Every %ld min", library.settings.rotateMinutes),
                         value: $library.settings.rotateMinutes, in: 1...720)
                     .disabled(!library.settings.autoRotate)
-                Toggle("Random order", isOn: $library.settings.shuffle)
+                Toggle(L("Random order"), isOn: $library.settings.shuffle)
                     .disabled(!library.settings.autoRotate)
             }
 
-            Section("System") {
-                Toggle("Launch at login", isOn: $library.settings.launchAtLogin)
-                Toggle("Show in Dock", isOn: $library.settings.showInDock)
+            Section(L("System")) {
+                Toggle(L("Launch at login"), isOn: $library.settings.launchAtLogin)
+                Toggle(L("Show in Dock"), isOn: $library.settings.showInDock)
             }
 
-            Section("Hotkeys") {
+            Section(L("Hotkeys")) {
                 ForEach(HotkeyAction.allCases) { action in
                     HStack {
                         Text(action.title)
@@ -134,13 +145,13 @@ struct SettingsTab: View {
                         HotkeyRecorder(action: action, library: library)
                     }
                 }
-                Text("Hotkeys for switching to a specific wallpaper are set in that wallpaper's panel — none are assigned until you set them. They also work for wallpapers in locked folders, without the password.")
+                Text(L("Hotkeys for switching to a specific wallpaper are set in that wallpaper's panel — none are assigned until you set them. They also work for wallpapers in locked folders, without the password."))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
-                    Button("Reset hotkeys to defaults") {
+                    Button(L("Reset hotkeys to defaults")) {
                         library.settings.hotkeys = Settings.defaultHotkeys
                     }
                 }
@@ -167,8 +178,8 @@ struct AppRuleRow: View {
                 .lineLimit(1)
             Spacer()
             Picker("", selection: whenBinding) {
-                Text("Running").tag(false)
-                Text("In front").tag(true)
+                Text(L("Running")).tag(false)
+                Text(L("In front")).tag(true)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -179,7 +190,7 @@ struct AppRuleRow: View {
                 Image(systemName: "minus.circle.fill")
             }
             .buttonStyle(.plain)
-            .help("Remove rule")
+            .help(L("Remove rule"))
         }
     }
 }
@@ -192,9 +203,9 @@ struct HotkeyRecorder: View {
     private var binding: HotkeyBinding? { library.settings.hotkeys[action.rawValue] }
 
     private var label: String {
-        if recording { return "Press shortcut…" }
+        if recording { return L("Press shortcut…") }
         if let b = binding { return HotkeyFormat.string(b) }
-        return "Not set"
+        return L("Not set")
     }
 
     var body: some View {
@@ -216,7 +227,7 @@ struct HotkeyRecorder: View {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.plain)
-                .help("Clear")
+                .help(L("Clear"))
             }
         }
     }
@@ -236,10 +247,10 @@ struct AppearanceSection: View {
                         StyleSwatch(style: style, selected: library.settings.colorStyleID == style.id)
                             .onTapGesture { library.selectStyle(style.id) }
                             .contextMenu {
-                                Button("Export…") { library.exportStyle(style.id) }
+                                Button(L("Export…")) { library.exportStyle(style.id) }
                                 if !style.isBuiltIn {
-                                    Button("Rename…") { library.renameStyle(style.id) }
-                                    Button("Delete", role: .destructive) { library.deleteStyle(style.id) }
+                                    Button(L("Rename…")) { library.renameStyle(style.id) }
+                                    Button(L("Delete"), role: .destructive) { library.deleteStyle(style.id) }
                                 }
                             }
                     }
@@ -255,9 +266,9 @@ struct AppearanceSection: View {
                         Text(style.name)
                             .lineLimit(1)
                         Spacer()
-                        ColorPicker("Main", selection: colorBinding(style.id, primary: true), supportsOpacity: false)
+                        ColorPicker(L("Main"), selection: colorBinding(style.id, primary: true), supportsOpacity: false)
                             .fixedSize()
-                        ColorPicker("Second", selection: colorBinding(style.id, primary: false), supportsOpacity: false)
+                        ColorPicker(L("Second"), selection: colorBinding(style.id, primary: false), supportsOpacity: false)
                             .fixedSize()
                         Button {
                             library.deleteStyle(style.id)
@@ -265,7 +276,7 @@ struct AppearanceSection: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
-                        .help("Delete style")
+                        .help(L("Delete style"))
                     }
                 }
 
@@ -273,37 +284,37 @@ struct AppearanceSection: View {
                     Button {
                         library.createStyle()
                     } label: {
-                        Label("New Style…", systemImage: "plus")
+                        Label(L("New Style…"), systemImage: "plus")
                     }
                     Button {
                         library.importStyles()
                     } label: {
-                        Label("Import…", systemImage: "square.and.arrow.down")
+                        Label(L("Import…"), systemImage: "square.and.arrow.down")
                     }
                     Button {
                         library.exportStyle(library.settings.colorStyleID)
                     } label: {
-                        Label("Export Current…", systemImage: "square.and.arrow.up")
+                        Label(L("Export Current…"), systemImage: "square.and.arrow.up")
                     }
                     Spacer()
                 }
             } header: {
-                Text("Color style")
+                Text(L("Color style"))
             } footer: {
-                Text("Styles are shared as small .json files — import ones you got from friends, or export yours.")
+                Text(L("Styles are shared as small .json files — import ones you got from friends, or export yours."))
                     .foregroundStyle(.secondary)
             }
 
             Section {
                 if library.userIcons.isEmpty {
-                    Text("No icons yet. Import PNG, JPG, HEIC or other images — they become available for every folder.")
+                    Text(L("No icons yet. Import PNG, JPG, HEIC or other images — they become available for every folder."))
                         .foregroundStyle(.secondary)
                 } else {
                     FlowLayout(spacing: 10) {
                         ForEach(library.userIcons, id: \.self) { name in
                             UserIconThumb(name: name, size: 46, library: library)
                                 .contextMenu {
-                                    Button("Remove", role: .destructive) { library.removeUserIcon(name) }
+                                    Button(L("Remove"), role: .destructive) { library.removeUserIcon(name) }
                                 }
                         }
                     }
@@ -314,17 +325,17 @@ struct AppearanceSection: View {
                     Button {
                         library.importUserIcons()
                     } label: {
-                        Label("Import Icons…", systemImage: "square.and.arrow.down")
+                        Label(L("Import Icons…"), systemImage: "square.and.arrow.down")
                     }
                     Spacer()
-                    Text("\(library.userIcons.count) icon(s) · right-click to remove")
+                    Text(LF("%ld icon(s) · right-click to remove", library.userIcons.count))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("My icons")
+                Text(L("My icons"))
             } footer: {
-                Text("Use them from a folder's icon picker (right-click a folder → Change Icon…).")
+                Text(L("Use them from a folder's icon picker (right-click a folder → Change Icon…)."))
                     .foregroundStyle(.secondary)
             }
         }
@@ -366,7 +377,7 @@ struct StyleSwatch: View {
                             .padding(4)
                     }
                 }
-            Text(style.name)
+            Text(style.isBuiltIn ? L(style.name) : style.name)
                 .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .lineLimit(1)
                 .frame(width: 72)

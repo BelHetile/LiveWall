@@ -36,46 +36,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     /// Минимальное главное меню: без меню Edit в приложении из строки меню не работают ⌘C/⌘V в полях ввода.
-    private func setupMainMenu() {
+    func setupMainMenu() {
         let main = NSMenu()
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "LiveWall")
-        appMenu.addItem(withTitle: "About LiveWall", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L("About LiveWall"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        let settingsItem = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = appMenu.addItem(withTitle: L("Settings…"), action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
-        let libraryItem = appMenu.addItem(withTitle: "Library", action: #selector(openLibrary), keyEquivalent: "l")
+        let libraryItem = appMenu.addItem(withTitle: L("Library"), action: #selector(openLibrary), keyEquivalent: "l")
         libraryItem.keyEquivalentModifierMask = [.command, .shift]
         libraryItem.target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide LiveWall", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: L("Hide LiveWall"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: L("Hide Others"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: L("Show All"), action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit LiveWall", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: L("Quit LiveWall"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
         let editItem = NSMenuItem()
-        let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        let edit = NSMenu(title: L("Edit"))
+        edit.addItem(withTitle: L("Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: L("Redo"), action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         edit.addItem(.separator())
-        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: L("Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: L("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: L("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: L("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
         main.addItem(editItem)
 
         let windowItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let windowMenu = NSMenu(title: L("Window"))
+        windowMenu.addItem(withTitle: L("Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: L("Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: L("Zoom"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
         NSApp.windowsMenu = windowMenu
@@ -146,15 +146,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(header)
         menu.addItem(.separator())
 
-        menu.addItem(menuItem("Next Wallpaper", #selector(nextWallpaper), symbol: "forward.fill"))
-        menu.addItem(menuItem("Previous Wallpaper", #selector(previousWallpaper), symbol: "backward.fill"))
-        menu.addItem(menuItem("Random Wallpaper", #selector(randomWallpaper), symbol: "shuffle"))
-        menu.addItem(menuItem(lib.paused ? "Resume Video" : "Pause Video", #selector(togglePause),
+        menu.addItem(menuItem(L("Next Wallpaper"), #selector(nextWallpaper), symbol: "forward.fill"))
+        menu.addItem(menuItem(L("Previous Wallpaper"), #selector(previousWallpaper), symbol: "backward.fill"))
+        menu.addItem(menuItem(L("Random Wallpaper"), #selector(randomWallpaper), symbol: "shuffle"))
+        menu.addItem(menuItem(lib.paused ? L("Resume Video") : L("Pause Video"), #selector(togglePause),
                               symbol: lib.paused ? "play.fill" : "pause.fill"))
 
         if !lib.items.isEmpty {
             menu.addItem(.separator())
-            let title = NSMenuItem(title: "Library", action: nil, keyEquivalent: "")
+            let title = NSMenuItem(title: L("Library"), action: nil, keyEquivalent: "")
             title.isEnabled = false
             menu.addItem(title)
             // папки — подменю
@@ -187,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         menu.addItem(.separator())
 
-        let modeParent = NSMenuItem(title: "Fill Mode", action: nil, keyEquivalent: "")
+        let modeParent = NSMenuItem(title: L("Fill Mode"), action: nil, keyEquivalent: "")
         modeParent.image = AppDelegate.symbol("rectangle.expand.vertical")
         let modeMenu = NSMenu()
         for m in FillMode.allCases {
@@ -200,13 +200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(modeParent)
 
         let isMuted = lib.current.map { lib.effectiveMuted($0) } ?? lib.settings.muted
-        menu.addItem(menuItem("Mute Video", #selector(toggleMute), state: isMuted ? .on : .off,
+        menu.addItem(menuItem(L("Mute Video"), #selector(toggleMute), state: isMuted ? .on : .off,
                               symbol: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Open LiveWall…", #selector(openLibrary), symbol: "macwindow"))
-        menu.addItem(menuItem("Settings…", #selector(openSettings), symbol: "gearshape"))
+        menu.addItem(menuItem(L("Open LiveWall…"), #selector(openLibrary), symbol: "macwindow"))
+        menu.addItem(menuItem(L("Settings…"), #selector(openSettings), symbol: "gearshape"))
         menu.addItem(.separator())
-        menu.addItem(menuItem("Quit LiveWall", #selector(quit), symbol: "power"))
+        menu.addItem(menuItem(L("Quit LiveWall"), #selector(quit), symbol: "power"))
     }
 
     private func wallpaperMenuItem(_ it: WallpaperItem, lib: Library) -> NSMenuItem {
@@ -300,7 +300,7 @@ struct MenuHeaderView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(isPrivate ? "Private wallpaper" : (library.current?.name ?? "No wallpaper"))
+                Text(isPrivate ? L("Private wallpaper") : (library.current?.name ?? L("No wallpaper")))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 HStack(spacing: 4) {
@@ -325,10 +325,10 @@ struct MenuHeaderView: View {
     }
 
     private var statusText: String {
-        guard let item = library.current else { return "Add wallpapers in LiveWall" }
-        if library.paused { return "Paused by you" }
-        if let r = library.pauseReason { return "Paused · \(r)" }
-        return item.kind == .video ? "Playing · \(item.mode.title)" : "\(item.kind.title) · \(item.mode.title)"
+        guard let item = library.current else { return L("Add wallpapers in LiveWall") }
+        if library.paused { return L("Paused by you") }
+        if let r = library.pauseReason { return LF("Paused · %@", r) }
+        return item.kind == .video ? LF("Playing · %@", item.mode.title) : "\(item.kind.title) · \(item.mode.title)"
     }
 
     private var statusColor: Color {
