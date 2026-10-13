@@ -79,7 +79,8 @@ and Intel.
 **Library**
 - Full-screen library with live previews of the **Desktop** and **Lock Screen**.
 - Click a wallpaper to open its panel: put it on the desktop or the lock screen, pause, volume, speed, fill mode,
-  folder and hotkey. Previews play on their own, and a timeline slider lets you step through a video frame by frame.
+  folder and hotkey. Previews play on their own, and a timeline slider lets you step through a video frame by frame —
+  for the desktop wallpaper it moves and pauses the wallpaper itself.
 - **Folders** with a built-in icon pack (54 icons × 8 colors) or your own images; drag wallpapers onto a folder.
 - **Locked folders**: protect a folder with a password — its wallpapers disappear from the library, the menu and
   Next/Random until you unlock it.
@@ -108,7 +109,8 @@ and Intel.
 - Lock screen: a frame of the chosen wallpaper — you pick which one (macOS doesn't allow live video there).
 - Automatic rotation by timer, in order or shuffled.
 - 8 color styles, your own styles (shareable as `.json`), English and Russian interface.
-- Launch at login, Dock icon (optional), menu bar menu.
+- Launch at login; the library opens filling the screen, in full screen or at its last size; Dock and menu bar
+  icons can be turned off.
 
 ## Hotkeys
 

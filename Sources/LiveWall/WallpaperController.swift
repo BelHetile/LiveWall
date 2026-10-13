@@ -68,17 +68,10 @@ final class WallpaperController: NSObject {
         didSet { if speed != oldValue { updatePlayback() } }
     }
 
-    var currentPlayer: AVPlayer? { player }
     /// Playback position of the wallpaper video (also while it is unloaded).
     var playbackTime: CMTime? {
         if isStopped { return stoppedTime }
         return player?.currentTime()
-    }
-    /// The player was created or unloaded, so library previews redraw.
-    var onPlayerChange: (() -> Void)?
-
-    var isPlaying: Bool {
-        player != nil && !userPaused && !autoPaused
     }
 
     // MARK: Start
@@ -266,7 +259,6 @@ final class WallpaperController: NSObject {
             p.removeAllItems()
             self.looper = nil
             self.player = nil
-            self.onPlayerChange?()
         }
     }
 
@@ -286,7 +278,6 @@ final class WallpaperController: NSObject {
                 self.present(item: self.currentItem ?? item, url: url, in: w, animated: true)
             }
             self.updatePlayback()
-            self.onPlayerChange?()
         }
         if CMTimeGetSeconds(start) > 0.05 {
             p.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { _ in

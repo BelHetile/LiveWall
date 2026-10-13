@@ -224,7 +224,6 @@ final class Library: ObservableObject {
         // the login item is tied to the app identifier, so refresh the registration
         if settings.launchAtLogin { LoginItem.set(true) }
         applyControllerSettings()
-        WallpaperController.shared.onPlayerChange = { [weak self] in self?.objectWillChange.send() }
         WallpaperController.shared.start()
 
         let monitor = PauseMonitor.shared

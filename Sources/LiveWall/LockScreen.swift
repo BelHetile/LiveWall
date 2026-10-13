@@ -117,10 +117,6 @@ enum LockScreenSync {
         if !saved.isEmpty { defaults.set(saved, forKey: originalKey) }
     }
 
-    static var hasOriginal: Bool {
-        UserDefaults.standard.dictionary(forKey: originalKey) != nil
-    }
-
     /// Restores the wallpaper set before LiveWall. false if it wasn't remembered (set before this version).
     @discardableResult
     static func restoreOriginal() -> Bool {
