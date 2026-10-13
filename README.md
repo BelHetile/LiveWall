@@ -2,65 +2,109 @@
 
 <h1 align="center">LiveWall</h1>
 
-Menu bar app for macOS 13+: videos, images and GIFs as desktop wallpaper, per-wallpaper fill modes, global hotkeys.
+<p align="center">
+  Live video wallpapers for macOS — with smart pause, hotkeys, folders and lock-screen sync.
+</p>
 
-## Download
+<p align="center">
+  <a href="https://github.com/BelHetile/LiveWall/releases/latest"><img src="https://img.shields.io/github/v/release/BelHetile/LiveWall?label=download" alt="Latest release"></a>
+  <a href="https://github.com/BelHetile/LiveWall/actions/workflows/build.yml"><img src="https://github.com/BelHetile/LiveWall/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-blue" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%26%20Intel-universal-lightgrey" alt="Universal">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+</p>
 
-Every push to `main` is built on macOS by GitHub Actions. Open the latest run in the **Actions** tab and download the
-**LiveWall-macOS** artifact, unzip it and move `LiveWall.app` to `/Applications`
-(first launch: right-click → Open, because the app is ad-hoc signed).
+<p align="center"><b>English</b> · <a href="README.ru.md">Русский</a></p>
 
-## Build from source
+---
 
-1. Install the Command Line Tools once: `xcode-select --install`
-2. In this folder run:
+LiveWall puts videos, images and GIFs on your desktop like Wallpaper Engine does on Windows. It is a small native
+Swift app: video is decoded by the Mac's hardware, playback pauses itself when you can't see the desktop, and
+everything is controlled from the library window, the menu bar or global hotkeys.
+
+## Install
+
+**One command** (recommended) — paste into Terminal:
 
 ```bash
-chmod +x build.sh
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/install.sh | bash
+```
+
+It downloads the latest release, puts LiveWall into **Applications** and starts it. Run the same command again to
+update.
+
+<details>
+<summary><b>Or install the DMG by hand</b></summary>
+
+1. Download **LiveWall.dmg** from the [latest release](https://github.com/BelHetile/LiveWall/releases/latest).
+2. Open it and drag **LiveWall** to **Applications**.
+3. The first time, macOS will say it can't verify the developer (LiveWall is free and not notarized by Apple):
+   - **macOS 15 and newer:** open LiveWall once, then go to **System Settings → Privacy & Security**, scroll down
+     and click **Open Anyway**.
+   - **macOS 13–14:** right-click LiveWall in Applications → **Open** → **Open**.
+
+</details>
+
+<details>
+<summary><b>Or build from source</b></summary>
+
+You need the Command Line Tools (`xcode-select --install`).
+
+```bash
+git clone https://github.com/BelHetile/LiveWall.git
+cd LiveWall
 ./build.sh --install
 ```
 
-This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` and launches it. Without `--install` the app stays in `build/`.
+`./build.sh` alone builds `build/LiveWall.app` without installing; `./build.sh --universal` builds for Apple Silicon
+and Intel.
 
-## Use
+</details>
 
-- LiveWall is a regular app: it shows in the Dock and opens its library when launched from Spotlight, Finder or the Dock (when it starts at login it stays quiet). It also lives in the menu bar; *Show in Dock* can be turned off in Settings. The gear in the top-right corner of the library opens Settings.
-- Add wallpapers:
-  - **Add** — pick files or folders;
-  - **Link** button (or just press **⌘V** with a link copied) — paste a direct link to a video/image, or a web page that has one (LiveWall looks for `og:video`, `<video>`/`<source>` and `og:image`);
-  - drag files, folders or links from the browser into the window.
+**Requirements:** macOS 13 Ventura or newer, Apple Silicon or Intel.
 
-  Supported: mp4 / mov / m4v (H.264, HEVC), png / jpg / heic / webp, gif. Files are stored in `~/Library/Application Support/LiveWall/`.
-- **Folders**: create folders under the "Now" row, drag wallpapers onto them (or use *Move to Folder*), rename them and give them an icon from the built-in pack (50+ icons × 8 colors) or your own image. Folders also appear as submenus in the menu bar.
-- **Rename** wallpapers and folders by double-clicking the name, from the context menu or with the pencil button.
-- **Locked folders**: right-click a folder → *Set Password…*. Its wallpapers disappear from the library, the menu bar, Next / Previous / Random and auto-rotation until you unlock it. Folders lock again when you close the window, lock the screen or the Mac goes to sleep. Passwords are stored only as a salted PBKDF2-SHA256 hash and can't be recovered. Note: this hides wallpapers inside LiveWall; the files themselves are not encrypted on disk.
-- **Per-wallpaper hotkey**: no wallpaper has a hotkey until you set one in its panel. Press it once to switch to that wallpaper, press it again to go back to the one that was on before. Each hotkey can switch the desktop, the lock screen or both (default). Hotkeys of wallpapers in locked folders work without entering the password; while such a wallpaper is on, LiveWall shows it as "Private wallpaper".
-- Click a wallpaper to open its panel: put it on the **Desktop** or the **Lock Screen**, pause, set its own volume and speed, choose the fill mode (**Fill, Fit, Stretch, Center**).
-- **Appearance** (Settings): 8 color styles (Violet, Ocean, Sunset, Forest, Rose, Gold, Neon, Graphite), your own styles with a color picker, import/export of styles as `.json`, and **My Icons** — import your own images once and use them as icons for any folder.
-- **Language**: English or Russian, switchable in Settings (defaults to the system language).
-- Settings: default playback, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
+## Features
 
-## Smart pause (like Wallpaper Engine's Performance settings)
+**Wallpapers**
+- Videos (mp4, mov, m4v — H.264/HEVC), images (png, jpg, heic, webp) and animated GIFs.
+- Add them with **Add**, by dragging files, folders or links into the window, or by pasting a link (**⌘V**).
+  Links can point straight to a file or to a web page that has one.
+- Fill modes per wallpaper: **Fill, Fit, Stretch, Center**. Volume, mute and playback speed per wallpaper.
+- Works on every display and every Space, below your desktop icons. Smooth crossfade when switching.
 
-Video pauses automatically when:
-- another app is focused (off by default),
-- windows cover ≥90% of the desktop (maximized apps),
-- an app is in fullscreen,
-- on battery (off by default), in Low Power Mode, or when the Mac is running hot,
-- an app from **App rules** is running or in front (e.g. games),
-- the display sleeps or the screen is locked (always).
+**Library**
+- Full-screen library with live previews of the **Desktop** and **Lock Screen**.
+- Click a wallpaper to open its panel: put it on the desktop or the lock screen, pause, volume, speed, fill mode,
+  folder and hotkey.
+- **Folders** with a built-in icon pack (54 icons × 8 colors) or your own images; drag wallpapers onto a folder.
+- **Locked folders**: protect a folder with a password — its wallpapers disappear from the library, the menu and
+  Next/Random until you unlock it.
+- Rename anything with a double-click.
 
-The current reason is shown in the window toolbar and in the menu bar menu.
+**Hotkeys**
+- Give any wallpaper its own hotkey: press once to switch to it, press again to go back to the previous one. A
+  hotkey can switch the desktop, the lock screen or both, and works even for wallpapers in locked folders.
+- Global hotkeys for next / previous / random, pause, fill mode, mute and opening the library.
 
-## Lock screen
+**Smart pause** (like Wallpaper Engine's performance settings) — the video pauses when:
+- an app is full screen, or windows cover the desktop;
+- another app is focused (optional);
+- the Mac runs on battery (optional), in Low Power Mode or gets hot;
+- an app from your **App rules** is running or in front (e.g. games);
+- the display sleeps or the screen is locked.
 
-macOS does not let third-party apps show live video on the lock screen. LiveWall sets a still frame of the
-current wallpaper as the system wallpaper, which the lock screen shows. It is re-applied when you switch
-wallpapers, change fill mode or switch Spaces.
+**And also**
+- Lock screen: a still frame of the chosen wallpaper (macOS doesn't allow live video there).
+- Automatic rotation by timer, in order or shuffled.
+- 8 color styles, your own styles (shareable as `.json`), English and Russian interface.
+- Launch at login, Dock icon (optional), menu bar menu.
 
-## Default hotkeys (all rebindable in Settings)
+## Hotkeys
 
-| Action | Keys |
+Wallpaper hotkeys are set in each wallpaper's panel — none are assigned until you choose one. The global ones can
+be changed or cleared in **Settings → Hotkeys**:
+
+| Action | Default |
 | --- | --- |
 | Next wallpaper | ⌃⌥⌘→ |
 | Previous wallpaper | ⌃⌥⌘← |
@@ -70,8 +114,47 @@ wallpapers, change fill mode or switch Spaces.
 | Mute / unmute | ⌃⌥⌘S |
 | Open library | ⌃⌥⌘L |
 
-## Notes
+Hotkeys don't need any permissions in System Settings.
 
-- The wallpaper is a borderless window just above the system wallpaper and below desktop icons, on every Space and every display.
-- Videos play muted by default and without keeping the screen awake.
-- Wallpaper Engine `scene.pkg` files cannot be loaded directly: render them to mp4 first.
+## Good to know
+
+- **Battery.** Hardware decoding keeps the cost low, but a full-screen video still uses some power. Smart pause
+  stops playback whenever the desktop isn't visible; turn on *Running on battery* in Settings to pause on battery.
+- **Lock screen.** macOS doesn't let apps show live video on the lock screen, so LiveWall sets a still frame there
+  (Wallpaper Engine on Windows does the same).
+- **Locked folders** hide wallpapers inside LiveWall. Passwords are stored only as a salted PBKDF2-SHA256 hash and
+  can't be recovered. The files themselves are not encrypted on disk.
+- **Wallpaper Engine.** Video wallpapers (`.mp4`) work directly. *Scene* wallpapers (`scene.pkg`) only run inside
+  Wallpaper Engine and can't be played on a Mac.
+- **Links.** Sites that don't serve a file directly (YouTube and similar) aren't supported.
+
+## Where your data lives
+
+- Wallpapers, thumbnails and icons: `~/Library/Application Support/LiveWall/`
+- Settings: `defaults read io.github.belhetile.livewall`
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/uninstall.sh | bash
+```
+
+Add ` -s -- --all` at the end to also delete your wallpapers and settings. Or just drag LiveWall from Applications
+to the Trash.
+
+## Color style files
+
+Styles are small JSON files you can share (**Settings → Color style → Export… / Import…**):
+
+```json
+{ "id": "my-style", "name": "Midnight", "primary": "#3B5BDB", "secondary": "#AE3EC9" }
+```
+
+## Contributing
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE) © 2026 BelHetile

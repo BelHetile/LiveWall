@@ -1,0 +1,91 @@
+name: Release
+
+# Push a tag like v1.0.0 to build LiveWall and publish a GitHub release.
+# Running it by hand only builds and uploads the files as a workflow artifact.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build universal app
+        env:
+          LIVEWALL_VERSION: ${{ steps.version.outputs.value }}
+        run: ./build.sh --universal
+
+      - name: Check the binary
+        run: |
+          BIN=build/LiveWall.app/Contents/MacOS/LiveWall
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "Architectures: $ARCHS"
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "Not a universal binary"; exit 1; }
+          codesign --verify --deep --strict build/LiveWall.app
+          plutil -lint build/LiveWall.app/Contents/Info.plist
+
+      - name: Package
+        run: |
+          cd build
+          ditto -c -k --keepParent LiveWall.app LiveWall-macOS.zip
+          mkdir dmg
+          cp -R LiveWall.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname LiveWall -srcfolder dmg -ov -format UDZO LiveWall.dmg
+          shasum -a 256 LiveWall-macOS.zip LiveWall.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Release notes
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[?" v "\\]?" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > build/notes.md
+          if [[ ! -s build/notes.md ]]; then echo "See CHANGELOG.md" > build/notes.md; fi
+          {
+            echo
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash'
+            echo '```'
+            echo
+            echo "Or download **LiveWall.dmg**, open it and drag LiveWall to Applications (see the README for the first-launch steps)."
+          } >> build/notes.md
+          cat build/notes.md
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
+            --title "LiveWall ${{ steps.version.outputs.value }}" \
+            --notes-file build/notes.md
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveWall-${{ steps.version.outputs.value }}
+          path: |
+            build/LiveWall-macOS.zip
+            build/LiveWall.dmg
+            build/SHA256SUMS.txt

@@ -199,7 +199,6 @@ struct Settings: Codable, Equatable {
     var language: AppLanguage = .system
 
     // хоткеи
-    var numberHotkeys = true
     var hotkeys: [String: HotkeyBinding] = Settings.defaultHotkeys
 
     init() {}
@@ -211,7 +210,7 @@ struct Settings: Codable, Equatable {
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
         case colorStyleID, customStyles
         case syncSystemWallpaper, launchAtLogin, showInDock, language
-        case numberHotkeys, hotkeys
+        case hotkeys
     }
 
     // терпимый к старым/неполным сохранениям декодер: отсутствующие ключи берутся по умолчанию
@@ -237,7 +236,6 @@ struct Settings: Codable, Equatable {
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
         showInDock = (try? c.decodeIfPresent(Bool.self, forKey: .showInDock)) ?? d.showInDock
         language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? d.language
-        numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys
         hotkeys = (try? c.decodeIfPresent([String: HotkeyBinding].self, forKey: .hotkeys)) ?? d.hotkeys
     }
 

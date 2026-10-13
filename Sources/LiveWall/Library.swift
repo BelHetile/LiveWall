@@ -128,7 +128,14 @@ final class Library: ObservableObject {
                 items[i].folderID = nil
             }
         }
-        if let data = UserDefaults.standard.data(forKey: "settings"),
+        var settingsData = UserDefaults.standard.data(forKey: "settings")
+        if settingsData == nil,
+           let old = UserDefaults(suiteName: "com.local.livewall")?.data(forKey: "settings") {
+            // перенос настроек со старого идентификатора приложения (до 1.0)
+            settingsData = old
+            UserDefaults.standard.set(old, forKey: "settings")
+        }
+        if let data = settingsData,
            let s = try? JSONDecoder().decode(Settings.self, from: data) {
             settings = s
         }
@@ -151,6 +158,8 @@ final class Library: ObservableObject {
     // MARK: Запуск
 
     func start() {
+        // объект входа привязан к идентификатору приложения — обновляем регистрацию
+        if settings.launchAtLogin { LoginItem.set(true) }
         applyControllerSettings()
         WallpaperController.shared.start()
 
