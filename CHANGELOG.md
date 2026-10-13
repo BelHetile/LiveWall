@@ -30,6 +30,8 @@ All notable changes to LiveWall are listed here. The format follows
 - Images no longer show pause and sound controls (library, menu bar).
 - GIFs pause reliably (the animation is taken off while paused, so it also costs nothing), and the library shows
   them animated with the same pause.
+- The macOS wallpaper is no longer touched while the screen is locked or right after unlocking, is updated a moment
+  after switching Spaces instead of instantly, and isn't set again when it's already the right frame.
 - The lock-screen option is now called *Show the wallpaper on the lock screen* and controls a separately chosen
   lock-screen wallpaper too.
 - The preview in the wallpaper panel has a margin and rounded corners; panel controls no longer overflow.

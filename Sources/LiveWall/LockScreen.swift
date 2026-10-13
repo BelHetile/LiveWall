@@ -71,6 +71,13 @@ enum LockScreenSync {
             opts[.fillColor] = NSColor.black
         }
         for screen in NSScreen.screens {
+            // уже стоит этот кадр — лишний раз системные обои не трогаем
+            let wantScaling = Int((opts[.imageScaling] as? UInt) ?? 0)
+            let haveScaling = (NSWorkspace.shared.desktopImageOptions(for: screen)?[.imageScaling] as? NSNumber)?.intValue
+            if NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == url.standardizedFileURL,
+               haveScaling == wantScaling {
+                continue
+            }
             do {
                 try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: opts)
             } catch {

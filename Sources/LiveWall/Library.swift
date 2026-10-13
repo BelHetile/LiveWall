@@ -239,7 +239,7 @@ final class Library: ObservableObject {
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.syncLockScreen()
+            self?.scheduleSpaceSync(after: 1.0)
         }
         syncLockScreen()
 
@@ -247,7 +247,17 @@ final class Library: ObservableObject {
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
+            self?.screenLocked = true
+            self?.spaceSyncWork?.cancel()
             self?.lockAll()
+        }
+        // пока экран заблокирован и сразу после разблокировки обои macOS не трогаем:
+        // система в этот момент сама восстанавливает рабочие столы
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.screenLocked = false
+            self?.scheduleSpaceSync(after: 4.0)
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -271,6 +281,20 @@ final class Library: ObservableObject {
         guard settings.syncSystemWallpaper else { return nil }
         if let id = lockScreenID, let item = items.first(where: { $0.id == id }) { return item }
         return current
+    }
+
+    private var screenLocked = false
+    private var spaceSyncWork: DispatchWorkItem?
+
+    /// Переприменить кадр на новом рабочем столе — с задержкой и только при разблокированном экране.
+    private func scheduleSpaceSync(after delay: TimeInterval) {
+        spaceSyncWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.screenLocked else { return }
+            self.syncLockScreen()
+        }
+        spaceSyncWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     func syncLockScreen() {
