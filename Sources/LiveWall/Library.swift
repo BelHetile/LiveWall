@@ -60,6 +60,8 @@ final class Library: ObservableObject {
     private let iconsDir: URL
     private let userIconsDir: URL
     private var previousID: UUID?
+    /// Экран блокировки до последнего нажатия хоткея (.some(nil) — «повторял рабочий стол»).
+    private var previousLockState: UUID??
     private var folderImageCache: [String: NSImage] = [:]
     private var loading = true
     private var rotateTimer: Timer?
@@ -267,6 +269,10 @@ final class Library: ObservableObject {
         }
         if old.launchAtLogin != settings.launchAtLogin {
             LoginItem.set(settings.launchAtLogin)
+        }
+        if old.showInDock != settings.showInDock {
+            NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
+            NSApp.activate(ignoringOtherApps: true)
         }
         if settings.syncSystemWallpaper && !old.syncSystemWallpaper {
             syncLockScreen()
@@ -995,7 +1001,31 @@ final class Library: ObservableObject {
     }
 
     /// Хоткей обоев: первое нажатие ставит их, повторное — возвращает те, что стояли до этого.
+    /// Работает и для обоев из закрытых папок — пароль не нужен.
     func toggleWallpaperHotkey(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        switch item.hotkeyScope ?? .both {
+        case .desktop:
+            toggleDesktop(id)
+        case .lockScreen:
+            if lockScreenID == id {
+                revertLockScreen(from: id)
+            } else {
+                applyLockScreen(id)
+            }
+        case .both:
+            // направление решает рабочий стол: стоят эти обои — возвращаем оба экрана
+            let goBack = (currentID == id)
+            toggleDesktop(id)
+            if goBack {
+                revertLockScreen(from: id)
+            } else {
+                applyLockScreen(id)
+            }
+        }
+    }
+
+    private func toggleDesktop(_ id: UUID) {
         if currentID == id {
             if let prev = previousID, prev != id, items.contains(where: { $0.id == prev }) {
                 select(prev)
@@ -1003,6 +1033,30 @@ final class Library: ObservableObject {
         } else {
             select(id)
         }
+    }
+
+    private func applyLockScreen(_ id: UUID) {
+        if lockScreenID != id { previousLockState = .some(lockScreenID) }
+        setLockScreen(id)
+    }
+
+    private func revertLockScreen(from id: UUID) {
+        guard lockScreenID == id else { return }
+        if case .some(let prev) = previousLockState,
+           prev == nil || items.contains(where: { $0.id == prev }) {
+            lockScreenID = prev
+        } else {
+            lockScreenID = nil
+        }
+        previousLockState = .some(id)
+        save()
+        syncLockScreen()
+    }
+
+    func setHotkeyScope(_ scope: HotkeyScope, for id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].hotkeyScope = scope
+        save()
     }
 
     // MARK: Папки

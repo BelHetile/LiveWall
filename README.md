@@ -24,7 +24,7 @@ This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` 
 
 ## Use
 
-- The icon sits in the menu bar (no Dock icon). **Open LiveWall…** opens the library full screen; the gear in the top-right corner opens Settings.
+- LiveWall is a regular app: it shows in the Dock and opens its library when launched from Spotlight, Finder or the Dock (when it starts at login it stays quiet). It also lives in the menu bar; *Show in Dock* can be turned off in Settings. The gear in the top-right corner of the library opens Settings.
 - Add wallpapers:
   - **Add** — pick files or folders;
   - **Link** button (or just press **⌘V** with a link copied) — paste a direct link to a video/image, or a web page that has one (LiveWall looks for `og:video`, `<video>`/`<source>` and `og:image`);
@@ -34,7 +34,7 @@ This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` 
 - **Folders**: create folders under the "Now" row, drag wallpapers onto them (or use *Move to Folder*), rename them and give them an icon from the built-in pack (50+ icons × 8 colors) or your own image. Folders also appear as submenus in the menu bar.
 - **Rename** wallpapers and folders by double-clicking the name, from the context menu or with the pencil button.
 - **Locked folders**: right-click a folder → *Set Password…*. Its wallpapers disappear from the library, the menu bar, Next / Previous / Random and auto-rotation until you unlock it. Folders lock again when you close the window, lock the screen or the Mac goes to sleep. Passwords are stored only as a salted PBKDF2-SHA256 hash and can't be recovered. Note: this hides wallpapers inside LiveWall; the files themselves are not encrypted on disk.
-- **Per-wallpaper hotkey**: no wallpaper has a hotkey until you set one in its panel. Press it once to switch to that wallpaper, press it again to go back to the one that was on before. Hotkeys of wallpapers in locked folders work without entering the password; while such a wallpaper is on, LiveWall shows it as "Private wallpaper".
+- **Per-wallpaper hotkey**: no wallpaper has a hotkey until you set one in its panel. Press it once to switch to that wallpaper, press it again to go back to the one that was on before. Each hotkey can switch the desktop, the lock screen or both (default). Hotkeys of wallpapers in locked folders work without entering the password; while such a wallpaper is on, LiveWall shows it as "Private wallpaper".
 - Click a wallpaper to open its panel: put it on the **Desktop** or the **Lock Screen**, pause, set its own volume and speed, choose the fill mode (**Fill, Fit, Stretch, Center**).
 - **Appearance** (Settings): 8 color styles (Violet, Ocean, Sunset, Forest, Rose, Gold, Neon, Graphite), your own styles with a color picker, import/export of styles as `.json`, and **My Icons** — import your own images once and use them as icons for any folder.
 - Settings: default playback, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.

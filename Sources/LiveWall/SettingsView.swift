@@ -123,6 +123,7 @@ struct SettingsTab: View {
 
             Section("System") {
                 Toggle("Launch at login", isOn: $library.settings.launchAtLogin)
+                Toggle("Show in Dock", isOn: $library.settings.showInDock)
             }
 
             Section("Hotkeys") {

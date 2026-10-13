@@ -865,6 +865,24 @@ struct WallpaperDetail: View {
                 }
             }
 
+            if item.hotkey != nil {
+                HStack {
+                    Text("Hotkey switches")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(get: { item.hotkeyScope ?? .both },
+                                                  set: { library.setHotkeyScope($0, for: item.id) })) {
+                        ForEach(HotkeyScope.allCases) { scope in
+                            Text(scope.title).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 230)
+                }
+            }
+
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "Fill mode")
                 Picker("", selection: modeBinding) {

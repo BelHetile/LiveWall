@@ -1,23 +1,35 @@
 import AppKit
 import SwiftUI
+import Carbon
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var libraryWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-        setupMainMenu()
+        // запускали как объект входа — тихо, без окна
+        let loginLaunch = AppDelegate.launchedAsLoginItem()
 
         let lib = Library.shared
+        NSApp.setActivationPolicy(lib.settings.showInDock ? .regular : .accessory)
+        setupMainMenu()
         lib.start()
         setupStatusItem()
 
-        if lib.items.isEmpty {
+        if !loginLaunch || lib.items.isEmpty {
             showLibrary()
         }
     }
 
+    private static func launchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventID == AEEventID(kAEOpenApplication),
+              let prop = event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData)) else { return false }
+        return prop.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+    }
+
+
+    /// Повторный запуск из Spotlight / Finder / клик по иконке в Доке — показываем библиотеку.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showLibrary()
         return true
@@ -29,7 +41,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "LiveWall")
-        appMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(withTitle: "About LiveWall", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let settingsItem = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        let libraryItem = appMenu.addItem(withTitle: "Library", action: #selector(openLibrary), keyEquivalent: "l")
+        libraryItem.keyEquivalentModifierMask = [.command, .shift]
+        libraryItem.target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide LiveWall", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit LiveWall", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
@@ -46,6 +70,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
         main.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        main.addItem(windowItem)
+        NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = main
     }

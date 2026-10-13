@@ -42,6 +42,22 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     // папка и свой хоткей-переключатель
     var folderID: UUID?
     var hotkey: HotkeyBinding?
+    var hotkeyScope: HotkeyScope?
+}
+
+/// Что переключает хоткей обоев.
+enum HotkeyScope: String, Codable, CaseIterable, Identifiable {
+    case desktop, lockScreen, both
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .desktop: return "Desktop"
+        case .lockScreen: return "Lock Screen"
+        case .both: return "Both"
+        }
+    }
 }
 
 // MARK: - Folders
@@ -179,6 +195,7 @@ struct Settings: Codable, Equatable {
     // система
     var syncSystemWallpaper = true
     var launchAtLogin = false
+    var showInDock = true
 
     // хоткеи
     var numberHotkeys = true
@@ -192,7 +209,7 @@ struct Settings: Codable, Equatable {
         case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
         case colorStyleID, customStyles
-        case syncSystemWallpaper, launchAtLogin
+        case syncSystemWallpaper, launchAtLogin, showInDock
         case numberHotkeys, hotkeys
     }
 
@@ -217,6 +234,7 @@ struct Settings: Codable, Equatable {
         customStyles = (try? c.decodeIfPresent([ColorStyle].self, forKey: .customStyles)) ?? d.customStyles
         syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
+        showInDock = (try? c.decodeIfPresent(Bool.self, forKey: .showInDock)) ?? d.showInDock
         numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys
         hotkeys = (try? c.decodeIfPresent([String: HotkeyBinding].self, forKey: .hotkeys)) ?? d.hotkeys
     }
