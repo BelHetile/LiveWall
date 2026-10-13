@@ -147,7 +147,9 @@ enum MediaTools {
         let process = Process()
         fileprivate var buffer = ""
         fileprivate var title: String?
-        fileprivate var file: String?
+        fileprivate var files: [String] = []
+        fileprivate var part = 0          // which of the downloads is running (0-based)
+        fileprivate var lastPercent = 0.0
         fileprivate var lastError: String?
 
         func cancel() {
@@ -155,9 +157,44 @@ enum MediaTools {
         }
     }
 
-    /// Runs yt-dlp. `progress` and `completion` are called on the main queue.
-    static func fetch(_ url: URL, into folder: URL, progress: @escaping (Double, String?) -> Void,
-                      completion: @escaping (Result<(URL, String?), Error>) -> Void) -> Job? {
+    /// A download that may take two attempts: first video + separate audio, then whatever single file there is.
+    final class Fetch {
+        fileprivate var job: Job?
+        fileprivate var cancelled = false
+
+        func cancel() {
+            cancelled = true
+            job?.cancel()
+        }
+    }
+
+    /// Downloads a video page with yt-dlp. Sites like YouTube keep high-resolution video and the sound in separate
+    /// streams; without ffmpeg yt-dlp can't join them, so both are downloaded and LiveWall joins them itself.
+    /// The result lists the downloaded files (video, and audio when it came separately).
+    static func fetchVideo(_ url: URL, into folder: URL, progress: @escaping (Double, String?) -> Void,
+                           completion: @escaping (Result<([URL], String?), Error>) -> Void) -> Fetch {
+        let fetch = Fetch()
+        func attempt(_ formats: String, parts: Int, fallback: String?) {
+            fetch.job = run(url, into: folder, formats: formats, parts: parts, progress: progress) { result in
+                if case .failure(let error) = result, !fetch.cancelled, let next = fallback,
+                   !(error is OptimizeError) {
+                    // no separate audio on this site: take the best single file
+                    try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                        .forEach { try? FileManager.default.removeItem(at: $0) }
+                    attempt(next, parts: 1, fallback: nil)
+                    return
+                }
+                completion(result)
+            }
+        }
+        attempt("bv*,ba[ext=m4a]", parts: 2, fallback: "bv*/b")
+        return fetch
+    }
+
+    /// Runs yt-dlp once. `progress` and `completion` are called on the main queue.
+    private static func run(_ url: URL, into folder: URL, formats: String, parts: Int,
+                            progress: @escaping (Double, String?) -> Void,
+                            completion: @escaping (Result<([URL], String?), Error>) -> Void) -> Job? {
         guard let exe = ytdlp else {
             completion(.failure(ToolError.failed(L("yt-dlp is not installed."))))
             return nil
@@ -167,8 +204,8 @@ enum MediaTools {
         p.executableURL = exe
         p.arguments = [
             "--no-playlist", "--newline", "--progress", "--no-part", "--no-mtime", "--no-colors",
-            "-f", "bv*/b", "-S", formatSort(),
-            "-o", folder.appendingPathComponent("%(id)s.%(ext)s").path,
+            "-f", formats, "-S", formatSort(),
+            "-o", folder.appendingPathComponent("%(id)s.f%(format_id)s.%(ext)s").path,
             "--print", "before_dl:LWTITLE %(title)s",
             "--print", "after_move:LWFILE %(filepath)s",
             "--", url.absoluteString,
@@ -189,16 +226,22 @@ enum MediaTools {
                 let line = String(job.buffer[..<nl]).trimmingCharacters(in: .whitespaces)
                 job.buffer.removeSubrange(...nl)
                 if line.hasPrefix("LWTITLE ") {
-                    job.title = String(line.dropFirst(8))
-                    progress(0, job.title)
+                    if job.title == nil {
+                        job.title = String(line.dropFirst(8))
+                        progress(0, job.title)
+                    }
                 } else if line.hasPrefix("LWFILE ") {
-                    job.file = String(line.dropFirst(7))
+                    job.files.append(String(line.dropFirst(7)))
                 } else if line.hasPrefix("ERROR:") {
                     job.lastError = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
                 } else if let re = regex,
                           let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                           let r = Range(m.range(at: 1), in: line), let v = Double(line[r]) {
-                    progress(min(1, v / 100), nil)
+                    // the percentage starting over means the next file (the sound) is downloading
+                    if v + 30 < job.lastPercent { job.part += 1 }
+                    job.lastPercent = v
+                    let done = Double(min(job.part, parts - 1))
+                    progress(min(1, (done + v / 100) / Double(parts)), nil)
                 }
             }
         }
@@ -214,11 +257,11 @@ enum MediaTools {
             let rest = String(decoding: reader.readDataToEndOfFile(), as: UTF8.self)
             DispatchQueue.main.async {
                 consume(rest, true)
+                let files = job.files.filter { FileManager.default.fileExists(atPath: $0) }
                 if proc.terminationReason == .uncaughtSignal {
                     completion(.failure(OptimizeError.cancelled))
-                } else if proc.terminationStatus == 0, let path = job.file,
-                          FileManager.default.fileExists(atPath: path) {
-                    completion(.success((URL(fileURLWithPath: path), job.title)))
+                } else if proc.terminationStatus == 0, !files.isEmpty {
+                    completion(.success((files.map { URL(fileURLWithPath: $0) }, job.title)))
                 } else {
                     let text = job.lastError ?? LF("yt-dlp stopped with code %ld.", Int(proc.terminationStatus))
                     completion(.failure(ToolError.failed(text)))

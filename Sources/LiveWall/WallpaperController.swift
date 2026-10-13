@@ -297,6 +297,27 @@ final class WallpaperController: NSObject {
         }
     }
 
+    /// Moves the wallpaper video to a time (also while it is unloaded: the shown frame is updated).
+    func seek(to time: CMTime) {
+        if isStopped {
+            guard let url = currentURL, let item = currentItem else { return }
+            stoppedTime = time
+            stopGeneration += 1
+            let generation = stopGeneration
+            Task { @MainActor [weak self] in
+                guard let image = await WallpaperController.frame(of: url, at: time) else { return }
+                guard let self = self, generation == self.stopGeneration, self.isStopped,
+                      self.currentItem?.id == item.id else { return }
+                self.stillImage = image
+                for w in self.windows.values {
+                    w.wallpaperView.showStill(image, mode: self.currentItem?.mode ?? item.mode, videoSize: self.currentVideoSize)
+                }
+            }
+        } else if let p = player {
+            p.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
     private static func frame(of url: URL, at time: CMTime) async -> CGImage? {
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         gen.appliesPreferredTrackTransform = true

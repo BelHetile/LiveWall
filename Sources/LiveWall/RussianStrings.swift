@@ -353,5 +353,13 @@ enum RussianStrings {
         "macOS doesn't let apps show live video on the lock screen. So LiveWall sets one frame of the wallpaper as the regular macOS wallpaper: you see it on the lock screen and for a moment when switching Spaces. Pick the frame in a video's panel (by default it's the first one). Turn this off to get back the macOS wallpaper you had before.": "macOS не даёт приложениям показывать живое видео на экране блокировки. Поэтому LiveWall ставит один кадр обоев обычными обоями macOS: его видно на экране блокировки и на мгновение при переключении рабочих столов. Кадр выбирается в панели видео (по умолчанию — первый). Если выключить, вернутся обои macOS, которые стояли раньше.",
         "Previous frame": "Предыдущий кадр",
         "Next frame": "Следующий кадр",
+        "Fill the screen": "На весь экран",
+        "Full screen (own Space)": "Полноэкранный режим (отдельный стол)",
+        "Remember size and position": "Запоминать размер и положение",
+        "Open the library when LiveWall starts": "Открывать библиотеку при запуске",
+        "Library window": "Окно библиотеки",
+        "Show in the menu bar": "Показывать в строке меню",
+        "With no Dock or menu bar icon, open LiveWall again from Spotlight or Applications to show the library.": "Без значков в Доке и строке меню библиотеку можно открыть, снова запустив LiveWall из Spotlight или «Программ».",
+        "When started at login, LiveWall stays in the background either way.": "При запуске вместе с системой LiveWall в любом случае остаётся в фоне.",
     ]
 }

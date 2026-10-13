@@ -37,7 +37,13 @@ struct SettingsTab: View {
                 Toggle(L("Mute video"), isOn: $library.settings.muted)
                 HStack {
                     Text(L("Volume"))
-                    Slider(value: $library.settings.volume, in: 0...1)
+                    SmoothSlider(key: "default-volume", value: library.settings.volume,
+                                 live: { v in
+                                     if let c = library.current, c.volume == nil {
+                                         WallpaperController.shared.volume = Float(v)
+                                     }
+                                 },
+                                 commit: { library.settings.volume = $0 })
                 }
                 .disabled(library.settings.muted)
                 Picker(L("Speed"), selection: $library.settings.speed) {
@@ -200,9 +206,26 @@ struct SettingsTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section(L("System")) {
+            Section {
                 Toggle(L("Launch at login"), isOn: $library.settings.launchAtLogin)
+                Toggle(L("Open the library when LiveWall starts"), isOn: $library.settings.openLibraryAtLaunch)
+                Picker(L("Library window"), selection: $library.settings.libraryWindowMode) {
+                    ForEach(LibraryWindowMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
                 Toggle(L("Show in Dock"), isOn: $library.settings.showInDock)
+                Toggle(L("Show in the menu bar"), isOn: $library.settings.showInMenuBar)
+            } header: {
+                Text(L("System"))
+            } footer: {
+                if !library.settings.showInDock && !library.settings.showInMenuBar {
+                    Text(L("With no Dock or menu bar icon, open LiveWall again from Spotlight or Applications to show the library."))
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(L("When started at login, LiveWall stays in the background either way."))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section(L("Hotkeys")) {

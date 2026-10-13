@@ -696,3 +696,42 @@ private struct BitReader {
         return v
     }
 }
+
+// MARK: - Joining a separate sound track
+
+enum VideoMuxer {
+    /// Writes `video` with the sound from `audio` into `dest` (.mov) without re-encoding.
+    static func addAudio(video: URL, audio: URL, dest: URL) async throws {
+        let videoAsset = AVURLAsset(url: video)
+        let audioAsset = AVURLAsset(url: audio)
+        guard let videoTrack = try await videoAsset.loadTracks(withMediaType: .video).first,
+              let audioTrack = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+            throw ConvertError.badFile
+        }
+        let videoDuration = try await videoAsset.load(.duration)
+        let audioDuration = try await audioAsset.load(.duration)
+        let composition = AVMutableComposition()
+        guard let v = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+              let a = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw ConvertError.encoder
+        }
+        try v.insertTimeRange(CMTimeRange(start: .zero, duration: videoDuration), of: videoTrack, at: .zero)
+        v.preferredTransform = try await videoTrack.load(.preferredTransform)
+        try a.insertTimeRange(CMTimeRange(start: .zero, duration: CMTimeMinimum(videoDuration, audioDuration)),
+                              of: audioTrack, at: .zero)
+
+        try? FileManager.default.removeItem(at: dest)
+        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            throw ConvertError.encoder
+        }
+        export.outputURL = dest
+        export.outputFileType = .mov
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            export.exportAsynchronously { c.resume() }
+        }
+        guard export.status == .completed else {
+            try? FileManager.default.removeItem(at: dest)
+            throw ConvertError.encoder
+        }
+    }
+}

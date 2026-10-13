@@ -667,11 +667,6 @@ struct WallpaperDetail: View {
     private var isDesktop: Bool { library.currentID == item.id }
     private var isLock: Bool { library.lockItem?.id == item.id }
 
-    private var volumeBinding: Binding<Double> {
-        Binding(get: { library.effectiveVolume(item) },
-                set: { library.setVolume($0, for: item.id) })
-    }
-
     private var speedBinding: Binding<Double> {
         Binding(get: { library.effectiveSpeed(item) },
                 set: { library.setSpeed($0, for: item.id) })
@@ -715,45 +710,12 @@ struct WallpaperDetail: View {
         VStack(spacing: 12) {
             stage
             if item.kind == .video {
-                frameScrubber
+                FrameScrubber(library: library, clock: library.clock)
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: item.id) { await library.loadThumbnail(for: item) }
-    }
-
-    /// A timeline slider and frame stepping to land on a specific frame.
-    private var frameScrubber: some View {
-        HStack(spacing: 10) {
-            Button {
-                library.stepPreview(-1)
-            } label: {
-                Image(systemName: "backward.frame.fill")
-            }
-            .buttonStyle(.borderless)
-            .help(L("Previous frame"))
-            Slider(value: Binding(get: { library.previewTime },
-                                  set: { library.scrubPreview(to: $0, editing: true) }),
-                   in: 0...max(library.previewDuration, 0.01),
-                   onEditingChanged: { editing in
-                       if !editing { library.scrubPreview(to: library.previewTime, editing: false) }
-                   })
-            .disabled(library.previewDuration <= 0)
-            Button {
-                library.stepPreview(1)
-            } label: {
-                Image(systemName: "forward.frame.fill")
-            }
-            .buttonStyle(.borderless)
-            .help(L("Next frame"))
-            Text("\(WallpaperDetail.timeLabel(library.previewTime)) / \(WallpaperDetail.timeLabel(library.previewDuration))")
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .fixedSize()
-        }
-        .padding(.horizontal, 4)
     }
 
     private var stage: some View {
@@ -935,9 +897,15 @@ struct WallpaperDetail: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(muted ? L("Unmute") : L("Mute"))
-                                Slider(value: volumeBinding, in: 0...1)
+                                SmoothSlider(key: "volume-\(item.id)", value: library.effectiveVolume(item),
+                                             live: { v in
+                                                 if isDesktop {
+                                                     WallpaperController.shared.volume = Float(v)
+                                                 }
+                                             },
+                                             commit: { library.setVolume($0, for: item.id) })
                                     .disabled(muted)
-                                Text(muted ? L("Muted") : "\(Int((library.effectiveVolume(item) * 100).rounded()))%")
+                                VolumeLabel(key: "volume-\(item.id)", value: library.effectiveVolume(item), muted: muted)
                                     .font(.system(size: 11, weight: .medium))
                                     .monospacedDigit()
                                     .foregroundStyle(.secondary)
@@ -1046,6 +1014,58 @@ struct WallpaperDetail: View {
     static func speedLabel(_ v: Double) -> String {
         let s = v == v.rounded() ? "\(Int(v))" : "\(v)"
         return s + "×"
+    }
+}
+
+/// Volume percentage that follows the slider while it is dragged.
+struct VolumeLabel: View {
+    let key: String
+    let value: Double
+    let muted: Bool
+    @ObservedObject var draft = SliderDraft.shared
+
+    var body: some View {
+        let v = draft.key == key ? draft.value : value
+        Text(muted ? L("Muted") : "\(Int((v * 100).rounded()))%")
+    }
+}
+
+/// A timeline slider and frame stepping to land on a specific frame. It observes only the preview clock,
+/// so the rest of the panel doesn't redraw twenty times a second.
+struct FrameScrubber: View {
+    let library: Library
+    @ObservedObject var clock: PreviewClock
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                library.stepPreview(-1)
+            } label: {
+                Image(systemName: "backward.frame.fill")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Previous frame"))
+            Slider(value: Binding(get: { clock.time },
+                                  set: { library.scrubPreview(to: $0, editing: true) }),
+                   in: 0...max(clock.duration, 0.01),
+                   onEditingChanged: { editing in
+                       if !editing { library.scrubPreview(to: clock.time, editing: false) }
+                   })
+            .disabled(clock.duration <= 0)
+            Button {
+                library.stepPreview(1)
+            } label: {
+                Image(systemName: "forward.frame.fill")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Next frame"))
+            Text("\(WallpaperDetail.timeLabel(clock.time)) / \(WallpaperDetail.timeLabel(clock.duration))")
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 4)
     }
 }
 

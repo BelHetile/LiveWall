@@ -19,6 +19,12 @@ enum LoginItem {
     }
 }
 
+/// Time and length of the panel preview, observed only by the timeline slider.
+final class PreviewClock: ObservableObject {
+    @Published var time: Double = 0
+    @Published var duration: Double = 0
+}
+
 /// The wallpaper library, settings and all switching logic.
 final class Library: ObservableObject {
     static let shared = Library()
@@ -50,9 +56,9 @@ final class Library: ObservableObject {
     @Published private(set) var previewPlayer: AVQueuePlayer?
     /// The panel preview is paused (for the desktop wallpaper it follows the wallpaper's pause).
     @Published private(set) var previewPaused = false
-    /// Position and length of the panel preview video (for the frame slider).
-    @Published private(set) var previewTime: Double = 0
-    @Published private(set) var previewDuration: Double = 0
+    /// Position and length of the panel preview video live in their own object: they change many times a second,
+    /// and only the timeline slider should redraw for that.
+    let clock = PreviewClock()
     /// A separate muted preview for the Desktop tile: the wallpaper under the library window is paused.
     @Published private(set) var tilePlayer: AVQueuePlayer?
     @Published private(set) var linkDownloads: [LinkDownload] = []
@@ -94,7 +100,7 @@ final class Library: ObservableObject {
     private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
     private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
     private var conversionTokens: [UUID: CancelToken] = [:]
-    private var toolJobs: [UUID: MediaTools.Job] = [:]
+    private var toolJobs: [UUID: MediaTools.Fetch] = [:]
     private var downloadPages: [UUID: URL] = [:]
     private var installingTools = false
     private var optimizeQueue: [(id: UUID, manual: Bool)] = []
@@ -369,6 +375,12 @@ final class Library: ObservableObject {
         if old.launchAtLogin != settings.launchAtLogin {
             LoginItem.set(settings.launchAtLogin)
         }
+        if old.showInMenuBar != settings.showInMenuBar {
+            (NSApp.delegate as? AppDelegate)?.updateStatusItem()
+        }
+        if old.libraryWindowMode != settings.libraryWindowMode {
+            (NSApp.delegate as? AppDelegate)?.applyWindowMode()
+        }
         if old.showInDock != settings.showInDock {
             NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
             NSApp.activate(ignoringOtherApps: true)
@@ -490,17 +502,29 @@ final class Library: ObservableObject {
 
     /// A video macOS can play goes into the library as is; anything else (WebM, MKV, VP9…) is converted.
     /// `row` is the download row that shows the progress (for links).
-    func ingestVideo(_ src: URL, name: String, move: Bool, row: UUID? = nil) {
+    func ingestVideo(_ src: URL, name: String, move: Bool, row: UUID? = nil, audio: URL? = nil) {
         busyCount += 1
+        let incoming = incomingDir
         Task { @MainActor [weak self] in
             let native = await VideoConverter.canPlayNatively(src)
+            var source = src
+            var moveSource = move
+            if native, let audio = audio {
+                // join the separate sound track to the video
+                let joined = incoming.appendingPathComponent("\(UUID().uuidString).mov")
+                if (try? await VideoMuxer.addAudio(video: src, audio: audio, dest: joined)) != nil {
+                    if move { try? FileManager.default.removeItem(at: src) }
+                    source = joined
+                    moveSource = true
+                }
+            }
             guard let self = self else { return }
             self.busyCount -= 1
             if native {
-                self.storeVideo(src, name: name, move: move)
+                self.storeVideo(source, name: name, move: moveSource)
                 if let row = row { self.removeDownload(row) }
             } else {
-                self.convertVideo(src, name: name, move: move, row: row)
+                self.convertVideo(src, name: name, move: move, row: row, audio: audio)
             }
         }
     }
@@ -527,7 +551,7 @@ final class Library: ObservableObject {
         if settings.optimizeOnImport { optimize(id, manual: false) }
     }
 
-    private func convertVideo(_ src: URL, name: String, move: Bool, row: UUID?) {
+    private func convertVideo(_ src: URL, name: String, move: Bool, row: UUID?, audio: URL? = nil) {
         let rowID = row ?? UUID()
         let title = LF("Converting %@", name)
         if let i = linkDownloads.firstIndex(where: { $0.id == rowID }) {
@@ -552,6 +576,14 @@ final class Library: ObservableObject {
                     guard v - last >= 0.01 || v >= 1 else { return }
                     last = v
                     DispatchQueue.main.async { self.setDownloadProgress(rowID, v) }
+                }
+                if let audio = audio {
+                    // the converter writes video only: add the separate sound back
+                    let joined = dest.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).mov")
+                    if (try? await VideoMuxer.addAudio(video: dest, audio: audio, dest: joined)) != nil {
+                        _ = try? FileManager.default.replaceItemAt(dest, withItemAt: joined)
+                    }
+                    try? FileManager.default.removeItem(at: joined)
                 }
             } catch {
                 failure = error
@@ -604,7 +636,7 @@ final class Library: ObservableObject {
         }
         let folder = incomingDir.appendingPathComponent(id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let job = MediaTools.fetch(page, into: folder, progress: { [weak self] value, title in
+        let job = MediaTools.fetchVideo(page, into: folder, progress: { [weak self] value, title in
             guard let self = self, let i = self.linkDownloads.firstIndex(where: { $0.id == id }) else { return }
             if let t = title { self.linkDownloads[i].title = t }
             self.setDownloadProgress(id, value)
@@ -612,16 +644,20 @@ final class Library: ObservableObject {
             guard let self = self else { return }
             self.toolJobs[id] = nil
             switch result {
-            case .success(let (file, title)):
-                guard self.linkDownloads.contains(where: { $0.id == id }) else {
+            case .success(let (files, title)):
+                guard self.linkDownloads.contains(where: { $0.id == id }),
+                      let file = files.first(where: { Library.kind(for: $0) != nil }) else {
                     try? FileManager.default.removeItem(at: folder)
+                    self.failDownload(id, L("The site returned a file LiveWall can't use."))
                     return
                 }
+                // sound that came as a separate file (YouTube and similar)
+                let audio = files.first(where: { $0 != file && Library.kind(for: $0) == nil })
                 let name = title ?? file.deletingPathExtension().lastPathComponent
                 let kind = Library.kind(for: file)
                 if kind == .video {
                     // the folder is removed after the file is moved
-                    self.ingestVideo(file, name: name, move: true, row: id)
+                    self.ingestVideo(file, name: name, move: true, row: id, audio: audio)
                 } else if kind != nil {
                     self.addDownloadedFile(file, name: name, ext: file.pathExtension.lowercased())
                     self.removeDownload(id)
@@ -638,7 +674,7 @@ final class Library: ObservableObject {
                 }
             }
         })
-        if let job = job { toolJobs[id] = job }
+        toolJobs[id] = job
     }
 
     /// Downloads or updates yt-dlp and Deno. `row` is the download row for progress (if any).
@@ -1219,7 +1255,15 @@ final class Library: ObservableObject {
     // MARK: Desktop / lock screen
 
     func setDesktop(_ id: UUID) {
+        // a frame picked in the paused preview goes to the desktop as is: paused on that frame
+        let picked = (detailID == id && previewPaused) ? previewPlayer?.currentTime() : nil
         select(id)
+        if let t = picked, items.first(where: { $0.id == id })?.kind == .video {
+            paused = true
+            WallpaperController.shared.userPaused = true
+            WallpaperController.shared.seek(to: t)
+            updateTilePlayback(sync: false)
+        }
     }
 
     func setLockScreen(_ id: UUID) {
@@ -1320,19 +1364,19 @@ final class Library: ObservableObject {
             let (p, looper) = makeLoopPlayer(item)
             previewLooper = looper
             previewPlayer = p
-            previewTime = 0
-            previewDuration = 0
+            clock.time = 0
+            clock.duration = 0
             previewTimeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20),
                                                             queue: .main) { [weak self] time in
                 guard let self = self, !self.previewScrubbing else { return }
                 let t = CMTimeGetSeconds(time)
-                if t.isFinite && abs(t - self.previewTime) > 0.01 { self.previewTime = t }
+                if t.isFinite && abs(t - self.clock.time) > 0.01 { self.clock.time = t }
             }
             let src = url(for: item)
             Task { @MainActor [weak self] in
                 let d = (try? await AVURLAsset(url: src).load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
                 guard let self = self, self.detailID == id, d.isFinite else { return }
-                self.previewDuration = d
+                self.clock.duration = d
             }
             applyPreviewState(sync: true)
         }
@@ -1452,27 +1496,44 @@ final class Library: ObservableObject {
 
     // MARK: Choosing a frame in the preview
 
-    /// Scrubs the preview with the slider. The preview pauses (the wallpaper keeps playing).
+    /// Scrubs the preview with the slider. The preview pauses; for the desktop wallpaper the wallpaper pauses on the
+    /// same frame too, so what you pick is what stays on the desktop.
     func scrubPreview(to t: Double, editing: Bool) {
         guard let p = previewPlayer else { return }
         previewScrubbing = editing
-        if !previewPaused {
-            previewPaused = true
-            p.pause()
-        }
-        let clamped = max(0, min(t, max(0, previewDuration - 0.001)))
-        previewTime = clamped
-        p.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        pausePreviewForPicking()
+        let clamped = max(0, min(t, max(0, clock.duration - 0.001)))
+        clock.time = clamped
+        let time = CMTime(seconds: clamped, preferredTimescale: 600)
+        p.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        if detailID == currentID { WallpaperController.shared.seek(to: time) }
     }
 
-    /// One frame forward / back.
+    /// One frame forward / back (the desktop wallpaper follows, as with the slider).
     func stepPreview(_ frames: Int) {
         guard let p = previewPlayer else { return }
+        pausePreviewForPicking()
+        p.currentItem?.step(byCount: frames)
+        if detailID == currentID {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self = self, self.detailID == self.currentID, let p = self.previewPlayer else { return }
+                WallpaperController.shared.seek(to: p.currentTime())
+            }
+        }
+    }
+
+    private func pausePreviewForPicking() {
+        if detailID != nil && detailID == currentID {
+            if !paused {
+                paused = true
+                WallpaperController.shared.userPaused = true
+                updateTilePlayback(sync: false)
+            }
+        }
         if !previewPaused {
             previewPaused = true
-            p.pause()
+            previewPlayer?.pause()
         }
-        p.currentItem?.step(byCount: frames)
     }
 
     /// Wallpapers used by Next / Previous / Random / rotation: without locked folders.

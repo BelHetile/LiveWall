@@ -71,6 +71,51 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 }
 
+/// The value of the slider being dragged right now. While dragging, only the sliders redraw; the library gets
+/// the value once the drag ends, so a heavy interface can't make the knob jump back.
+final class SliderDraft: ObservableObject {
+    static let shared = SliderDraft()
+    @Published var key: String?
+    @Published var value: Double = 0
+    var pending: DispatchWorkItem?
+}
+
+struct SmoothSlider: View {
+    let key: String
+    let value: Double
+    var range: ClosedRange<Double> = 0...1
+    var live: (Double) -> Void = { _ in }
+    let commit: (Double) -> Void
+    @ObservedObject var draft = SliderDraft.shared
+
+    var body: some View {
+        Slider(value: Binding(get: { draft.key == key ? draft.value : value },
+                              set: { v in
+                                  if draft.key != key { draft.key = key }
+                                  draft.value = v
+                                  live(v)
+                                  // keyboard changes have no "editing ended": commit after a short pause
+                                  draft.pending?.cancel()
+                                  let work = DispatchWorkItem { finish() }
+                                  draft.pending = work
+                                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+                              }),
+               in: range,
+               onEditingChanged: { editing in
+                   if !editing { finish() }
+               })
+    }
+
+    private func finish() {
+        guard draft.key == key else { return }
+        draft.pending?.cancel()
+        draft.pending = nil
+        let v = draft.value
+        draft.key = nil
+        commit(v)
+    }
+}
+
 /// An animated GIF preview in the library (the same layer as on the desktop).
 struct GIFPreview: NSViewRepresentable {
     let url: URL

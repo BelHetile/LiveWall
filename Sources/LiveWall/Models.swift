@@ -49,6 +49,21 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var stillTime: Double?
 }
 
+/// How the library window opens.
+enum LibraryWindowMode: String, Codable, CaseIterable, Identifiable {
+    case maximized, fullScreen, remember
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .maximized: return L("Fill the screen")
+        case .fullScreen: return L("Full screen (own Space)")
+        case .remember: return L("Remember size and position")
+        }
+    }
+}
+
 /// What a wallpaper hotkey switches.
 enum HotkeyScope: String, Codable, CaseIterable, Identifiable {
     case desktop, lockScreen, both
@@ -205,6 +220,9 @@ struct Settings: Codable, Equatable {
     var syncSystemWallpaper = true
     var launchAtLogin = false
     var showInDock = true
+    var showInMenuBar = true
+    var openLibraryAtLaunch = true
+    var libraryWindowMode: LibraryWindowMode = .maximized
     var language: AppLanguage = .system
 
     // hotkeys
@@ -220,6 +238,7 @@ struct Settings: Codable, Equatable {
         case optimizeOnImport, optimizeFpsLimit, stopAfterSeconds
         case colorStyleID, customStyles
         case syncSystemWallpaper, launchAtLogin, showInDock, language
+        case showInMenuBar, openLibraryAtLaunch, libraryWindowMode
         case hotkeys
     }
 
@@ -249,6 +268,9 @@ struct Settings: Codable, Equatable {
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
         showInDock = (try? c.decodeIfPresent(Bool.self, forKey: .showInDock)) ?? d.showInDock
         language = (try? c.decodeIfPresent(AppLanguage.self, forKey: .language)) ?? d.language
+        showInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showInMenuBar)) ?? d.showInMenuBar
+        openLibraryAtLaunch = (try? c.decodeIfPresent(Bool.self, forKey: .openLibraryAtLaunch)) ?? d.openLibraryAtLaunch
+        libraryWindowMode = (try? c.decodeIfPresent(LibraryWindowMode.self, forKey: .libraryWindowMode)) ?? d.libraryWindowMode
         hotkeys = (try? c.decodeIfPresent([String: HotkeyBinding].self, forKey: .hotkeys)) ?? d.hotkeys
     }
 

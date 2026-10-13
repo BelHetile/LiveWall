@@ -14,10 +14,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSApp.setActivationPolicy(lib.settings.showInDock ? .regular : .accessory)
         setupMainMenu()
         lib.start()
-        setupStatusItem()
+        updateStatusItem()
+        observeLockAndSpaces()
 
-        if !loginLaunch || lib.items.isEmpty {
+        if (!loginLaunch && lib.settings.openLibraryAtLaunch) || lib.items.isEmpty {
             showLibrary()
+        }
+    }
+
+    // MARK: Lock screen and Spaces
+
+    private var hiddenForLock = false
+    private var resignedActiveAt = Date.distantPast
+
+    private func observeLockAndSpaces() {
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.resignedActiveAt = Date()
+        }
+        // If LiveWall is in front when the screen locks, macOS brings it back after unlocking and may switch to
+        // another Space on the way. Hide it for the lock instead, and show the window again without activating.
+        let dnc = DistributedNotificationCenter.default()
+        dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
+            let wasActive = NSApp.isActive || Date().timeIntervalSince(self.resignedActiveAt) < 2
+            if wasActive, self.libraryWindow?.isVisible == true, !NSApp.isHidden {
+                self.hiddenForLock = true
+                NSApp.hide(nil)
+            }
+        }
+        dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, self.hiddenForLock else { return }
+            self.hiddenForLock = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NSApp.unhideWithoutActivation()
+            }
+        }
+        // The wallpaper windows are on every Space, so LiveWall stays the active app after switching to a Space
+        // without its library window. Hand the focus to the app in front on that Space, like macOS does.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.handOffFocusIfNeeded() }
+        }
+    }
+
+    private func handOffFocusIfNeeded() {
+        guard NSApp.isActive else { return }
+        let ours = NSApp.windows.contains { w in
+            w.isVisible && w.isOnActiveSpace && !(w is DesktopWindow) && w.level == .normal && w.canBecomeKey
+        }
+        guard !ours else { return }
+        let me = getpid()
+        var target: NSRunningApplication?
+        if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] {
+            for info in list {
+                guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                      let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                      let alpha = info[kCGWindowAlpha as String] as? Double, alpha > 0,
+                      let app = NSRunningApplication(processIdentifier: pid),
+                      app.activationPolicy == .regular else { continue }
+                target = app
+                break
+            }
+        }
+        let app = target ?? NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first
+        guard let next = app else { return }
+        if #available(macOS 14.0, *) {
+            NSApp.yieldActivation(to: next)
+            next.activate()
+        } else {
+            next.activate(options: [])
         }
     }
 
@@ -99,20 +166,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.collectionBehavior.insert(.fullScreenPrimary)
-            // the library opens full screen (the visible area without the Dock and menu bar)
-            if let screen = NSScreen.main ?? NSScreen.screens.first {
-                w.setFrame(screen.visibleFrame, display: true)
-            } else {
-                w.center()
+            let mode = Library.shared.settings.libraryWindowMode
+            let restored = mode == .remember && w.setFrameUsingName(AppDelegate.frameName)
+            if !restored {
+                // fill the visible area of the screen (without the Dock and menu bar)
+                if let screen = NSScreen.main ?? NSScreen.screens.first {
+                    w.setFrame(screen.visibleFrame, display: true)
+                } else {
+                    w.center()
+                }
             }
             libraryWindow = w
         }
+        let wasVisible = libraryWindow?.isVisible == true
+        applyWindowMode()
         // the interface is created on open and released when the window closes
         if let w = libraryWindow, !(w.contentView is NSHostingView<LibraryView>) {
             w.contentView = NSHostingView(rootView: LibraryView())
         }
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
+        if !wasVisible, Library.shared.settings.libraryWindowMode == .fullScreen,
+           let w = libraryWindow, !w.styleMask.contains(.fullScreen) {
+            DispatchQueue.main.async { w.toggleFullScreen(nil) }
+        }
+    }
+
+    private static let frameName = "LiveWallLibrary"
+
+    /// Remembering the frame only in the "remember" mode.
+    func applyWindowMode() {
+        guard let w = libraryWindow else { return }
+        if Library.shared.settings.libraryWindowMode == .remember {
+            w.setFrameAutosaveName(AppDelegate.frameName)
+        } else {
+            w.setFrameAutosaveName("")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -145,6 +234,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     // MARK: Menu bar
+
+    /// Shows or removes the menu bar icon according to the settings.
+    func updateStatusItem() {
+        if Library.shared.settings.showInMenuBar {
+            if statusItem == nil { setupStatusItem() }
+        } else if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)

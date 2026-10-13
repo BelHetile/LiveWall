@@ -5,6 +5,20 @@ All notable changes to LiveWall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Settings → System: open the library at launch or not, open it filling the screen, in full screen (its own Space)
+  or at the last size and position, and hide the menu bar icon.
+- Scrubbing or stepping the preview of the desktop wallpaper moves and pauses the wallpaper too, so the frame you
+  pick is the one that stays on the desktop. Putting a paused preview on the desktop keeps that frame.
+
+### Fixed
+- Videos from YouTube and similar sites now have sound: the separate audio stream is downloaded and joined.
+- Locking the Mac while LiveWall was in front could switch to another Space after unlocking.
+- Switching Spaces while LiveWall was in front could leave the menu bar empty; the focus now goes to the app in
+  front on the new Space.
+- Volume sliders no longer jump while dragging, and the panel no longer redraws many times a second while a
+  preview plays.
+
 ## [1.1.0] - 2026-10-13
 
 ### Added
