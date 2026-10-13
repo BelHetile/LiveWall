@@ -5,13 +5,25 @@ import AVFoundation
 // MARK: - Palette
 
 enum Theme {
-    static let violet = Color(red: 0.49, green: 0.30, blue: 0.98)
-    static let magenta = Color(red: 0.93, green: 0.33, blue: 0.62)
+    /// Текущий цветовой стиль (встроенный или свой).
+    static var style: ColorStyle {
+        let s = Library.shared.settings
+        return (ColorStyle.builtIns + s.customStyles).first(where: { $0.id == s.colorStyleID }) ?? ColorStyle.builtIns[0]
+    }
+
+    // имена исторические: «violet» — основной цвет стиля, «magenta» — второй
+    static var violet: Color { Color(hex: style.primary) }
+    static var magenta: Color { Color(hex: style.secondary) }
     static let sunset = Color(red: 1.00, green: 0.66, blue: 0.47)
 
-    static let accentGradient = LinearGradient(colors: [violet, magenta],
+    static func gradient(for style: ColorStyle) -> LinearGradient {
+        LinearGradient(colors: [Color(hex: style.primary), Color(hex: style.secondary)],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    static var accentGradient: LinearGradient { LinearGradient(colors: [violet, magenta],
                                                startPoint: .topLeading,
-                                               endPoint: .bottomTrailing)
+                                               endPoint: .bottomTrailing) }
 
     static let heroScrim = LinearGradient(colors: [.clear, .black.opacity(0.25), .black.opacity(0.78)],
                                           startPoint: .top,
@@ -35,7 +47,7 @@ enum Theme {
     }
 
     static let cardRadius: CGFloat = 12
-    static let heroRadius: CGFloat = 18
+    static let heroRadius: CGFloat = 26
 }
 
 // MARK: - AppKit bridges
@@ -127,6 +139,7 @@ struct Chip: View {
 }
 
 struct CircleButton: View {
+    @ObservedObject var themeSource = Library.shared
     let systemImage: String
     var size: CGFloat = 30
     var prominent = false
@@ -211,5 +224,33 @@ struct FolderIconView: View {
             }
         }
         .frame(width: size, height: size)
+    }
+}
+
+// MARK: - Hex colors
+
+extension Color {
+    init(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        var value: UInt64 = 0
+        Scanner(string: s).scanHexInt64(&value)
+        let r, g, b: Double
+        if s.count == 6 {
+            r = Double((value >> 16) & 0xFF) / 255
+            g = Double((value >> 8) & 0xFF) / 255
+            b = Double(value & 0xFF) / 255
+        } else {
+            r = 0.5; g = 0.5; b = 0.5
+        }
+        self.init(red: r, green: g, blue: b)
+    }
+
+    var hexString: String {
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? NSColor.gray
+        let r = Int((ns.redComponent * 255).rounded())
+        let g = Int((ns.greenComponent * 255).rounded())
+        let b = Int((ns.blueComponent * 255).rounded())
+        return String(format: "#%02X%02X%02X", max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
     }
 }

@@ -15,7 +15,7 @@ struct LibraryView: View {
 
     var body: some View {
         ZStack {
-            LibraryBackground()
+            LibraryBackground(library: library)
 
             VStack(spacing: 0) {
                 TopBar(library: library)
@@ -53,9 +53,18 @@ struct LibraryView: View {
 }
 
 struct LibraryBackground: View {
+    @ObservedObject var library: Library
+
     var body: some View {
+        let s = library.settings
         ZStack {
-            VisualEffectBackground(material: .underWindowBackground)
+            if s.windowBlur {
+                VisualEffectBackground(material: .underWindowBackground)
+                    .opacity(s.blurAmount)
+            }
+            // плотность фона: чем выше прозрачность, тем сильнее виден рабочий стол
+            Color(nsColor: .windowBackgroundColor)
+                .opacity(1 - s.windowTransparency)
             LinearGradient(colors: [Theme.violet.opacity(0.16), .clear],
                            startPoint: .topLeading, endPoint: .center)
             RadialGradient(colors: [Theme.magenta.opacity(0.12), .clear],
@@ -320,13 +329,13 @@ struct NowSection: View {
     @ObservedObject var library: Library
 
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 16) {
             DesktopTile(library: library)
-                .frame(maxWidth: .infinity)
+                .frame(width: 368, height: 230)
             LockTile(library: library)
-                .frame(width: 420)
+                .frame(width: 368, height: 230)
+            Spacer(minLength: 0)
         }
-        .frame(height: 300)
     }
 }
 
@@ -368,14 +377,14 @@ struct DesktopTile: View {
             VStack(alignment: .leading, spacing: 8) {
                 Chip(text: "DESKTOP", systemImage: "display")
                 Text(isPrivate ? "Private wallpaper" : (library.current?.name ?? "No wallpaper"))
-                    .font(.system(size: 26, weight: .heavy))
+                    .font(.system(size: 18, weight: .heavy))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
                 HStack(spacing: 12) {
                     CircleButton(systemImage: "backward.fill") { library.step(-1) }
                         .help("Previous")
-                    CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 42, prominent: true) {
+                    CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 36, prominent: true) {
                         library.togglePause()
                     }
                     .help(library.paused ? "Resume" : "Pause")
@@ -389,7 +398,7 @@ struct DesktopTile: View {
                     }
                 }
             }
-            .padding(20)
+            .padding(16)
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.heroRadius, style: .continuous))
         .shadow(color: Theme.violet.opacity(0.25), radius: 18, y: 8)
@@ -430,13 +439,13 @@ struct LockTile: View {
                     Text(context.date, format: .dateTime.weekday(.wide).day().month(.wide))
                         .font(.system(size: 13, weight: .semibold))
                     Text(context.date, format: .dateTime.hour().minute())
-                        .font(.system(size: 54, weight: .bold, design: .rounded))
+                        .font(.system(size: 44, weight: .bold, design: .rounded))
                 }
                 .foregroundStyle(.white.opacity(0.92))
                 .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
             }
             .frame(maxHeight: .infinity, alignment: .top)
-            .padding(.top, 26)
+            .padding(.top, 18)
 
             VStack(alignment: .leading, spacing: 6) {
                 Chip(text: "LOCK SCREEN", systemImage: "lock.fill")
@@ -914,6 +923,7 @@ struct SectionLabel: View {
 }
 
 struct TargetButton: View {
+    @ObservedObject var themeSource = Library.shared
     let title: String
     let symbol: String
     let active: Bool
@@ -980,6 +990,7 @@ struct EmptyDropZone: View {
 }
 
 struct DropOverlay: View {
+    @ObservedObject var themeSource = Library.shared
     let active: Bool
 
     var body: some View {
@@ -1200,6 +1211,7 @@ struct FoldersStrip: View {
 }
 
 struct FolderTile: View {
+    @ObservedObject var themeSource = Library.shared
     let title: String
     let count: Int
     let icon: FolderIcon
@@ -1315,7 +1327,36 @@ struct FolderIconPicker: View {
                     }
                     .padding(6)
                 }
-                .frame(height: 250)
+                .frame(height: 200)
+
+                HStack {
+                    SectionLabel(text: "My Icons")
+                    Spacer()
+                    Button {
+                        library.importUserIcons()
+                    } label: {
+                        Label("Import Icons…", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                if library.userIcons.isEmpty {
+                    Text("Import your own images once and use them for any folder.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(library.userIcons, id: \.self) { name in
+                                UserIconThumb(name: name, size: 50, library: library)
+                                    .onTapGesture { library.setFolderUserIcon(name, for: folder.id) }
+                                    .contextMenu {
+                                        Button("Remove from My Icons", role: .destructive) { library.removeUserIcon(name) }
+                                    }
+                            }
+                        }
+                        .padding(4)
+                    }
+                }
 
                 HStack {
                     Button {
@@ -1370,5 +1411,25 @@ struct WallpaperHotkeyRecorder: View {
                 .help("Remove hotkey")
             }
         }
+    }
+}
+
+struct UserIconThumb: View {
+    let name: String
+    var size: CGFloat = 50
+    @ObservedObject var library: Library
+
+    var body: some View {
+        ZStack {
+            Color.gray.opacity(0.2)
+            if let img = library.userIconImage(name) {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
+        .contentShape(Rectangle())
     }
 }

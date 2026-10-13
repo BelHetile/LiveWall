@@ -36,6 +36,7 @@ final class Library: ObservableObject {
     @Published var folderDropTarget: UUID?
     @Published var allTileDropTargeted = false
     @Published private(set) var unlockedFolderIDs: Set<UUID> = []
+    @Published private(set) var userIcons: [String] = []
     @Published private(set) var busyCount = 0
     @Published private(set) var pauseReason: String?
     @Published var section: LibrarySection = .wallpapers
@@ -57,6 +58,7 @@ final class Library: ObservableObject {
     private let indexURL: URL
     private let incomingDir: URL
     private let iconsDir: URL
+    private let userIconsDir: URL
     private var previousID: UUID?
     private var folderImageCache: [String: NSImage] = [:]
     private var loading = true
@@ -90,12 +92,15 @@ final class Library: ObservableObject {
         indexURL = root.appendingPathComponent("library.json")
         incomingDir = root.appendingPathComponent("Incoming", isDirectory: true)
         iconsDir = root.appendingPathComponent("Icons", isDirectory: true)
+        userIconsDir = root.appendingPathComponent("MyIcons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: userIconsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: iconsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: stillsDir, withIntermediateDirectories: true)
         load()
+        reloadUserIcons()
         loading = false
     }
 
@@ -1160,6 +1165,168 @@ final class Library: ObservableObject {
     }
 
     // MARK: Иконки папок
+
+    // MARK: Мои иконки (своя библиотека для папок)
+
+    private func reloadUserIcons() {
+        let files = (try? FileManager.default.contentsOfDirectory(at: userIconsDir,
+                                                                  includingPropertiesForKeys: [.creationDateKey],
+                                                                  options: [.skipsHiddenFiles])) ?? []
+        let dated = files.map { url -> (String, Date) in
+            let d = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            return (url.lastPathComponent, d)
+        }
+        userIcons = dated.sorted { $0.1 < $1.1 }.map { $0.0 }
+    }
+
+    /// Квадратный PNG 512×512 (заполнение с обрезкой).
+    static func squarePNG(from image: NSImage, side: CGFloat = 512) -> Data? {
+        let scaled = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let s = image.size
+            guard s.width > 0, s.height > 0 else { return true }
+            let k = max(rect.width / s.width, rect.height / s.height)
+            let w = s.width * k, h = s.height * k
+            image.draw(in: NSRect(x: (rect.width - w) / 2, y: (rect.height - h) / 2, width: w, height: h))
+            return true
+        }
+        guard let tiff = scaled.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    func importUserIcons() {
+        let p = NSOpenPanel()
+        p.allowsMultipleSelection = true
+        p.canChooseDirectories = false
+        p.allowedContentTypes = [.image]
+        p.message = "Choose images to add to My Icons."
+        guard p.runModal() == .OK else { return }
+        var failed = 0
+        for url in p.urls {
+            guard let img = NSImage(contentsOf: url), let png = Library.squarePNG(from: img) else {
+                failed += 1
+                continue
+            }
+            let name = "\(UUID().uuidString).png"
+            do {
+                try png.write(to: userIconsDir.appendingPathComponent(name), options: .atomic)
+            } catch {
+                failed += 1
+            }
+        }
+        reloadUserIcons()
+        if failed > 0 { message = "\(failed) image(s) could not be added to My Icons." }
+    }
+
+    func removeUserIcon(_ name: String) {
+        folderImageCache["my:" + name] = nil
+        try? FileManager.default.removeItem(at: userIconsDir.appendingPathComponent(name))
+        reloadUserIcons()
+    }
+
+    func userIconImage(_ name: String) -> NSImage? {
+        let key = "my:" + name
+        if let img = folderImageCache[key] { return img }
+        guard let img = NSImage(contentsOf: userIconsDir.appendingPathComponent(name)) else { return nil }
+        folderImageCache[key] = img
+        return img
+    }
+
+    /// Ставит иконку из «Моих иконок» на папку (копия — папка не зависит от библиотеки иконок).
+    func setFolderUserIcon(_ name: String, for folderID: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        let file = "\(folderID.uuidString)-\(UUID().uuidString.prefix(8)).png"
+        do {
+            try FileManager.default.copyItem(at: userIconsDir.appendingPathComponent(name),
+                                             to: iconsDir.appendingPathComponent(file))
+        } catch {
+            message = "Could not set the icon: \(error.localizedDescription)"
+            return
+        }
+        if case .image(let old) = folders[i].icon { removeIconFile(old) }
+        folders[i].icon = .image(file: file)
+        save()
+    }
+
+    // MARK: Цветовые стили
+
+    var allStyles: [ColorStyle] { ColorStyle.builtIns + settings.customStyles }
+
+    func selectStyle(_ id: String) {
+        settings.colorStyleID = id
+    }
+
+    func createStyle() {
+        let base = Theme.style
+        guard let name = Library.promptForName(title: "New Color Style", message: "Pick the colors after creating it.",
+                                               initial: "My Style", confirm: "Create") else { return }
+        let style = ColorStyle(id: UUID().uuidString, name: name, primary: base.primary, secondary: base.secondary)
+        settings.customStyles.append(style)
+        settings.colorStyleID = style.id
+    }
+
+    func updateStyle(_ id: String, primary: String? = nil, secondary: String? = nil) {
+        guard let i = settings.customStyles.firstIndex(where: { $0.id == id }) else { return }
+        if let p = primary { settings.customStyles[i].primary = p }
+        if let s = secondary { settings.customStyles[i].secondary = s }
+    }
+
+    func renameStyle(_ id: String) {
+        guard let i = settings.customStyles.firstIndex(where: { $0.id == id }) else { return }
+        guard let name = Library.promptForName(title: "Rename Style", message: nil,
+                                               initial: settings.customStyles[i].name, confirm: "Rename") else { return }
+        settings.customStyles[i].name = name
+    }
+
+    func deleteStyle(_ id: String) {
+        settings.customStyles.removeAll { $0.id == id }
+        if settings.colorStyleID == id { settings.colorStyleID = ColorStyle.builtIns[0].id }
+    }
+
+    /// Импорт стилей из .json (один стиль или массив).
+    func importStyles() {
+        let p = NSOpenPanel()
+        p.allowsMultipleSelection = true
+        p.canChooseDirectories = false
+        p.allowedContentTypes = [.json]
+        p.message = "Choose LiveWall color style files (.json)."
+        guard p.runModal() == .OK else { return }
+        var added: [ColorStyle] = []
+        for url in p.urls {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            var styles: [ColorStyle] = []
+            if let many = try? JSONDecoder().decode([ColorStyle].self, from: data) {
+                styles = many
+            } else if let one = try? JSONDecoder().decode(ColorStyle.self, from: data) {
+                styles = [one]
+            }
+            for var s in styles {
+                // новый id, чтобы не пересечься со встроенными и уже добавленными
+                s.id = UUID().uuidString
+                added.append(s)
+            }
+        }
+        guard !added.isEmpty else {
+            message = "No color styles found in the selected file(s)."
+            return
+        }
+        settings.customStyles.append(contentsOf: added)
+        settings.colorStyleID = added[0].id
+    }
+
+    func exportStyle(_ id: String) {
+        guard let style = allStyles.first(where: { $0.id == id }) else { return }
+        let p = NSSavePanel()
+        p.allowedContentTypes = [.json]
+        p.nameFieldStringValue = "\(style.name).livewall-style.json"
+        guard p.runModal() == .OK, let url = p.url else { return }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            try enc.encode(style).write(to: url, options: .atomic)
+        } catch {
+            message = "Could not export the style: \(error.localizedDescription)"
+        }
+    }
 
     func openIconPicker(_ folderID: UUID) {
         if requestUnlock(folderID) { iconPickerFolderID = folderID }

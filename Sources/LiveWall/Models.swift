@@ -128,6 +128,28 @@ struct AppRule: Codable, Identifiable, Equatable {
     var id: String { bundleID }
 }
 
+// MARK: - Color styles
+
+struct ColorStyle: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var primary: String     // hex, например #7D4DFA
+    var secondary: String
+
+    static let builtIns: [ColorStyle] = [
+        ColorStyle(id: "violet", name: "Violet", primary: "#7D4DFA", secondary: "#ED549E"),
+        ColorStyle(id: "ocean", name: "Ocean", primary: "#3378FF", secondary: "#33D1F2"),
+        ColorStyle(id: "sunset", name: "Sunset", primary: "#FF7A45", secondary: "#F5487F"),
+        ColorStyle(id: "forest", name: "Forest", primary: "#29B877", secondary: "#1A99B3"),
+        ColorStyle(id: "rose", name: "Rose", primary: "#E84A8A", secondary: "#FF9EC4"),
+        ColorStyle(id: "gold", name: "Gold", primary: "#F2A81D", secondary: "#FF6B3D"),
+        ColorStyle(id: "neon", name: "Neon", primary: "#00D9A0", secondary: "#7B5CFF"),
+        ColorStyle(id: "graphite", name: "Graphite", primary: "#5E6470", secondary: "#A2A8B2"),
+    ]
+
+    var isBuiltIn: Bool { ColorStyle.builtIns.contains(where: { $0.id == id }) }
+}
+
 // MARK: - Settings
 
 struct Settings: Codable, Equatable {
@@ -150,6 +172,13 @@ struct Settings: Codable, Equatable {
     var pauseWhenHot = true
     var appRules: [AppRule] = []
 
+    // внешний вид
+    var colorStyleID = "violet"
+    var customStyles: [ColorStyle] = []
+    var windowBlur = true
+    var blurAmount: Double = 1.0
+    var windowTransparency: Double = 0.55
+
     // система
     var syncSystemWallpaper = true
     var launchAtLogin = false
@@ -165,6 +194,7 @@ struct Settings: Codable, Equatable {
         case autoRotate, rotateMinutes, shuffle
         case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
+        case colorStyleID, customStyles, windowBlur, blurAmount, windowTransparency
         case syncSystemWallpaper, launchAtLogin
         case numberHotkeys, hotkeys
     }
@@ -186,6 +216,11 @@ struct Settings: Codable, Equatable {
         pauseInLowPower = (try? c.decodeIfPresent(Bool.self, forKey: .pauseInLowPower)) ?? d.pauseInLowPower
         pauseWhenHot = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenHot)) ?? d.pauseWhenHot
         appRules = (try? c.decodeIfPresent([AppRule].self, forKey: .appRules)) ?? d.appRules
+        colorStyleID = (try? c.decodeIfPresent(String.self, forKey: .colorStyleID)) ?? d.colorStyleID
+        customStyles = (try? c.decodeIfPresent([ColorStyle].self, forKey: .customStyles)) ?? d.customStyles
+        windowBlur = (try? c.decodeIfPresent(Bool.self, forKey: .windowBlur)) ?? d.windowBlur
+        blurAmount = (try? c.decodeIfPresent(Double.self, forKey: .blurAmount)) ?? d.blurAmount
+        windowTransparency = (try? c.decodeIfPresent(Double.self, forKey: .windowTransparency)) ?? d.windowTransparency
         syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
         numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys

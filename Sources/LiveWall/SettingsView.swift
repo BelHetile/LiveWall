@@ -20,6 +20,8 @@ struct SettingsTab: View {
 
     var body: some View {
         Form {
+            AppearanceSection(library: library)
+
             Section {
                 Toggle("Mute video", isOn: $library.settings.muted)
                 HStack {
@@ -144,6 +146,7 @@ struct SettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding(.vertical, 4)
     }
 }
@@ -215,5 +218,186 @@ struct HotkeyRecorder: View {
                 .help("Clear")
             }
         }
+    }
+}
+
+// MARK: - Appearance
+
+struct AppearanceSection: View {
+    @ObservedObject var library: Library
+
+    var body: some View {
+        Group {
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        ForEach(library.allStyles) { style in
+                            StyleSwatch(style: style, selected: library.settings.colorStyleID == style.id)
+                                .onTapGesture { library.selectStyle(style.id) }
+                                .contextMenu {
+                                    Button("Export…") { library.exportStyle(style.id) }
+                                    if !style.isBuiltIn {
+                                        Button("Rename…") { library.renameStyle(style.id) }
+                                        Button("Delete", role: .destructive) { library.deleteStyle(style.id) }
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 2)
+                }
+
+                ForEach(library.settings.customStyles) { style in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Theme.gradient(for: style))
+                            .frame(width: 18, height: 18)
+                        Text(style.name)
+                            .lineLimit(1)
+                        Spacer()
+                        ColorPicker("Main", selection: colorBinding(style.id, primary: true), supportsOpacity: false)
+                            .fixedSize()
+                        ColorPicker("Second", selection: colorBinding(style.id, primary: false), supportsOpacity: false)
+                            .fixedSize()
+                        Button {
+                            library.deleteStyle(style.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Delete style")
+                    }
+                }
+
+                HStack {
+                    Button {
+                        library.createStyle()
+                    } label: {
+                        Label("New Style…", systemImage: "plus")
+                    }
+                    Button {
+                        library.importStyles()
+                    } label: {
+                        Label("Import…", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        library.exportStyle(library.settings.colorStyleID)
+                    } label: {
+                        Label("Export Current…", systemImage: "square.and.arrow.up")
+                    }
+                    Spacer()
+                }
+            } header: {
+                Text("Color style")
+            } footer: {
+                Text("Styles are shared as small .json files — import ones you got from friends, or export yours.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                HStack {
+                    Text("Transparency")
+                    Slider(value: $library.settings.windowTransparency, in: 0...0.95)
+                    Text("\(Int((library.settings.windowTransparency * 100).rounded()))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                Toggle("Blur what's behind the window", isOn: $library.settings.windowBlur)
+                HStack {
+                    Text("Blur strength")
+                    Slider(value: $library.settings.blurAmount, in: 0.1...1)
+                    Text("\(Int((library.settings.blurAmount * 100).rounded()))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                .disabled(!library.settings.windowBlur)
+            } header: {
+                Text("Window")
+            } footer: {
+                Text("With blur off and high transparency you see your live wallpaper right through the library.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if library.userIcons.isEmpty {
+                    Text("No icons yet. Import PNG, JPG, HEIC or other images — they become available for every folder.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(library.userIcons, id: \.self) { name in
+                                UserIconThumb(name: name, size: 46, library: library)
+                                    .contextMenu {
+                                        Button("Remove", role: .destructive) { library.removeUserIcon(name) }
+                                    }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                HStack {
+                    Button {
+                        library.importUserIcons()
+                    } label: {
+                        Label("Import Icons…", systemImage: "square.and.arrow.down")
+                    }
+                    Spacer()
+                    Text("\(library.userIcons.count) icon(s) · right-click to remove")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("My icons")
+            } footer: {
+                Text("Use them from a folder's icon picker (right-click a folder → Change Icon…).")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func colorBinding(_ id: String, primary: Bool) -> Binding<Color> {
+        Binding(get: {
+            let style = library.settings.customStyles.first(where: { $0.id == id })
+            return Color(hex: (primary ? style?.primary : style?.secondary) ?? "#808080")
+        }, set: { color in
+            if primary {
+                library.updateStyle(id, primary: color.hexString)
+            } else {
+                library.updateStyle(id, secondary: color.hexString)
+            }
+        })
+    }
+}
+
+struct StyleSwatch: View {
+    let style: ColorStyle
+    let selected: Bool
+
+    var body: some View {
+        VStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Theme.gradient(for: style))
+                .frame(width: 64, height: 42)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .strokeBorder(Color.primary, lineWidth: selected ? 2.5 : 0)
+                        .padding(-4)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(4)
+                    }
+                }
+            Text(style.name)
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .lineLimit(1)
+                .frame(width: 70)
+        }
+        .contentShape(Rectangle())
     }
 }
