@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var libraryWindow: NSWindow?
 
@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.isMovableByWindowBackground = true
             w.minSize = NSSize(width: 980, height: 640)
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.collectionBehavior.insert(.fullScreenPrimary)
             w.contentView = NSHostingView(rootView: LibraryView())
             // библиотека открывается на весь экран (видимую область без Dock и строки меню)
@@ -76,6 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Окно библиотеки закрыли — закрытые папки снова запираются.
+    func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSWindow) === libraryWindow {
+            Library.shared.lockAll()
+        }
     }
 
     // MARK: Menu bar
@@ -118,15 +126,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(title)
             // папки — подменю
             for folder in lib.folders {
+                let fi = NSMenuItem(title: folder.name, action: nil, keyEquivalent: "")
+                if lib.isLocked(folder.id) {
+                    // закрытая папка: содержимое не показываем
+                    fi.image = AppDelegate.symbol("lock.fill")
+                    fi.isEnabled = false
+                    menu.addItem(fi)
+                    continue
+                }
                 let sub = NSMenu()
                 for it in lib.items where it.folderID == folder.id {
                     sub.addItem(wallpaperMenuItem(it, lib: lib))
                 }
-                let fi = NSMenuItem(title: folder.name, action: nil, keyEquivalent: "")
                 if case .symbol(let name, _) = folder.icon {
-                    fi.image = AppDelegate.symbol(name)
+                    fi.image = AppDelegate.symbol(folder.isProtected ? "lock.open.fill" : name)
                 } else {
-                    fi.image = AppDelegate.symbol("folder.fill")
+                    fi.image = AppDelegate.symbol(folder.isProtected ? "lock.open.fill" : "folder.fill")
                 }
                 fi.submenu = sub
                 fi.isEnabled = !sub.items.isEmpty
@@ -242,6 +257,7 @@ struct MenuHeaderView: View {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .blur(radius: isPrivate ? 12 : 0)
                 } else {
                     Image(systemName: "photo.on.rectangle.angled")
                         .foregroundStyle(.white)
@@ -251,7 +267,7 @@ struct MenuHeaderView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(library.current?.name ?? "No wallpaper")
+                Text(isPrivate ? "Private wallpaper" : (library.current?.name ?? "No wallpaper"))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 HStack(spacing: 4) {
@@ -269,6 +285,10 @@ struct MenuHeaderView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(width: 290, height: 70, alignment: .leading)
+    }
+
+    private var isPrivate: Bool {
+        library.current.map { library.isHidden($0) } ?? false
     }
 
     private var statusText: String {

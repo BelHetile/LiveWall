@@ -68,6 +68,11 @@ struct WallpaperFolder: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
     var icon: FolderIcon
+    // закрытая папка: соль и PBKDF2-хеш пароля (base64)
+    var passwordSalt: String?
+    var passwordHash: String?
+
+    var isProtected: Bool { passwordHash != nil && passwordSalt != nil }
 }
 
 /// Что сейчас записывается в рекордере хоткея.

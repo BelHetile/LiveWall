@@ -131,7 +131,10 @@ struct SettingsTab: View {
                         HotkeyRecorder(action: action, library: library)
                     }
                 }
-                Toggle("⌃⌥⌘ 1–9 jumps to wallpaper number N", isOn: $library.settings.numberHotkeys)
+                Text("Hotkeys for switching to a specific wallpaper are set in that wallpaper's panel — none are assigned until you set them. They also work for wallpapers in locked folders, without the password.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
                     Button("Reset hotkeys to defaults") {

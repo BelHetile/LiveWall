@@ -35,6 +35,7 @@ final class Library: ObservableObject {
     @Published var iconPickerFolderID: UUID?
     @Published var folderDropTarget: UUID?
     @Published var allTileDropTargeted = false
+    @Published private(set) var unlockedFolderIDs: Set<UUID> = []
     @Published private(set) var busyCount = 0
     @Published private(set) var pauseReason: String?
     @Published var section: LibrarySection = .wallpapers
@@ -166,6 +167,18 @@ final class Library: ObservableObject {
             self?.syncLockScreen()
         }
         syncLockScreen()
+
+        // закрытые папки запираются при блокировке экрана и сне
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lockAll()
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lockAll()
+        }
     }
 
     private func applyControllerSettings() {
@@ -241,7 +254,7 @@ final class Library: ObservableObject {
         guard !loading else { return }
         saveSettings()
         applyControllerSettings()
-        if old.hotkeys != settings.hotkeys || old.numberHotkeys != settings.numberHotkeys {
+        if old.hotkeys != settings.hotkeys {
             registerHotkeys()
         }
         if old.autoRotate != settings.autoRotate || old.rotateMinutes != settings.rotateMinutes {
@@ -755,6 +768,8 @@ final class Library: ObservableObject {
 
     func openDetail(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        // обои из закрытой папки — только после пароля
+        if isHidden(item), let folderID = item.folderID, !requestUnlock(folderID) { return }
         releasePreview()
         detailID = id
         // для не активного видео — своё беззвучное превью
@@ -775,9 +790,10 @@ final class Library: ObservableObject {
     }
 
     func showAdjacentDetail(_ delta: Int) {
-        guard let id = detailID, let i = items.firstIndex(where: { $0.id == id }), !items.isEmpty else { return }
-        let n = items.count
-        openDetail(items[((i + delta) % n + n) % n].id)
+        let pool = visibleItems
+        guard let id = detailID, let i = pool.firstIndex(where: { $0.id == id }), !pool.isEmpty else { return }
+        let n = pool.count
+        openDetail(pool[((i + delta) % n + n) % n].id)
     }
 
     /// Полноразмерная картинка для панели (картинки и первый кадр GIF), с кэшем.
@@ -794,27 +810,29 @@ final class Library: ObservableObject {
         previewLooper = nil
     }
 
+    /// Обои, по которым ходят Next / Previous / Random / автосмена: без закрытых папок.
+    var browsableItems: [WallpaperItem] {
+        items.filter { !isHidden($0) }
+    }
+
     func step(_ delta: Int) {
-        guard !items.isEmpty else { return }
-        let n = items.count
-        let i = items.firstIndex(where: { $0.id == currentID }) ?? (delta > 0 ? -1 : 0)
+        let pool = browsableItems
+        guard !pool.isEmpty else { return }
+        let n = pool.count
+        let i = pool.firstIndex(where: { $0.id == currentID }) ?? (delta > 0 ? -1 : 0)
         let j = ((i + delta) % n + n) % n
-        select(items[j].id)
+        select(pool[j].id)
     }
 
     func random() {
-        guard !items.isEmpty else { return }
-        if items.count == 1 {
-            select(items[0].id)
+        let all = browsableItems
+        guard !all.isEmpty else { return }
+        if all.count == 1 {
+            select(all[0].id)
             return
         }
-        let pool = items.filter { $0.id != currentID }
+        let pool = all.filter { $0.id != currentID }
         if let pick = pool.randomElement() { select(pick.id) }
-    }
-
-    func jump(to index: Int) {
-        guard index >= 0, index < items.count else { return }
-        select(items[index].id)
     }
 
     func setMode(_ mode: FillMode, for id: UUID) {
@@ -893,17 +911,6 @@ final class Library: ObservableObject {
             let id = item.id
             hk.register(id: UInt32(1000 + i), binding: b) { [weak self] in
                 self?.toggleWallpaperHotkey(id)
-            }
-        }
-        if settings.numberHotkeys {
-            let codes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
-                                kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
-            let mods = UInt32(controlKey | optionKey | cmdKey)
-            for (i, c) in codes.enumerated() {
-                hk.register(id: UInt32(100 + i),
-                            binding: HotkeyBinding(keyCode: UInt32(c), modifiers: mods)) { [weak self] in
-                    self?.jump(to: i)
-                }
             }
         }
     }
@@ -996,8 +1003,91 @@ final class Library: ObservableObject {
     // MARK: Папки
 
     var visibleItems: [WallpaperItem] {
-        guard let folder = selectedFolderID else { return items }
+        guard let folder = selectedFolderID else { return items.filter { !isHidden($0) } }
+        if isLocked(folder) { return [] }
         return items.filter { $0.folderID == folder }
+    }
+
+    // MARK: Закрытые папки
+
+    func folder(_ id: UUID?) -> WallpaperFolder? {
+        guard let id = id else { return nil }
+        return folders.first(where: { $0.id == id })
+    }
+
+    /// Папка с паролем, которую ещё не открыли.
+    func isLocked(_ folderID: UUID) -> Bool {
+        guard let f = folder(folderID), f.isProtected else { return false }
+        return !unlockedFolderIDs.contains(folderID)
+    }
+
+    /// Обои лежат в закрытой (не открытой) папке.
+    func isHidden(_ item: WallpaperItem) -> Bool {
+        guard let fid = item.folderID else { return false }
+        return isLocked(fid)
+    }
+
+    /// Открывает папку: спрашивает пароль, если нужно. true — доступ есть.
+    @discardableResult
+    func requestUnlock(_ folderID: UUID) -> Bool {
+        guard let f = folder(folderID) else { return false }
+        guard f.isProtected, !unlockedFolderIDs.contains(folderID) else { return true }
+        guard let password = PasswordPrompt.ask(title: "“\(f.name)” is locked",
+                                                message: "Enter the folder password.",
+                                                button: "Unlock", confirm: false) else { return false }
+        guard let salt = f.passwordSalt, let hash = f.passwordHash,
+              PasswordHasher.verify(password, saltB64: salt, hashB64: hash) else {
+            message = "Wrong password for “\(f.name)”."
+            return false
+        }
+        unlockedFolderIDs.insert(folderID)
+        message = nil
+        return true
+    }
+
+    func openFolder(_ folderID: UUID) {
+        if requestUnlock(folderID) { selectedFolderID = folderID }
+    }
+
+    func setPassword(_ folderID: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        if folders[i].isProtected && !requestUnlock(folderID) { return }
+        let title = folders[i].isProtected ? "Change Password" : "Lock “\(folders[i].name)” with a Password"
+        guard let password = PasswordPrompt.ask(
+            title: title,
+            message: "Wallpapers in this folder will be hidden until you enter the password. Their hotkeys keep working. There is no way to recover a forgotten password.",
+            button: "Set Password", confirm: true) else { return }
+        let salt = PasswordHasher.makeSalt()
+        folders[i].passwordSalt = salt.base64EncodedString()
+        folders[i].passwordHash = PasswordHasher.hash(password, salt: salt).base64EncodedString()
+        unlockedFolderIDs.insert(folderID)
+        save()
+    }
+
+    func removePassword(_ folderID: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == folderID }), folders[i].isProtected else { return }
+        guard requestUnlock(folderID) else { return }
+        folders[i].passwordSalt = nil
+        folders[i].passwordHash = nil
+        unlockedFolderIDs.remove(folderID)
+        save()
+    }
+
+    func lockFolder(_ folderID: UUID) {
+        unlockedFolderIDs.remove(folderID)
+        hideLockedContent()
+    }
+
+    /// Закрывает все папки (окно закрыто, экран заблокирован, сон).
+    func lockAll() {
+        guard !unlockedFolderIDs.isEmpty else { return }
+        unlockedFolderIDs.removeAll()
+        hideLockedContent()
+    }
+
+    private func hideLockedContent() {
+        if let sel = selectedFolderID, isLocked(sel) { selectedFolderID = nil }
+        if let id = detailID, let item = items.first(where: { $0.id == id }), isHidden(item) { closeDetail() }
     }
 
     var selectedFolder: WallpaperFolder? {
@@ -1005,6 +1095,11 @@ final class Library: ObservableObject {
     }
 
     func count(in folderID: UUID) -> Int {
+        if isLocked(folderID) { return 0 }
+        return items.filter { $0.folderID == folderID }.count
+    }
+
+    private func rawCount(in folderID: UUID) -> Int {
         items.filter { $0.folderID == folderID }.count
     }
 
@@ -1021,7 +1116,7 @@ final class Library: ObservableObject {
     }
 
     func renameFolder(_ id: UUID) {
-        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        guard requestUnlock(id), let i = folders.firstIndex(where: { $0.id == id }) else { return }
         guard let name = Library.promptForName(title: "Rename Folder", message: nil,
                                                initial: folders[i].name, confirm: "Rename") else { return }
         folders[i].name = name
@@ -1029,7 +1124,16 @@ final class Library: ObservableObject {
     }
 
     func deleteFolder(_ id: UUID) {
-        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        guard requestUnlock(id), let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        if folders[i].isProtected {
+            let alert = NSAlert()
+            alert.messageText = "Delete “\(folders[i].name)”?"
+            alert.informativeText = "\(rawCount(in: id)) wallpaper(s) will move out of the folder and become visible to everyone."
+            alert.addButton(withTitle: "Delete Folder")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        unlockedFolderIDs.remove(id)
         if case .image(let file) = folders[i].icon { removeIconFile(file) }
         folders.remove(at: i)
         for j in items.indices where items[j].folderID == id { items[j].folderID = nil }
@@ -1056,6 +1160,10 @@ final class Library: ObservableObject {
     }
 
     // MARK: Иконки папок
+
+    func openIconPicker(_ folderID: UUID) {
+        if requestUnlock(folderID) { iconPickerFolderID = folderID }
+    }
 
     func setFolderSymbol(_ name: String, for id: UUID) {
         guard let i = folders.firstIndex(where: { $0.id == id }) else { return }

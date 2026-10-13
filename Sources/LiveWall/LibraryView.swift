@@ -260,12 +260,21 @@ struct WallpapersPage: View {
                 .buttonStyle(.borderless)
                 .help("Rename folder")
                 Button {
-                    library.iconPickerFolderID = folder.id
+                    library.openIconPicker(folder.id)
                 } label: {
                     Image(systemName: "paintbrush")
                 }
                 .buttonStyle(.borderless)
                 .help("Change folder icon")
+                if folder.isProtected {
+                    Button {
+                        library.lockFolder(folder.id)
+                    } label: {
+                        Label("Lock", systemImage: "lock.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Lock the folder and hide its wallpapers")
+                }
             } else {
                 Text("All Wallpapers")
                     .font(.system(size: 22, weight: .bold))
@@ -324,6 +333,10 @@ struct NowSection: View {
 struct DesktopTile: View {
     @ObservedObject var library: Library
 
+    private var isPrivate: Bool {
+        library.current.map { library.isHidden($0) } ?? false
+    }
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             ZStack {
@@ -340,13 +353,21 @@ struct DesktopTile: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .blur(radius: isPrivate ? 40 : 0)
+            .overlay {
+                if isPrivate {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 40, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
             .clipped()
 
             Theme.heroScrim
 
             VStack(alignment: .leading, spacing: 8) {
                 Chip(text: "DESKTOP", systemImage: "display")
-                Text(library.current?.name ?? "No wallpaper")
+                Text(isPrivate ? "Private wallpaper" : (library.current?.name ?? "No wallpaper"))
                     .font(.system(size: 26, weight: .heavy))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -387,6 +408,7 @@ struct LockTile: View {
 
     var body: some View {
         let item = library.lockItem
+        let isPrivate = item.map { library.isHidden($0) } ?? false
         ZStack {
             ZStack {
                 LinearGradient(colors: [Color(white: 0.15), Color(white: 0.05)],
@@ -395,6 +417,7 @@ struct LockTile: View {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .blur(radius: isPrivate ? 30 : 0)
                 }
                 Color.black.opacity(0.18)
             }
@@ -417,7 +440,7 @@ struct LockTile: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Chip(text: "LOCK SCREEN", systemImage: "lock.fill")
-                Text(item?.name ?? "Not set")
+                Text(isPrivate ? "Private wallpaper" : (item?.name ?? "Not set"))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -484,10 +507,6 @@ struct WallpaperCard: View {
                         .padding(.vertical, 2)
                         .background(Theme.violet.opacity(0.12), in: Capsule())
                         .help("Press to switch to this wallpaper, press again to go back")
-                } else if index < 9 && library.settings.numberHotkeys {
-                    Text("⌃⌥⌘\(index + 1)")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, 2)
@@ -1098,10 +1117,12 @@ struct FoldersStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     FolderTile(title: "All Wallpapers",
-                               count: library.items.count,
+                               count: library.browsableItems.count,
                                icon: .symbol(name: "square.grid.2x2.fill", palette: 7),
                                selected: library.selectedFolderID == nil,
-                               dropTargeted: library.allTileDropTargeted)
+                               dropTargeted: library.allTileDropTargeted,
+                               isProtected: false,
+                               isLocked: false)
                         .onTapGesture { library.selectedFolderID = nil }
                         .onDrop(of: [.plainText], isTargeted: $library.allTileDropTargeted) { providers in
                             library.handleFolderDrop(providers, folderID: nil)
@@ -1112,14 +1133,28 @@ struct FoldersStrip: View {
                                    count: library.count(in: folder.id),
                                    icon: folder.icon,
                                    selected: library.selectedFolderID == folder.id,
-                                   dropTargeted: library.folderDropTarget == folder.id)
-                            .onTapGesture { library.selectedFolderID = folder.id }
+                                   dropTargeted: library.folderDropTarget == folder.id,
+                                   isProtected: folder.isProtected,
+                                   isLocked: library.isLocked(folder.id))
+                            .onTapGesture { library.openFolder(folder.id) }
                             .onDrop(of: [.plainText], isTargeted: dropBinding(folder.id)) { providers in
                                 library.handleFolderDrop(providers, folderID: folder.id)
                             }
                             .contextMenu {
                                 Button("Rename…") { library.renameFolder(folder.id) }
-                                Button("Change Icon…") { library.iconPickerFolderID = folder.id }
+                                Button("Change Icon…") { library.openIconPicker(folder.id) }
+                                Divider()
+                                if folder.isProtected {
+                                    if library.isLocked(folder.id) {
+                                        Button("Unlock…") { library.openFolder(folder.id) }
+                                    } else {
+                                        Button("Lock Now") { library.lockFolder(folder.id) }
+                                    }
+                                    Button("Change Password…") { library.setPassword(folder.id) }
+                                    Button("Remove Password…") { library.removePassword(folder.id) }
+                                } else {
+                                    Button("Set Password…") { library.setPassword(folder.id) }
+                                }
                                 Divider()
                                 Button("Delete Folder", role: .destructive) { library.deleteFolder(folder.id) }
                             }
@@ -1170,16 +1205,28 @@ struct FolderTile: View {
     let icon: FolderIcon
     let selected: Bool
     let dropTargeted: Bool
+    let isProtected: Bool
+    let isLocked: Bool
 
     var body: some View {
         VStack(spacing: 8) {
             FolderIconView(icon: icon, size: 44)
+                .overlay(alignment: .bottomTrailing) {
+                    if isProtected {
+                        Image(systemName: isLocked ? "lock.fill" : "lock.open.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(4)
+                            .background(Circle().fill(isLocked ? Color.black.opacity(0.75) : Color.green.opacity(0.85)))
+                            .offset(x: 6, y: 6)
+                    }
+                }
             VStack(spacing: 1) {
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text("\(count)")
+                Text(isLocked ? "Locked" : "\(count)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
