@@ -15,8 +15,8 @@ All notable changes to LiveWall are listed here. The format follows
 - The wallpaper panel shows the video's resolution, frame rate and codec, and scrolls when it doesn't fit.
 - **WebM and MKV** (VP9, AV1 on M3 and newer, H.264/HEVC) and MP4 files with codecs macOS can't play are converted
   to HEVC with VideoToolbox on import. Videos already in the library that show up black get a *Convert* button.
-- **Lock screen frame**: pick which frame of a video goes to the lock screen (pause the preview, *Use Current
-  Frame*). Turning the lock-screen option off brings back the macOS wallpaper you had before LiveWall.
+- **Lock screen frame**: pick which frame of a video goes to the lock screen (a timeline slider and frame-by-frame
+  buttons under the preview, then *Use Current Frame*). Turning the lock-screen option off brings back the macOS wallpaper you had before LiveWall.
 - The DMG contains **Install LiveWall.command**, which copies the app to Applications, clears the download flag
   and starts it.
 - Hotkeys that macOS or apps already use (Spotlight, screenshots, ⌘Tab, ⌘Q, Mission Control, …, including ones you

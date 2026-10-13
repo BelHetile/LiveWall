@@ -337,7 +337,7 @@ enum RussianStrings {
         "Move one space left": "переход на стол влево",
         "Move one space right": "переход на стол вправо",
         "New folder": "новая папка",
-        "Pause the preview on the frame you like, then click “Use Current Frame”.": "Поставьте превью на паузу на нужном кадре и нажмите «Взять этот кадр».",
+        "Find the frame with the slider under the preview (or the frame buttons), then click “Use Current Frame”.": "Найдите кадр ползунком под превью (или кнопками по кадру) и нажмите «Взять этот кадр».",
         "Reopen closed tab": "открыть закрытую вкладку",
         "Screenshot": "снимок экрана",
         "Separate lock screen wallpaper: %@": "Отдельные обои экрана блокировки: %@",
@@ -351,5 +351,7 @@ enum RussianStrings {
         "app commands (⌘ + key)": "команды приложений (⌘ + клавиша)",
         "macOS (%@)": "macOS (%@)",
         "macOS doesn't let apps show live video on the lock screen. So LiveWall sets one frame of the wallpaper as the regular macOS wallpaper: you see it on the lock screen and for a moment when switching Spaces. Pick the frame in a video's panel (by default it's the first one). Turn this off to get back the macOS wallpaper you had before.": "macOS не даёт приложениям показывать живое видео на экране блокировки. Поэтому LiveWall ставит один кадр обоев обычными обоями macOS: его видно на экране блокировки и на мгновение при переключении рабочих столов. Кадр выбирается в панели видео (по умолчанию — первый). Если выключить, вернутся обои macOS, которые стояли раньше.",
+        "Previous frame": "Предыдущий кадр",
+        "Next frame": "Следующий кадр",
     ]
 }

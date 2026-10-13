@@ -712,6 +712,51 @@ struct WallpaperDetail: View {
     // MARK: Превью
 
     private var previewPane: some View {
+        VStack(spacing: 12) {
+            stage
+            if item.kind == .video {
+                frameScrubber
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: item.id) { await library.loadThumbnail(for: item) }
+    }
+
+    /// Ползунок по видео и шаг по кадрам — чтобы встать на нужный кадр.
+    private var frameScrubber: some View {
+        HStack(spacing: 10) {
+            Button {
+                library.stepPreview(-1)
+            } label: {
+                Image(systemName: "backward.frame.fill")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Previous frame"))
+            Slider(value: Binding(get: { library.previewTime },
+                                  set: { library.scrubPreview(to: $0, editing: true) }),
+                   in: 0...max(library.previewDuration, 0.01),
+                   onEditingChanged: { editing in
+                       if !editing { library.scrubPreview(to: library.previewTime, editing: false) }
+                   })
+            .disabled(library.previewDuration <= 0)
+            Button {
+                library.stepPreview(1)
+            } label: {
+                Image(systemName: "forward.frame.fill")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Next frame"))
+            Text("\(WallpaperDetail.timeLabel(library.previewTime)) / \(WallpaperDetail.timeLabel(library.previewDuration))")
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var stage: some View {
         ZStack {
             Color.black
 
@@ -769,9 +814,6 @@ struct WallpaperDetail: View {
             }
             .padding(14)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: item.id) { await library.loadThumbnail(for: item) }
     }
 
     // MARK: Управление
@@ -855,7 +897,7 @@ struct WallpaperDetail: View {
                                 }
                             }
                             .font(.system(size: 11))
-                            .help(L("Pause the preview on the frame you like, then click “Use Current Frame”."))
+                            .help(L("Find the frame with the slider under the preview (or the frame buttons), then click “Use Current Frame”."))
                         }
                     }
 

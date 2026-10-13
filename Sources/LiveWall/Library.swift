@@ -50,6 +50,9 @@ final class Library: ObservableObject {
     @Published private(set) var previewPlayer: AVQueuePlayer?
     /// Превью в панели обоев стоит на паузе (для обоев рабочего стола — повторяет паузу обоев).
     @Published private(set) var previewPaused = false
+    /// Позиция и длина видео в превью панели (для ползунка выбора кадра).
+    @Published private(set) var previewTime: Double = 0
+    @Published private(set) var previewDuration: Double = 0
     /// Своё беззвучное превью для плитки «Рабочий стол»: обои под окном библиотеки стоят на паузе.
     @Published private(set) var tilePlayer: AVQueuePlayer?
     @Published private(set) var linkDownloads: [LinkDownload] = []
@@ -83,6 +86,8 @@ final class Library: ObservableObject {
     private var lockSyncGeneration = 0
     private var previewLooper: AVPlayerLooper?
     private var tileLooper: AVPlayerLooper?
+    private var previewTimeObserver: Any?
+    private var previewScrubbing = false
     private var tileFile: String?
     private var tileVisible = false
     private var imageCache: [UUID: NSImage] = [:]
@@ -1291,6 +1296,20 @@ final class Library: ObservableObject {
             let (p, looper) = makeLoopPlayer(item)
             previewLooper = looper
             previewPlayer = p
+            previewTime = 0
+            previewDuration = 0
+            previewTimeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20),
+                                                            queue: .main) { [weak self] time in
+                guard let self = self, !self.previewScrubbing else { return }
+                let t = CMTimeGetSeconds(time)
+                if t.isFinite && abs(t - self.previewTime) > 0.01 { self.previewTime = t }
+            }
+            let src = url(for: item)
+            Task { @MainActor [weak self] in
+                let d = (try? await AVURLAsset(url: src).load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
+                guard let self = self, self.detailID == id, d.isFinite else { return }
+                self.previewDuration = d
+            }
             applyPreviewState(sync: true)
         }
         updateTilePlayback(sync: false)
@@ -1329,7 +1348,7 @@ final class Library: ObservableObject {
 
     /// Пауза / продолжение в превью панели.
     func togglePreviewPause() {
-        if detailID != nil && detailID == currentID {
+        if detailID != nil && detailID == currentID && previewPaused == paused {
             togglePause()
         } else {
             previewPaused.toggle()
@@ -1400,9 +1419,36 @@ final class Library: ObservableObject {
     }
 
     private func releasePreview() {
+        if let o = previewTimeObserver { previewPlayer?.removeTimeObserver(o) }
+        previewTimeObserver = nil
         previewPlayer?.pause()
         previewPlayer = nil
         previewLooper = nil
+    }
+
+    // MARK: Выбор кадра в превью
+
+    /// Перемотка превью ползунком. Превью встаёт на паузу (сами обои продолжают играть).
+    func scrubPreview(to t: Double, editing: Bool) {
+        guard let p = previewPlayer else { return }
+        previewScrubbing = editing
+        if !previewPaused {
+            previewPaused = true
+            p.pause()
+        }
+        let clamped = max(0, min(t, max(0, previewDuration - 0.001)))
+        previewTime = clamped
+        p.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// На кадр вперёд / назад.
+    func stepPreview(_ frames: Int) {
+        guard let p = previewPlayer else { return }
+        if !previewPaused {
+            previewPaused = true
+            p.pause()
+        }
+        p.currentItem?.step(byCount: frames)
     }
 
     /// Обои, по которым ходят Next / Previous / Random / автосмена: без закрытых папок.
