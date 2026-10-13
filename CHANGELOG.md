@@ -5,6 +5,15 @@ All notable changes to LiveWall are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-13
+
+### Fixed
+- The menu bar could disappear when switching Spaces with the library in front and the Dock icon turned off:
+  while the library window is open, LiveWall now always shows its Dock icon (macOS needs it to draw the app's
+  menu bar).
+- LiveWall no longer moves the focus to another app in the first seconds after unlocking, which could switch
+  Spaces.
+
 ## [1.1.1] - 2026-10-13
 
 ### Added
