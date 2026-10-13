@@ -18,4 +18,4 @@ labels: bug
 - macOS version:
 - Mac (Apple Silicon / Intel):
 - LiveWall version (LiveWall → About LiveWall):
-- Wallpaper format (if related):
+- Wallpaper format or link (if related):

@@ -35,7 +35,7 @@ struct LibraryView: View {
                     .transition(.opacity)
             }
 
-            // ⌘V в окне: добавить ссылку или файлы из буфера обмена
+            // ⌘V in the window: add a link or files from the clipboard
             Button(L("Paste")) { library.pasteFromClipboard() }
                 .keyboardShortcut("v", modifiers: .command)
                 .opacity(0)
@@ -49,7 +49,7 @@ struct LibraryView: View {
         }
         .frame(minWidth: 980, minHeight: 640)
         .ignoresSafeArea(.container, edges: .top)
-        // смена языка перестраивает весь интерфейс
+        // changing the language rebuilds the whole interface
         .id(library.settings.language)
     }
 }
@@ -158,7 +158,7 @@ struct TopBar: View {
             .buttonStyle(.plain)
             .help(L("Settings"))
         }
-        .padding(.leading, 86)   // место под кнопки окна
+        .padding(.leading, 86)   // room for the window buttons
         .padding(.trailing, 20)
         .frame(height: 52)
     }
@@ -341,7 +341,7 @@ struct DesktopTile: View {
         library.current.map { library.isHidden($0) } ?? false
     }
 
-    /// Анимированные обои (видео, GIF): у них есть пауза.
+    /// Animated wallpapers (video, GIF) can be paused.
     private var isAnimated: Bool {
         library.current.map { $0.kind != .image } ?? false
     }
@@ -448,7 +448,7 @@ struct LockTile: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
 
-            // часы как на настоящем экране блокировки
+            // a clock like on the real lock screen
             TimelineView(.periodic(from: Date(), by: 30)) { context in
                 VStack(spacing: 2) {
                     Text(context.date, format: .dateTime.weekday(.wide).day().month(.wide))
@@ -709,7 +709,7 @@ struct WallpaperDetail: View {
         }
     }
 
-    // MARK: Превью
+    // MARK: Preview
 
     private var previewPane: some View {
         VStack(spacing: 12) {
@@ -723,7 +723,7 @@ struct WallpaperDetail: View {
         .task(id: item.id) { await library.loadThumbnail(for: item) }
     }
 
-    /// Ползунок по видео и шаг по кадрам — чтобы встать на нужный кадр.
+    /// A timeline slider and frame stepping to land on a specific frame.
     private var frameScrubber: some View {
         HStack(spacing: 10) {
             Button {
@@ -816,7 +816,7 @@ struct WallpaperDetail: View {
         }
     }
 
-    // MARK: Управление
+    // MARK: Controls
 
     private var controlsPane: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1049,7 +1049,7 @@ struct WallpaperDetail: View {
     }
 }
 
-/// Оптимизация видео в панели обоев.
+/// Video optimization in the wallpaper panel.
 struct PerformanceSection: View {
     let item: WallpaperItem
     @ObservedObject var library: Library
@@ -1128,7 +1128,7 @@ struct PerformanceSection: View {
     }
 }
 
-/// Полоска прогресса оптимизации на карточке.
+/// Optimization progress bar on a card.
 struct OptimizeBadge: View {
     let progress: Double
 

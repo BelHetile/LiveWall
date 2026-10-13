@@ -79,7 +79,7 @@ and Intel.
 **Library**
 - Full-screen library with live previews of the **Desktop** and **Lock Screen**.
 - Click a wallpaper to open its panel: put it on the desktop or the lock screen, pause, volume, speed, fill mode,
-  folder and hotkey.
+  folder and hotkey. Previews play on their own, and a timeline slider lets you step through a video frame by frame.
 - **Folders** with a built-in icon pack (54 icons × 8 colors) or your own images; drag wallpapers onto a folder.
 - **Locked folders**: protect a folder with a password — its wallpapers disappear from the library, the menu and
   Next/Random until you unlock it.
@@ -89,6 +89,7 @@ and Intel.
 - Give any wallpaper its own hotkey: press once to switch to it, press again to go back to the previous one. A
   hotkey can switch the desktop, the lock screen or both, and works even for wallpapers in locked folders.
 - Global hotkeys for next / previous / random, pause, fill mode, mute and opening the library.
+- Combinations already used by macOS or other apps (Spotlight, screenshots, ⌘Tab, ⌘Q…) can't be assigned by mistake.
 
 **Smart pause** (like Wallpaper Engine's performance settings) — the video pauses when:
 - an app is full screen, or windows cover the desktop;
@@ -104,7 +105,7 @@ and Intel.
   loaded back when playback resumes — like Wallpaper Engine's *Stop* setting.
 
 **And also**
-- Lock screen: a still frame of the chosen wallpaper (macOS doesn't allow live video there).
+- Lock screen: a frame of the chosen wallpaper — you pick which one (macOS doesn't allow live video there).
 - Automatic rotation by timer, in order or shuffled.
 - 8 color styles, your own styles (shareable as `.json`), English and Russian interface.
 - Launch at login, Dock icon (optional), menu bar menu.
@@ -124,15 +125,17 @@ be changed or cleared in **Settings → Hotkeys**:
 | Mute / unmute | ⌃⌥⌘S |
 | Open library | ⌃⌥⌘L |
 
-Hotkeys don't need any permissions in System Settings.
+Hotkeys don't need any permissions in System Settings. Combinations taken by macOS or another app are refused,
+and LiveWall tells you what uses them.
 
 ## Good to know
 
 - **Battery.** Hardware decoding keeps the cost low, but a full-screen video still uses some power. Smart pause
   stops playback whenever the desktop isn't visible; turn on *Running on battery* in Settings to pause on battery.
   For the lowest cost, optimize your videos (wallpaper panel → *Optimize for This Mac*).
-- **Lock screen.** macOS doesn't let apps show live video on the lock screen, so LiveWall sets a still frame there
-  (Wallpaper Engine on Windows does the same).
+- **Lock screen.** macOS doesn't let apps show live video on the lock screen, so LiveWall sets one frame of the
+  wallpaper as the regular macOS wallpaper (Wallpaper Engine on Windows does the same). Choose the frame in a
+  video's panel. Turning *Show the wallpaper on the lock screen* off brings back the wallpaper you had before.
 - **Locked folders** hide wallpapers inside LiveWall. Passwords are stored only as a salted PBKDF2-SHA256 hash and
   can't be recovered. The files themselves are not encrypted on disk.
 - **Wallpaper Engine.** Video wallpapers (`.mp4`) work directly. *Scene* wallpapers (`scene.pkg`) only run inside
@@ -143,7 +146,7 @@ Hotkeys don't need any permissions in System Settings.
 
 ## Where your data lives
 
-- Wallpapers, thumbnails and icons: `~/Library/Application Support/LiveWall/`
+- Wallpapers, thumbnails, icons and the downloaded video tools: `~/Library/Application Support/LiveWall/`
 - Settings: `defaults read io.github.belhetile.livewall`
 
 ## Uninstall

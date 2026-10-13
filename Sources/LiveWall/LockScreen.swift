@@ -1,8 +1,8 @@
 import AppKit
 import AVFoundation
 
-/// Кадр текущих обоев -> системные обои macOS. Их же macOS показывает на экране блокировки
-/// и там, где окна LiveWall не видно. (Живое видео на экране блокировки macOS сторонним приложениям не позволяет.)
+/// A frame of the current wallpaper -> the macOS wallpaper. macOS shows it on the lock screen
+/// and wherever LiveWall's windows aren't visible. (macOS doesn't allow third-party live video on the lock screen.)
 enum LockScreenSync {
     private static let originalKey = "originalDesktop"
 
@@ -41,7 +41,7 @@ enum LockScreenSync {
             } catch {
                 return nil
             }
-            // старые кадры этих обоев больше не нужны
+            // older frames of this wallpaper are no longer needed
             if let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
                 for f in files where f.hasPrefix(prefix) && f != name {
                     try? FileManager.default.removeItem(at: dir.appendingPathComponent(f))
@@ -71,7 +71,7 @@ enum LockScreenSync {
             opts[.fillColor] = NSColor.black
         }
         for screen in NSScreen.screens {
-            // уже стоит этот кадр — лишний раз системные обои не трогаем
+            // this frame is already set, so leave the system wallpaper alone
             let wantScaling = Int((opts[.imageScaling] as? UInt) ?? 0)
             let haveScaling = (NSWorkspace.shared.desktopImageOptions(for: screen)?[.imageScaling] as? NSNumber)?.intValue
             if NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == url.standardizedFileURL,
@@ -86,7 +86,7 @@ enum LockScreenSync {
         }
     }
 
-    // MARK: Прежние обои macOS
+    // MARK: Previous macOS wallpaper
 
     private static func key(for screen: NSScreen) -> String {
         if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
@@ -97,7 +97,7 @@ enum LockScreenSync {
         return screen.localizedName
     }
 
-    /// Запоминает обои, которые стояли до LiveWall (один раз, пока не вернули).
+    /// Remembers the wallpaper set before LiveWall (once, until it is restored).
     static func saveOriginalIfNeeded() {
         let defaults = UserDefaults.standard
         guard defaults.dictionary(forKey: originalKey) == nil else { return }
@@ -121,7 +121,7 @@ enum LockScreenSync {
         UserDefaults.standard.dictionary(forKey: originalKey) != nil
     }
 
-    /// Возвращает обои, которые стояли до LiveWall. false — их не запомнили (стояли ещё до этой версии).
+    /// Restores the wallpaper set before LiveWall. false if it wasn't remembered (set before this version).
     @discardableResult
     static func restoreOriginal() -> Bool {
         guard let saved = UserDefaults.standard.dictionary(forKey: originalKey) as? [String: [String: Any]],

@@ -1,8 +1,8 @@
 import AppKit
 import VideoToolbox
 
-/// yt-dlp и Deno: скачивание видео с YouTube и похожих сайтов.
-/// Оба — свободные программы; LiveWall берёт их из Homebrew или скачивает из официальных релизов на GitHub.
+/// yt-dlp and Deno: downloading videos from YouTube and similar sites.
+/// Both are free software; LiveWall uses them from Homebrew or downloads them from their official GitHub releases.
 enum MediaTools {
     static let dir: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -19,10 +19,10 @@ enum MediaTools {
     static var ytdlp: URL? { find("yt-dlp") }
     static var deno: URL? { find("deno") }
     static var installed: Bool { ytdlp != nil && deno != nil }
-    /// Скачаны самим LiveWall (их можно обновить), а не из Homebrew.
+    /// Downloaded by LiveWall itself (so they can be updated), not from Homebrew.
     static var ownCopy: Bool { FileManager.default.fileExists(atPath: dir.appendingPathComponent("yt-dlp").path) }
 
-    /// Сайты, где видео не лежит файлом: сразу идём через yt-dlp.
+    /// Sites that don't serve videos as files: go straight to yt-dlp.
     static func isVideoSite(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         let sites = ["youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "tiktok.com", "twitch.tv",
@@ -44,7 +44,7 @@ enum MediaTools {
         }
     }
 
-    /// Согласие пользователя на скачивание инструментов.
+    /// Asks the user for consent to download the tools.
     static func askToInstall() -> Bool {
         let alert = NSAlert()
         alert.messageText = L("Download video tools?")
@@ -55,7 +55,7 @@ enum MediaTools {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    /// Скачивает (или обновляет) yt-dlp и Deno в папку LiveWall.
+    /// Downloads (or updates) yt-dlp and Deno into LiveWall's folder.
     static func install(progress: @escaping (Double) -> Void) async throws {
         let ytURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
         #if arch(arm64)
@@ -132,9 +132,9 @@ enum MediaTools {
         }
     }
 
-    // MARK: Скачивание видео
+    // MARK: Downloading videos
 
-    /// Порядок форматов: разрешение не выше экрана; кодек — тот, что Mac декодирует железом.
+    /// Format order: resolution no higher than the screen; a codec the Mac decodes in hardware.
     static func formatSort() -> String {
         let target = VideoOptimizer.targetScreenPixels()
         let height = Int(min(2160, max(720, min(target.width, target.height))))
@@ -155,7 +155,7 @@ enum MediaTools {
         }
     }
 
-    /// Запускает yt-dlp. `progress` и `completion` вызываются на главной очереди.
+    /// Runs yt-dlp. `progress` and `completion` are called on the main queue.
     static func fetch(_ url: URL, into folder: URL, progress: @escaping (Double, String?) -> Void,
                       completion: @escaping (Result<(URL, String?), Error>) -> Void) -> Job? {
         guard let exe = ytdlp else {
@@ -181,7 +181,7 @@ enum MediaTools {
         p.standardError = pipe
 
         let regex = try? NSRegularExpression(pattern: "\\[download\\]\\s+([0-9.]+)%")
-        // вызывается только на главной очереди
+        // called only on the main queue
         let consume: (String, Bool) -> Void = { text, final in
             job.buffer += text
             if final { job.buffer += "\n" }

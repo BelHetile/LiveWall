@@ -1,7 +1,7 @@
 import Foundation
 import Carbon.HIToolbox
 
-/// Глобальные хоткеи через Carbon (не требуют никаких разрешений в System Settings).
+/// Global hotkeys via Carbon (no permissions needed in System Settings).
 final class HotkeyCenter {
     static let shared = HotkeyCenter()
 

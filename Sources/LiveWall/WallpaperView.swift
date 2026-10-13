@@ -2,8 +2,8 @@ import AppKit
 import AVFoundation
 import QuartzCore
 
-/// Вид, который рисует одни обои (видео / картинка / GIF) с нужным режимом заполнения
-/// и плавно перекрёстно затухает при смене.
+/// A view that draws one wallpaper (video / image / GIF) with its fill mode
+/// and crossfades smoothly when it changes.
 final class WallpaperView: NSView {
     private var stack: [CALayer] = []
     private var readyObservation: NSKeyValueObservation?
@@ -31,7 +31,7 @@ final class WallpaperView: NSView {
         relayout()
     }
 
-    // MARK: Показ
+    // MARK: Presenting
 
     func clear() {
         readyObservation = nil
@@ -79,7 +79,7 @@ final class WallpaperView: NSView {
         }
 
         if !animated {
-            // без анимации — сразу убираем всё старое
+            // no animation: remove everything old right away
             let stale = stack.dropLast()
             for l in stale { l.removeFromSuperlayer() }
             stack = [newLayer]
@@ -87,7 +87,7 @@ final class WallpaperView: NSView {
         }
 
         if let pl = newLayer as? AVPlayerLayer {
-            // ждём первого кадра, чтобы не мигать чёрным
+            // wait for the first frame to avoid a black flash
             var fired = false
             readyObservation = pl.observe(\.isReadyForDisplay, options: [.initial, .new]) { layer, _ in
                 guard layer.isReadyForDisplay, !fired else { return }
@@ -99,7 +99,7 @@ final class WallpaperView: NSView {
         }
     }
 
-    /// Видео выгружено: вместо слоя плеера — его кадр, без анимации.
+    /// The video is unloaded: its frame replaces the player layer, without animation.
     func showStill(_ image: CGImage, mode: FillMode, videoSize: CGSize) {
         readyObservation = nil
         self.mode = mode
@@ -115,14 +115,14 @@ final class WallpaperView: NSView {
         CATransaction.commit()
     }
 
-    /// Пауза анимации GIF без потери позиции.
+    /// Pauses GIF animation without losing its position.
     func setAnimationPaused(_ paused: Bool) {
         for case let l as GIFLayer in stack {
             l.setPaused(paused)
         }
     }
 
-    // MARK: Раскладка
+    // MARK: Layout
 
     private func relayout() {
         CATransaction.begin()
@@ -172,13 +172,13 @@ final class WallpaperView: NSView {
 
 // MARK: - GIF
 
-/// Анимированный GIF. На паузе анимация снимается целиком (рендер-сервер ничего не перерисовывает),
-/// на слое остаётся текущий кадр, а при продолжении анимация идёт с того же места.
+/// An animated GIF. While paused the animation is removed entirely (the render server redraws nothing),
+/// the current frame stays on the layer, and on resume the animation continues from the same spot.
 final class GIFLayer: CALayer {
     private var frames: [CGImage] = []
     private var keyTimes: [NSNumber] = []
     private var total: Double = 0
-    private var startedAt: CFTimeInterval = 0   // локальное время слоя, когда фаза была 0
+    private var startedAt: CFTimeInterval = 0   // layer-local time at which the phase was 0
     private var pausedPhase: Double?
 
     init(url: URL) {
@@ -235,7 +235,7 @@ final class GIFLayer: CALayer {
         add(anim, forKey: "gif")
     }
 
-    /// Номер кадра для фазы анимации (секунды от начала цикла).
+    /// Frame index for an animation phase (seconds from the start of the loop).
     private func frameIndex(at phase: Double) -> Int {
         let fraction = phase / total
         var index = 0

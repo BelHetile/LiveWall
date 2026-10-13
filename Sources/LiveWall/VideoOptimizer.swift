@@ -1,7 +1,7 @@
 import AppKit
 import AVFoundation
 
-/// Сведения о видео для панели и решения «стоит ли оптимизировать».
+/// Video info for the panel and for deciding whether to optimize.
 struct VideoInfo: Equatable {
     let width: Int
     let height: Int
@@ -16,7 +16,7 @@ struct VideoInfo: Equatable {
     }
 }
 
-/// Отмена перекодирования из любого потока.
+/// Cancels a conversion from any thread.
 final class CancelToken {
     private let lock = NSLock()
     private var cancelled = false
@@ -43,9 +43,9 @@ enum OptimizeError: LocalizedError {
     }
 }
 
-/// Делает «лёгкую» копию видео: HEVC, не больше экрана, не чаще заданного fps.
+/// Makes a lighter copy of a video: HEVC, no larger than the screen, no more than the fps limit.
 enum VideoOptimizer {
-    /// Размер в пикселях, который должно покрывать видео: самый большой экран (не меньше Full HD).
+    /// The pixel size the video should cover: the largest screen (at least Full HD).
     static func targetScreenPixels() -> CGSize {
         var w: CGFloat = 0
         var h: CGFloat = 0
@@ -76,7 +76,7 @@ enum VideoOptimizer {
                          fps: fps, codec: codec, isHEVC: hevc, duration: duration.isFinite ? duration : 0)
     }
 
-    /// Есть ли выигрыш: видео больше экрана или чаще лимита кадров.
+    /// Whether there is a gain: the video is larger than the screen or faster than the fps limit.
     static func needsOptimization(_ info: VideoInfo, fpsLimit: Double, target: CGSize) -> Bool {
         guard info.width > 0, info.height > 0 else { return false }
         let scale = max(target.width / CGFloat(info.width), target.height / CGFloat(info.height))
@@ -102,7 +102,7 @@ enum VideoOptimizer {
         }
     }
 
-    /// Перекодирует `source` в `dest` (.mov). Прогресс 0…1 приходит с фоновой очереди.
+    /// Re-encodes `source` into `dest` (.mov). Progress 0…1 arrives on a background queue.
     static func transcode(source: URL, dest: URL, fpsLimit: Double, target: CGSize,
                           token: CancelToken, progress: @escaping (Double) -> Void) async throws {
         let asset = AVURLAsset(url: source)
@@ -115,7 +115,7 @@ enum VideoOptimizer {
         let durationTime = try await asset.load(.duration)
         let duration = CMTimeGetSeconds(durationTime)
 
-        // размер: покрыть экран, но не увеличивать (считаем по повёрнутой картинке)
+        // size: cover the screen but never upscale (measured on the rotated picture)
         let shown = CGRect(origin: .zero, size: natural).applying(transform)
         let shownW = max(abs(shown.width), 1)
         let shownH = max(abs(shown.height), 1)
@@ -123,7 +123,7 @@ enum VideoOptimizer {
         let outW = max(2, Int((abs(natural.width) * scale / 2).rounded()) * 2)
         let outH = max(2, Int((abs(natural.height) * scale / 2).rounded()) * 2)
         let fps = sourceFps > 0 ? min(sourceFps, fpsLimit) : fpsLimit
-        // ~0.07 бита на пиксель кадра — для HEVC визуально без потерь на обоях
+        // ~0.07 bits per pixel per frame: visually lossless HEVC for wallpapers
         let bitrate = max(2_000_000, Int(Double(outW * outH) * fps * 0.07))
 
         try? FileManager.default.removeItem(at: dest)
@@ -154,7 +154,7 @@ enum VideoOptimizer {
         guard writer.canAdd(videoIn) else { throw OptimizeError.failed(L("The HEVC encoder is not available.")) }
         writer.add(videoIn)
 
-        // звук копируем как есть, если контейнер его принимает
+        // copy the audio as is if the container accepts it
         var audioOut: AVAssetReaderTrackOutput?
         var audioIn: AVAssetWriterInput?
         if let track = audioTrack {
@@ -186,7 +186,7 @@ enum VideoOptimizer {
         let group = DispatchGroup()
         let minStep = 1.0 / fps - 0.002
 
-        // видео: прореживаем кадры до лимита fps
+        // video: drop frames down to the fps limit
         let videoState = PumpState()
         group.enter()
         videoIn.requestMediaDataWhenReady(on: DispatchQueue(label: "livewall.optimize.video")) {

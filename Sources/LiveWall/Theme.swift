@@ -5,13 +5,13 @@ import AVFoundation
 // MARK: - Palette
 
 enum Theme {
-    /// Текущий цветовой стиль (встроенный или свой).
+    /// The current color style (built-in or custom).
     static var style: ColorStyle {
         let s = Library.shared.settings
         return (ColorStyle.builtIns + s.customStyles).first(where: { $0.id == s.colorStyleID }) ?? ColorStyle.builtIns[0]
     }
 
-    // имена исторические: «violet» — основной цвет стиля, «magenta» — второй
+    // historical names: "violet" is the style's main color, "magenta" the second one
     static var violet: Color { Color(hex: style.primary) }
     static var magenta: Color { Color(hex: style.secondary) }
     static let sunset = Color(red: 1.00, green: 0.66, blue: 0.47)
@@ -29,7 +29,7 @@ enum Theme {
                                           startPoint: .top,
                                           endPoint: .bottom)
 
-    /// Цветовые темы для иконок папок.
+    /// Color themes for folder icons.
     static let folderPalettes: [[Color]] = [
         [Color(red: 0.49, green: 0.30, blue: 0.98), Color(red: 0.93, green: 0.33, blue: 0.62)],
         [Color(red: 0.20, green: 0.48, blue: 1.00), Color(red: 0.20, green: 0.82, blue: 0.95)],
@@ -52,7 +52,7 @@ enum Theme {
 
 // MARK: - AppKit bridges
 
-/// Настоящий «вибрантный» фон macOS (как у сайдбаров системных приложений).
+/// A real macOS vibrancy background (like system app sidebars).
 struct VisualEffectBackground: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .sidebar
     var blending: NSVisualEffectView.BlendingMode = .behindWindow
@@ -71,8 +71,7 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 }
 
-/// Живое превью: тот же AVPlayer, что крутит обои на рабочем столе.
-/// Анимированный GIF для превью в библиотеке (тот же слой, что и на рабочем столе).
+/// An animated GIF preview in the library (the same layer as on the desktop).
 struct GIFPreview: NSViewRepresentable {
     let url: URL
     var paused: Bool
@@ -127,6 +126,7 @@ struct GIFPreview: NSViewRepresentable {
     }
 }
 
+/// A live video preview for an AVPlayer.
 struct PlayerPreview: NSViewRepresentable {
     let player: AVPlayer?
     var gravity: AVLayerVideoGravity = .resizeAspectFill

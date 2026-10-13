@@ -1,6 +1,6 @@
 #!/bin/bash
-# LiveWall — установщик из образа диска / installer from the disk image.
-# Копирует LiveWall.app в «Программы», снимает карантин macOS и запускает приложение.
+# LiveWall installer for the disk image.
+# Copies LiveWall.app to Applications, clears the macOS quarantine flag and launches it.
 # Copies LiveWall.app to Applications, clears the macOS quarantine flag and launches it.
 set -euo pipefail
 
@@ -29,7 +29,7 @@ if [[ ! -w /Applications ]] || { [[ -e "$APP" ]] && [[ ! -w "$APP" ]]; }; then
 fi
 $SUDO rm -rf "$APP"
 $SUDO ditto "$SRC" "$APP"
-# файл скачан из интернета — без этого macOS спросит про «неизвестного разработчика»
+# the file came from the internet; without this macOS asks about an unidentified developer
 $SUDO xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 
 say "Launching LiveWall…"

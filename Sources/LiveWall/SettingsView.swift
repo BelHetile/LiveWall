@@ -313,7 +313,7 @@ struct AppearanceSection: View {
     var body: some View {
         Group {
             Section {
-                // раскладка с переносом: не прокручивается и не прыгает при добавлении стиля
+                // wrapping layout: doesn't scroll or jump when a style is added
                 FlowLayout(spacing: 12) {
                     ForEach(library.allStyles) { style in
                         StyleSwatch(style: style, selected: library.settings.colorStyleID == style.id)
@@ -443,12 +443,12 @@ struct StyleSwatch: View {
     }
 }
 
-/// Простая раскладка «в строку с переносом» — стабильна внутри Form.
+/// A simple wrapping row layout that stays stable inside a Form.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 12
 
-    /// Ширина для переноса: предложенная, а если её нет (запрос «идеального» размера) — разумный предел,
-    /// чтобы раскладка не вытягивалась в одну длинную строку и не распирала форму.
+    /// Wrap width: the proposed one, or a sensible limit when there is none (an ideal-size query),
+    /// so the layout doesn't stretch into one long row and widen the form.
     private func wrapWidth(_ proposal: ProposedViewSize) -> CGFloat {
         if let w = proposal.width, w.isFinite, w > 0 { return w }
         return 560
@@ -492,7 +492,7 @@ struct FlowLayout: Layout {
     }
 }
 
-/// Строка своего стиля: образец, название и две палитры без подписей — не шире формы.
+/// A custom style row: swatch, name and two unlabeled color pickers, no wider than the form.
 struct CustomStyleRow: View {
     let style: ColorStyle
     @ObservedObject var library: Library

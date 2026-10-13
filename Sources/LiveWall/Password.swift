@@ -3,7 +3,7 @@ import AppKit
 import CommonCrypto
 import Security
 
-/// Пароли закрытых папок: храним только соль и PBKDF2-SHA256 хеш.
+/// Locked-folder passwords: only a salt and a PBKDF2-SHA256 hash are stored.
 enum PasswordHasher {
     static let rounds: UInt32 = 200_000
 
@@ -11,7 +11,7 @@ enum PasswordHasher {
         var bytes = [UInt8](repeating: 0, count: 16)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         if status != errSecSuccess {
-            // запасной вариант, если системный генератор недоступен
+            // fallback in case the system generator is unavailable
             bytes = (0..<16).map { _ in UInt8.random(in: 0...255) }
         }
         return Data(bytes)
@@ -38,7 +38,7 @@ enum PasswordHasher {
         guard let salt = Data(base64Encoded: saltB64), let expected = Data(base64Encoded: hashB64) else { return false }
         let actual = hash(password, salt: salt)
         guard actual.count == expected.count else { return false }
-        // сравнение за постоянное время
+        // constant-time comparison
         var diff: UInt8 = 0
         for (a, b) in zip(actual, expected) { diff |= a ^ b }
         return diff == 0
@@ -46,7 +46,7 @@ enum PasswordHasher {
 }
 
 enum PasswordPrompt {
-    /// Окно ввода пароля. При `confirm` — два поля и проверка совпадения.
+    /// Password prompt. With `confirm`: two fields that must match.
     static func ask(title: String, message: String?, button: String, confirm: Bool) -> String? {
         let alert = NSAlert()
         alert.messageText = title

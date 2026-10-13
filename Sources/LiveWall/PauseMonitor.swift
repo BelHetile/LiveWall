@@ -1,8 +1,8 @@
 import AppKit
 import IOKit.ps
 
-/// Решает, нужно ли сейчас ставить обои на паузу (как «Performance → Playback» в Wallpaper Engine).
-/// Возвращает человекочитаемую причину или nil, если играть можно.
+/// Decides whether the wallpaper should pause right now (like Performance → Playback in Wallpaper Engine).
+/// Returns a human-readable reason, or nil when playing is fine.
 final class PauseMonitor: NSObject {
     static let shared = PauseMonitor()
 
@@ -16,7 +16,7 @@ final class PauseMonitor: NSObject {
     private var powerSource: CFRunLoopSource?
     private var cachedOnBattery = false
 
-    /// Следить за окнами нужно только для видео и GIF: статичной картинке пауза ни к чему.
+    /// Windows only need watching for videos and GIFs: a still image has nothing to pause.
     var needsMonitoring = false {
         didSet {
             guard needsMonitoring != oldValue, started else { return }
@@ -58,8 +58,8 @@ final class PauseMonitor: NSObject {
         evaluate()
     }
 
-    /// Окна двигаются без уведомлений, поэтому их проверяем опросом — но только пока это нужно,
-    /// и с допуском, чтобы macOS объединяла пробуждения с другими таймерами.
+    /// Windows move without notifications, so they are polled, but only while needed
+    /// and with tolerance, so macOS can coalesce wakeups with other timers.
     private func updateTimer() {
         timer?.invalidate()
         timer = nil
@@ -72,7 +72,7 @@ final class PauseMonitor: NSObject {
         timer = t
     }
 
-    /// Источник питания меняется редко — узнаём об этом от системы, а не опросом.
+    /// The power source rarely changes, so the system tells us instead of polling.
     private func startPowerNotifications() {
         cachedOnBattery = PauseMonitor.onBattery()
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -95,7 +95,7 @@ final class PauseMonitor: NSObject {
     @objc private func screenLocked() { locked = true; evaluate() }
     @objc private func screenUnlocked() { locked = false; evaluate() }
     @objc private func somethingChanged() {
-        // уведомления могут прийти не с главного потока
+        // notifications may arrive off the main thread
         DispatchQueue.main.async { self.evaluate() }
     }
 
@@ -108,7 +108,7 @@ final class PauseMonitor: NSObject {
     }
 
     private func computeReason() -> String? {
-        // статичные обои не на что ставить на паузу
+        // a still wallpaper has nothing to pause
         guard needsMonitoring else { return nil }
         if screenOff { return L("Display asleep") }
         if locked { return L("Screen locked") }
@@ -165,9 +165,9 @@ final class PauseMonitor: NSObject {
         return type == kIOPSBatteryPowerValue
     }
 
-    /// Насколько окна других приложений закрывают каждый экран.
-    /// minFraction — доля закрытой полезной области на самом «открытом» экране,
-    /// allFullscreen — на каждом экране есть окно размером во весь экран.
+    /// How much other apps' windows cover each screen.
+    /// minFraction: covered share of the usable area on the least covered screen,
+    /// allFullscreen: every screen has a full-screen window.
     static func coverage() -> (minFraction: Double, allFullscreen: Bool) {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
@@ -192,7 +192,7 @@ final class PauseMonitor: NSObject {
         var minFraction = 1.0
         var allFullscreen = true
         for screen in screens {
-            // Cocoa (начало снизу) -> CoreGraphics (начало сверху)
+            // Cocoa (origin at the bottom) -> CoreGraphics (origin at the top)
             let f = screen.frame
             let sr = CGRect(x: f.minX, y: ph - f.maxY, width: f.width, height: f.height)
             let full = rects.contains { r in

@@ -1,7 +1,7 @@
 import AppKit
 import AVFoundation
 
-/// Окно без рамки на уровне рабочего стола: лежит над системными обоями, но под иконками.
+/// A borderless window at desktop level: above the system wallpaper, below the desktop icons.
 final class DesktopWindow: NSWindow {
     let wallpaperView: WallpaperView
 
@@ -41,11 +41,11 @@ final class WallpaperController: NSObject {
     private var currentURL: URL?
     private var currentVideoSize: CGSize = .zero
 
-    /// Через сколько секунд паузы видео выгружается из памяти (0 — никогда).
+    /// Seconds of pause after which the video is unloaded from memory (0 = never).
     var stopAfter: TimeInterval = 30 {
         didSet { if stopAfter != oldValue { scheduleStop() } }
     }
-    /// Видео выгружено: на экране его кадр, плеера нет.
+    /// The video is unloaded: its frame is on screen and there is no player.
     private(set) var isStopped = false
     private var stopWork: DispatchWorkItem?
     private var stoppedTime: CMTime = .zero
@@ -69,19 +69,19 @@ final class WallpaperController: NSObject {
     }
 
     var currentPlayer: AVPlayer? { player }
-    /// Позиция видео обоев (и когда оно выгружено).
+    /// Playback position of the wallpaper video (also while it is unloaded).
     var playbackTime: CMTime? {
         if isStopped { return stoppedTime }
         return player?.currentTime()
     }
-    /// Плеер появился или выгружен — превью в библиотеке перерисовываются.
+    /// The player was created or unloaded, so library previews redraw.
     var onPlayerChange: (() -> Void)?
 
     var isPlaying: Bool {
         player != nil && !userPaused && !autoPaused
     }
 
-    // MARK: Запуск
+    // MARK: Start
 
     func start() {
         syncWindows()
@@ -91,7 +91,7 @@ final class WallpaperController: NSObject {
 
     @objc private func screensChanged() { syncWindows() }
 
-    // MARK: Окна по экранам
+    // MARK: Windows per screen
 
     private static func key(for screen: NSScreen) -> NSNumber? {
         screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
@@ -124,7 +124,7 @@ final class WallpaperController: NSObject {
         }
     }
 
-    // MARK: Применение обоев
+    // MARK: Applying wallpapers
 
     func apply(item: WallpaperItem?, url: URL?) {
         resetStop()
@@ -170,7 +170,7 @@ final class WallpaperController: NSObject {
         }
         updatePlayback()
 
-        // старый плеер держим до конца перекрёстного затухания
+        // keep the old player until the crossfade ends
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             oldPlayer?.pause()
             _ = oldLooper
@@ -186,7 +186,7 @@ final class WallpaperController: NSObject {
         p.isMuted = muted
         p.volume = volume
         p.preventsDisplaySleepDuringVideoPlayback = false
-        // локальный файл: не ждём буферизации и не держим лишний запас кадров
+        // local file: no waiting for buffering and no extra frames buffered
         p.automaticallyWaitsToMinimizeStalling = false
         let template = AVPlayerItem(url: url)
         template.preferredForwardBufferDuration = 2
@@ -205,7 +205,7 @@ final class WallpaperController: NSObject {
 
     private func updatePlayback() {
         let paused = userPaused || autoPaused
-        // GIF тоже замирают, когда их не видно
+        // GIFs freeze too when they can't be seen
         if currentItem?.kind == .gif {
             for w in windows.values { w.wallpaperView.setAnimationPaused(paused) }
         }
@@ -223,7 +223,7 @@ final class WallpaperController: NSObject {
         }
     }
 
-    // MARK: Стоп вместо паузы
+    // MARK: Stop instead of pause
 
     private func resetStop() {
         stopWork?.cancel()
@@ -233,7 +233,7 @@ final class WallpaperController: NSObject {
         stillImage = nil
     }
 
-    /// Видео на паузе дольше `stopAfter` — выгружаем плеер, оставляем кадр.
+    /// The video has been paused longer than `stopAfter`: unload the player, keep the frame.
     private func scheduleStop() {
         stopWork?.cancel()
         stopWork = nil
@@ -270,7 +270,7 @@ final class WallpaperController: NSObject {
         }
     }
 
-    /// Снова подгружаем видео с того же места; кадр исчезает, когда видео готово.
+    /// Loads the video again from the same spot; the frame goes away once the video is ready.
     private func resume() {
         guard isStopped, let item = currentItem, let url = currentURL else { return }
         isStopped = false

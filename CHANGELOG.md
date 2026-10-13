@@ -5,43 +5,48 @@ All notable changes to LiveWall are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-13
+
 ### Added
-- **Optimize for This Mac**: a video can be re-encoded to HEVC at the size of your largest screen with a frame rate
-  limit (24, 30 or 60 fps). Available in the wallpaper panel, the card's context menu and Settings → Performance
-  (*Optimize All Videos*); new videos are optimized automatically (can be turned off). Videos that are already light
-  are left alone.
-- **Unload paused video**: after a video has been paused for a while (10 s – 5 min, or never) it is unloaded from
-  memory and the exact paused frame stays on screen; it loads back from the same spot when playback resumes.
-- The wallpaper panel shows the video's resolution, frame rate and codec, and scrolls when it doesn't fit.
-- **WebM and MKV** (VP9, AV1 on M3 and newer, H.264/HEVC) and MP4 files with codecs macOS can't play are converted
-  to HEVC with VideoToolbox on import. Videos already in the library that show up black get a *Convert* button.
-- **Lock screen frame**: pick which frame of a video goes to the lock screen (a timeline slider and frame-by-frame
-  buttons under the preview, then *Use Current Frame*). Turning the lock-screen option off brings back the macOS wallpaper you had before LiveWall.
-- The DMG contains **Install LiveWall.command**, which copies the app to Applications, clears the download flag
-  and starts it.
-- Hotkeys that macOS or apps already use (Spotlight, screenshots, ⌘Tab, ⌘Q, Mission Control, …, including ones you
-  changed in System Settings) or that another app has taken can't be assigned; LiveWall says what uses them.
-- **YouTube, Vimeo, TikTok and other sites**: such links are downloaded with yt-dlp (plus Deno for YouTube). Both
-  are downloaded from their official GitHub releases on first use, after asking, and can be updated in Settings.
+- **WebM, MKV and YouTube.** WebM and MKV files (VP9, H.264/HEVC, AV1 on M3 and newer) and MP4 files with codecs
+  macOS can't play are converted to HEVC on import. Links to YouTube, Vimeo, TikTok and hundreds of other sites are
+  downloaded with yt-dlp (plus Deno for YouTube); LiveWall asks before downloading these tools from their official
+  GitHub releases and can update them in Settings. Videos that show up black get a *Convert* button.
+- **Optimize for This Mac.** Re-encodes a video to HEVC at the size of your largest screen with a frame rate limit
+  (24, 30 or 60 fps) — from the wallpaper panel, the card menu or *Settings → Performance → Optimize All Videos*.
+  New videos are optimized automatically (can be turned off); videos that are already light are left alone.
+- **Unload paused video** (like Wallpaper Engine's *Stop*). A video paused for a while (10 s – 5 min, or never) is
+  unloaded from memory, its exact paused frame stays on screen, and it loads back from the same spot on resume.
+- **Lock screen frame.** Choose which frame of a video goes to the lock screen with the timeline slider and
+  frame-by-frame buttons under the preview, then *Use Current Frame*.
+- Turning the lock-screen option off brings back the macOS wallpaper you had before LiveWall.
+- **Safe hotkeys.** Combinations used by macOS (Spotlight, screenshots, Mission Control, input sources — including
+  the ones you changed in System Settings), common app commands (⌘ + key, ⌘Tab, ⌃⌘Q, …) or another app can't be
+  assigned; LiveWall says what uses them and keeps listening for another combination.
+- The DMG includes **Install LiveWall.command**, which copies the app to Applications, clears the download flag and
+  starts it.
+- The wallpaper panel shows the video's resolution, frame rate and codec.
 
 ### Changed
-- Library previews play on their own instead of mirroring the (often paused) desktop wallpaper. When the wallpaper
-  is paused, the previews pause on the same frame and show a *Paused* badge.
+- Library previews play on their own instead of mirroring the desktop wallpaper, which is usually paused behind the
+  library window. When the wallpaper is paused, previews stop on the same frame and show a *Paused* badge.
+- GIFs are animated in the library and pause with the wallpaper.
 - Images no longer show pause and sound controls (library, menu bar).
-- GIFs pause reliably (the animation is taken off while paused, so it also costs nothing), and the library shows
-  them animated with the same pause.
-- The macOS wallpaper is no longer touched while the screen is locked or right after unlocking, is updated a moment
-  after switching Spaces instead of instantly, and isn't set again when it's already the right frame.
-- The lock-screen option is now called *Show the wallpaper on the lock screen* and controls a separately chosen
-  lock-screen wallpaper too.
-- The preview in the wallpaper panel has a margin and rounded corners; panel controls no longer overflow.
-- Repository layout: scripts live in `scripts/`, `Info.plist` in `Resources/`.
+- The lock-screen option is called *Show the wallpaper on the lock screen* and also covers a separately chosen
+  lock-screen wallpaper.
+- The wallpaper panel preview has a margin and rounded corners, and the panel scrolls when it doesn't fit.
+
+### Fixed
+- GIF wallpapers didn't always pause.
+- Panel controls (hotkey scope, speed) could overflow the panel.
+- The macOS wallpaper is no longer changed while the screen is locked or right after unlocking, and isn't set again
+  when the right frame is already there.
 
 ### Performance
 - Window coverage is only checked while a video or GIF is on, less often and with timer tolerance; the power source
   is reported by the system instead of being polled.
-- GIF wallpapers pause together with videos (covered desktop, fullscreen apps, battery, …).
-- Closing the library window frees its interface, thumbnails, images and the preview player.
+- A paused GIF costs nothing: its animation is removed until it resumes.
+- Closing the library window frees its interface, thumbnails, images and preview players.
 - At most three thumbnails are generated at a time; the library index is saved once per burst of changes.
 - Local videos start without extra buffering and keep a smaller frame buffer.
 

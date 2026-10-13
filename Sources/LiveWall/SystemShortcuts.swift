@@ -1,8 +1,8 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// Сочетания, которые уже заняты macOS или общими командами приложений.
-/// Глобальный хоткей поверх них сломал бы привычное действие (Spotlight, скриншоты, ⌘Q…).
+/// Key combinations already used by macOS or by common app commands.
+/// A global hotkey on top of them would break a familiar action (Spotlight, screenshots, ⌘Q…).
 enum SystemShortcuts {
     private struct Shortcut {
         let keyCode: UInt32
@@ -15,7 +15,7 @@ enum SystemShortcuts {
     private static let opt = UInt32(optionKey)
     private static let ctrl = UInt32(controlKey)
 
-    /// Стандартные системные сочетания (номер в com.apple.symbolichotkeys → сочетание).
+    /// Default system shortcuts (id in com.apple.symbolichotkeys → combination).
     private static var defaults: [Int: Shortcut] {
         [
             64: Shortcut(keyCode: UInt32(kVK_Space), modifiers: cmd, name: L("Spotlight")),
@@ -36,7 +36,7 @@ enum SystemShortcuts {
         ]
     }
 
-    /// Общие команды, которые есть почти в каждом приложении или в самой macOS.
+    /// Common commands found in almost every app or in macOS itself.
     private static var appShortcuts: [Shortcut] {
         [
             Shortcut(keyCode: UInt32(kVK_Tab), modifiers: cmd, name: L("App switcher")),
@@ -59,7 +59,7 @@ enum SystemShortcuts {
         ]
     }
 
-    /// Перевод модификаторов из настроек macOS (как у NSEvent) в Carbon.
+    /// Converts modifiers from macOS preferences (NSEvent style) to Carbon.
     private static func carbon(fromCocoa flags: Int) -> UInt32 {
         var m: UInt32 = 0
         if flags & 0x20000 != 0 { m |= shift }
@@ -69,7 +69,7 @@ enum SystemShortcuts {
         return m
     }
 
-    /// Системные сочетания с учётом того, что пользователь поменял или выключил в Системных настройках.
+    /// System shortcuts, including the ones the user changed or turned off in System Settings.
     private static func systemShortcuts() -> [Shortcut] {
         var table = defaults
         let prefs = UserDefaults(suiteName: "com.apple.symbolichotkeys")?
@@ -95,7 +95,7 @@ enum SystemShortcuts {
         return Array(table.values)
     }
 
-    /// Чем занято сочетание (nil — свободно).
+    /// What uses the combination (nil if it's free).
     static func conflict(_ binding: HotkeyBinding) -> String? {
         let mods = binding.modifiers & (cmd | shift | opt | ctrl)
         if let s = systemShortcuts().first(where: { $0.keyCode == binding.keyCode && $0.modifiers == mods }) {
@@ -104,14 +104,14 @@ enum SystemShortcuts {
         if let s = appShortcuts.first(where: { $0.keyCode == binding.keyCode && $0.modifiers == mods }) {
             return LF("macOS (%@)", s.name)
         }
-        // ⌘ + клавиша без других модификаторов — команды приложений (⌘C, ⌘Q, ⌘W…)
+        // ⌘ + key without other modifiers is an app command (⌘C, ⌘Q, ⌘W…)
         if mods == cmd {
             return L("app commands (⌘ + key)")
         }
         return nil
     }
 
-    /// Свободно ли сочетание для других приложений: пробуем зарегистрировать и сразу отпускаем.
+    /// Whether another app holds the combination: register it and release it right away.
     static func takenByAnotherApp(_ binding: HotkeyBinding) -> Bool {
         var ref: EventHotKeyRef?
         let id = EventHotKeyID(signature: OSType(0x4C575454), id: 9999) // 'LWTT'

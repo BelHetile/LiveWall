@@ -19,7 +19,7 @@ enum LoginItem {
     }
 }
 
-/// Библиотека обоев, настройки и вся логика переключения.
+/// The wallpaper library, settings and all switching logic.
 final class Library: ObservableObject {
     static let shared = Library()
 
@@ -30,9 +30,9 @@ final class Library: ObservableObject {
     @Published var dropTargeted = false
     @Published private(set) var thumbs: [UUID: NSImage] = [:]
     @Published private(set) var recordingTarget: HotkeyTarget?
-    /// Почему последнее нажатие при записи хоткея не подошло.
+    /// Why the last key press while recording a hotkey was rejected.
     @Published private(set) var hotkeyWarning: String?
-    /// Не получилось вернуть прежние обои macOS (LiveWall их не запомнил).
+    /// The previous macOS wallpaper couldn't be restored (LiveWall didn't remember it).
     @Published private(set) var restoreFailed = false
     @Published private(set) var folders: [WallpaperFolder] = []
     @Published var selectedFolderID: UUID?
@@ -48,20 +48,20 @@ final class Library: ObservableObject {
     @Published private(set) var lockScreenID: UUID?
     @Published private(set) var detailID: UUID?
     @Published private(set) var previewPlayer: AVQueuePlayer?
-    /// Превью в панели обоев стоит на паузе (для обоев рабочего стола — повторяет паузу обоев).
+    /// The panel preview is paused (for the desktop wallpaper it follows the wallpaper's pause).
     @Published private(set) var previewPaused = false
-    /// Позиция и длина видео в превью панели (для ползунка выбора кадра).
+    /// Position and length of the panel preview video (for the frame slider).
     @Published private(set) var previewTime: Double = 0
     @Published private(set) var previewDuration: Double = 0
-    /// Своё беззвучное превью для плитки «Рабочий стол»: обои под окном библиотеки стоят на паузе.
+    /// A separate muted preview for the Desktop tile: the wallpaper under the library window is paused.
     @Published private(set) var tilePlayer: AVQueuePlayer?
     @Published private(set) var linkDownloads: [LinkDownload] = []
     @Published var showLinkPopover = false
     @Published var linkText = ""
-    /// Прогресс оптимизации видео (0…1); в очереди — с прогрессом 0.
+    /// Video optimization progress (0…1); queued videos have 0.
     @Published private(set) var optimizing: [UUID: Double] = [:]
     @Published private(set) var videoInfo: [UUID: VideoInfo] = [:]
-    /// Видео, которые macOS не проигрывает (их нужно перекодировать).
+    /// Videos macOS can't play (they need converting).
     @Published private(set) var unplayable: Set<UUID> = []
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
@@ -76,7 +76,7 @@ final class Library: ObservableObject {
     private let iconsDir: URL
     private let userIconsDir: URL
     private var previousID: UUID?
-    /// Экран блокировки до последнего нажатия хоткея (.some(nil) — «повторял рабочий стол»).
+    /// Lock screen before the last hotkey press (.some(nil) = "followed the desktop").
     private var previousLockState: UUID??
     private var folderImageCache: [String: NSImage] = [:]
     private var loading = true
@@ -135,7 +135,7 @@ final class Library: ObservableObject {
         loading = false
     }
 
-    // MARK: Хранилище
+    // MARK: Storage
 
     func url(for item: WallpaperItem) -> URL {
         filesDir.appendingPathComponent(item.file)
@@ -144,13 +144,13 @@ final class Library: ObservableObject {
     private func load() {
         if let data = try? Data(contentsOf: indexURL),
            let idx = try? JSONDecoder().decode(Index.self, from: data) {
-            // отбрасываем записи, чей файл пропал
+            // drop entries whose file is gone
             items = idx.items.filter { FileManager.default.fileExists(atPath: filesDir.appendingPathComponent($0.file).path) }
             currentID = items.contains(where: { $0.id == idx.currentID }) ? idx.currentID : items.first?.id
             lockScreenID = items.contains(where: { $0.id == idx.lockScreenID }) ? idx.lockScreenID : nil
             folders = idx.folders ?? []
             previousID = items.contains(where: { $0.id == idx.previousID }) ? idx.previousID : nil
-            // обои из удалённых папок — в «Все»
+            // wallpapers from deleted folders go back to All
             let folderIDs = Set(folders.map { $0.id })
             for i in items.indices where items[i].folderID != nil && !folderIDs.contains(items[i].folderID!) {
                 items[i].folderID = nil
@@ -159,7 +159,7 @@ final class Library: ObservableObject {
         var settingsData = UserDefaults.standard.data(forKey: "settings")
         if settingsData == nil,
            let old = UserDefaults(suiteName: "com.local.livewall")?.data(forKey: "settings") {
-            // перенос настроек со старого идентификатора приложения (до 1.0)
+            // migrate settings from the old app identifier (before 1.0)
             settingsData = old
             UserDefaults.standard.set(old, forKey: "settings")
         }
@@ -171,7 +171,7 @@ final class Library: ObservableObject {
 
     private var saveWork: DispatchWorkItem?
 
-    /// Сохранение откладывается на долю секунды: ползунки и серии изменений пишут файл один раз.
+    /// Saving is delayed a moment, so sliders and bursts of changes write the file once.
     private func save() {
         saveWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.writeIndex() }
@@ -179,7 +179,7 @@ final class Library: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
-    /// Немедленно записать отложенные изменения (при выходе из приложения).
+    /// Writes pending changes right away (when the app quits).
     func flushSave() {
         guard let work = saveWork else { return }
         work.cancel()
@@ -196,7 +196,7 @@ final class Library: ObservableObject {
         }
     }
 
-    /// Окно библиотеки закрыли: отпускаем миниатюры, картинки и превью — при открытии они подгрузятся снова.
+    /// The library window closed: release thumbnails, images and previews; they load again on open.
     func releaseUICaches() {
         closeDetail()
         tileDisappeared()
@@ -212,10 +212,10 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Запуск
+    // MARK: Start
 
     func start() {
-        // объект входа привязан к идентификатору приложения — обновляем регистрацию
+        // the login item is tied to the app identifier, so refresh the registration
         if settings.launchAtLogin { LoginItem.set(true) }
         applyControllerSettings()
         WallpaperController.shared.onPlayerChange = { [weak self] in self?.objectWillChange.send() }
@@ -235,7 +235,7 @@ final class Library: ObservableObject {
             WallpaperController.shared.apply(item: c, url: url(for: c))
         }
 
-        // setDesktopImageURL действует только на текущий Space — переприменяем при переключении
+        // setDesktopImageURL only affects the current Space, so apply again after switching
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -243,7 +243,7 @@ final class Library: ObservableObject {
         }
         syncLockScreen()
 
-        // закрытые папки запираются при блокировке экрана и сне
+        // locked folders lock when the screen locks or the Mac sleeps
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
@@ -251,8 +251,8 @@ final class Library: ObservableObject {
             self?.spaceSyncWork?.cancel()
             self?.lockAll()
         }
-        // пока экран заблокирован и сразу после разблокировки обои macOS не трогаем:
-        // система в этот момент сама восстанавливает рабочие столы
+        // don't touch the macOS wallpaper while the screen is locked or right after unlocking:
+        // the system is restoring the Spaces at that moment
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
         ) { [weak self] _ in
@@ -274,9 +274,9 @@ final class Library: ObservableObject {
         PauseMonitor.shared.settings = settings
     }
 
-    // MARK: Экран блокировки / системные обои
+    // MARK: Lock screen / system wallpaper
 
-    /// Обои для экрана блокировки: выбранные явно, иначе — те же, что на рабочем столе.
+    /// The lock screen wallpaper: the chosen one, otherwise the desktop one.
     var lockItem: WallpaperItem? {
         guard settings.syncSystemWallpaper else { return nil }
         if let id = lockScreenID, let item = items.first(where: { $0.id == id }) { return item }
@@ -286,7 +286,7 @@ final class Library: ObservableObject {
     private var screenLocked = false
     private var spaceSyncWork: DispatchWorkItem?
 
-    /// Переприменить кадр на новом рабочем столе — с задержкой и только при разблокированном экране.
+    /// Applies the frame on a new Space after a delay, and only while the screen is unlocked.
     private func scheduleSpaceSync(after delay: TimeInterval) {
         spaceSyncWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -311,7 +311,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Правила для приложений
+    // MARK: App rules
 
     func addAppRule(bundleID: String, name: String) {
         guard !settings.appRules.contains(where: { $0.bundleID == bundleID }) else { return }
@@ -354,7 +354,7 @@ final class Library: ObservableObject {
     private func settingsChanged(old: Settings) {
         guard !loading else { return }
         if old.language != settings.language {
-            // язык меняем первым — дальше тексты (причины паузы, меню) берутся уже на новом
+            // switch the language first, so later texts (pause reasons, menus) use the new one
             Lang.current = settings.language
             (NSApp.delegate as? AppDelegate)?.setupMainMenu()
         }
@@ -381,7 +381,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Импорт
+    // MARK: Import
 
     static func kind(for url: URL) -> MediaKind? {
         kind(forExtension: url.pathExtension)
@@ -389,7 +389,7 @@ final class Library: ObservableObject {
 
     static func kind(forExtension ext: String) -> MediaKind? {
         let e = ext.lowercased()
-        // WebM и MKV LiveWall перекодирует сам; остальное не умеет
+        // LiveWall converts WebM and MKV itself; it can't handle the rest
         if ["webm", "mkv"].contains(e) { return .video }
         if ["avi", "flv", "wmv", "ogv"].contains(e) { return nil }
         guard !e.isEmpty, let t = UTType(filenameExtension: e) else { return nil }
@@ -445,7 +445,7 @@ final class Library: ObservableObject {
         } else {
             message = nil
         }
-        // видео сначала проверяем: то, что macOS не проигрывает, перекодируется
+        // check videos first: what macOS can't play gets converted
         for src in supported where Library.kind(for: src) == .video {
             ingestVideo(src, name: src.deletingPathExtension().lastPathComponent, move: false)
         }
@@ -486,10 +486,10 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Видео: проверка и перекодирование
+    // MARK: Videos: checking and converting
 
-    /// Видео, которое macOS проигрывает, кладётся в библиотеку как есть; остальное (WebM, MKV, VP9…) перекодируется.
-    /// `row` — строка загрузки, в которой показывать прогресс (для ссылок).
+    /// A video macOS can play goes into the library as is; anything else (WebM, MKV, VP9…) is converted.
+    /// `row` is the download row that shows the progress (for links).
     func ingestVideo(_ src: URL, name: String, move: Bool, row: UUID? = nil) {
         busyCount += 1
         Task { @MainActor [weak self] in
@@ -569,7 +569,7 @@ final class Library: ObservableObject {
                     }
                     return
                 }
-                // строку уже закрыли — пользователь передумал
+                // the row was closed: the user changed their mind
                 guard self.linkDownloads.contains(where: { $0.id == rowID }) else {
                     try? FileManager.default.removeItem(at: dest)
                     return
@@ -584,7 +584,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Видео с YouTube и других сайтов (yt-dlp)
+    // MARK: Videos from YouTube and other sites (yt-dlp)
 
     private func startToolDownload(id: UUID, page: URL) {
         guard linkDownloads.contains(where: { $0.id == id }) else { return }
@@ -620,7 +620,7 @@ final class Library: ObservableObject {
                 let name = title ?? file.deletingPathExtension().lastPathComponent
                 let kind = Library.kind(for: file)
                 if kind == .video {
-                    // папку уберём после того, как файл перенесут
+                    // the folder is removed after the file is moved
                     self.ingestVideo(file, name: name, move: true, row: id)
                 } else if kind != nil {
                     self.addDownloadedFile(file, name: name, ext: file.pathExtension.lowercased())
@@ -641,7 +641,7 @@ final class Library: ObservableObject {
         if let job = job { toolJobs[id] = job }
     }
 
-    /// Скачивает или обновляет yt-dlp и Deno. `row` — строка загрузки для прогресса (если есть).
+    /// Downloads or updates yt-dlp and Deno. `row` is the download row for progress (if any).
     func installTools(row: UUID? = nil, completion: ((Bool) -> Void)? = nil) {
         guard !installingTools else { return }
         installingTools = true
@@ -679,11 +679,11 @@ final class Library: ObservableObject {
 
     var toolsInstalling: Bool { installingTools }
 
-    // MARK: Импорт по ссылке
+    // MARK: Import from a link
 
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
-    /// Отправка ссылки из поля ввода.
+    /// Submits the link from the text field.
     func submitLink() {
         let text = linkText
         linkText = ""
@@ -691,7 +691,7 @@ final class Library: ObservableObject {
         addFromLink(text)
     }
 
-    /// ⌘V в окне библиотеки: файлы или ссылки из буфера обмена.
+    /// ⌘V in the library window: files or links from the clipboard.
     func pasteFromClipboard() {
         let pb = NSPasteboard.general
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
@@ -797,7 +797,7 @@ final class Library: ObservableObject {
         request.setValue(Library.userAgent, forHTTPHeaderField: "User-Agent")
         let dir = incomingDir
         let task = URLSession.shared.downloadTask(with: request) { [weak self] tmp, response, error in
-            // временный файл удаляется сразу после выхода из обработчика — переносим его к себе
+            // the temporary file is deleted as soon as the handler returns, so move it
             var saved: URL?
             if let tmp = tmp {
                 let dest = dir.appendingPathComponent(UUID().uuidString)
@@ -818,7 +818,7 @@ final class Library: ObservableObject {
     }
 
     private func finishDownload(id: UUID, source: URL, file: URL?, response: URLResponse?, error: Error?, depth: Int) {
-        // загрузку уже отменили
+        // the download was already cancelled
         guard linkDownloads.contains(where: { $0.id == id }) else {
             if let file = file { try? FileManager.default.removeItem(at: file) }
             return
@@ -843,12 +843,12 @@ final class Library: ObservableObject {
         let mime = response?.mimeType?.lowercased() ?? ""
         let finalURL = response?.url ?? source
 
-        // страница, а не файл: ищем на ней видео или картинку
+        // a page, not a file: look for a video or image on it
         if mime.hasPrefix("text/html") || mime == "application/xhtml+xml" {
             let media = depth == 0 ? Library.findMediaURL(inHTMLAt: file, base: finalURL) : nil
             try? FileManager.default.removeItem(at: file)
             guard let mediaURL = media else {
-                // файла на странице нет — пусть попробует yt-dlp (он знает сотни сайтов)
+                // no file on the page: let yt-dlp try (it knows hundreds of sites)
                 startToolDownload(id: id, page: downloadPages[id] ?? source)
                 return
             }
@@ -873,7 +873,7 @@ final class Library: ObservableObject {
             name = (suggested as NSString).deletingPathExtension
         }
         if Library.kind(forExtension: ext) == .video {
-            // временному файлу нужно расширение, чтобы macOS поняла, что это за видео
+            // the temporary file needs an extension so macOS knows what kind of video it is
             let named = incomingDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
             if (try? FileManager.default.moveItem(at: file, to: named)) != nil {
                 if let i = linkDownloads.firstIndex(where: { $0.id == id }) { linkDownloads[i].progress = 1 }
@@ -901,7 +901,7 @@ final class Library: ObservableObject {
         return byMime[mime]
     }
 
-    /// Ищет на HTML-странице ссылку на видео или картинку: og:video, <video>/<source>, прямые .mp4, затем og:image.
+    /// Looks for a video or image link on an HTML page: og:video, <video>/<source>, plain .mp4 links, then og:image.
     static func findMediaURL(inHTMLAt file: URL, base: URL) -> URL? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         let data = handle.readData(ofLength: 4 * 1024 * 1024)
@@ -964,7 +964,7 @@ final class Library: ObservableObject {
             if let u = resolve(m[0]) { videos.append(u) }
         }
 
-        // сначала то, что точно похоже на видеофайл
+        // prefer what clearly looks like a video file
         if let v = videos.first(where: isVideoFile) { return v }
         if let v = videos.first { return v }
         return images.first
@@ -1027,7 +1027,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Оптимизация видео
+    // MARK: Video optimization
 
     var optimizeFpsLimit: Double { Double(min(max(settings.optimizeFpsLimit, 15), 120)) }
 
@@ -1043,7 +1043,7 @@ final class Library: ObservableObject {
         }
     }
 
-    /// Можно ли сделать видео легче для этого Mac (nil — сведения ещё не загружены).
+    /// Whether the video can be made lighter for this Mac (nil = info not loaded yet).
     func canOptimize(_ id: UUID) -> Bool? {
         if unplayable.contains(id) { return true }
         guard let info = videoInfo[id] else { return nil }
@@ -1051,7 +1051,7 @@ final class Library: ObservableObject {
                                                 target: VideoOptimizer.targetScreenPixels())
     }
 
-    /// Ставит видео в очередь. `manual` — пользователь нажал кнопку (сообщаем об итоге).
+    /// Queues a video. `manual` means the user pressed the button (report the result).
     func optimize(_ id: UUID, manual: Bool) {
         guard let item = items.first(where: { $0.id == id }), item.kind == .video else { return }
         guard optimizing[id] == nil else { return }
@@ -1060,7 +1060,7 @@ final class Library: ObservableObject {
         runNextOptimization()
     }
 
-    /// Все видео, которые ещё не оптимизированы.
+    /// All videos that aren't optimized yet.
     func optimizeAll() {
         let ids = items.filter { $0.kind == .video && $0.optimized != true }.map { $0.id }
         if ids.isEmpty {
@@ -1103,7 +1103,7 @@ final class Library: ObservableObject {
         Task.detached(priority: .utility) {
             var outcome: Result<Bool, Error>
             if !(await VideoConverter.canPlayNatively(src)) {
-                // формат, который macOS не проигрывает — перекодируем через VideoToolbox
+                // a format macOS can't play: convert it with VideoToolbox
                 var last = 0.0
                 do {
                     try await VideoConverter.convert(source: src, dest: temp, fpsLimit: fpsLimit, target: target,
@@ -1203,7 +1203,7 @@ final class Library: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url(for: item)])
     }
 
-    // MARK: Переключение
+    // MARK: Switching
 
     func select(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
@@ -1216,7 +1216,7 @@ final class Library: ObservableObject {
         syncLockScreen()
     }
 
-    // MARK: Рабочий стол / экран блокировки
+    // MARK: Desktop / lock screen
 
     func setDesktop(_ id: UUID) {
         select(id)
@@ -1229,24 +1229,24 @@ final class Library: ObservableObject {
         if settings.syncSystemWallpaper {
             syncLockScreen()
         } else {
-            settings.syncSystemWallpaper = true   // включит синхронизацию и сам поставит кадр
+            settings.syncSystemWallpaper = true   // turns syncing on, which sets the frame
         }
     }
 
-    /// Экран блокировки снова повторяет рабочий стол.
+    /// The lock screen follows the desktop again.
     func lockScreenFollowDesktop() {
         lockScreenID = nil
         save()
         syncLockScreen()
     }
 
-    /// LiveWall больше не ставит кадр в системные обои — возвращаем те, что были до него.
+    /// LiveWall stops setting the system wallpaper: restore the one from before.
     func stopSystemWallpaper() {
         lockSyncGeneration += 1
         restoreFailed = !LockScreenSync.restoreOriginal()
     }
 
-    /// Кадр для экрана блокировки — то место, где сейчас стоит превью в панели.
+    /// The lock screen frame is where the panel preview currently is.
     func useCurrentFrameForLockScreen(_ id: UUID) {
         guard let p = previewPlayer, detailID == id else { return }
         let t = CMTimeGetSeconds(p.currentTime())
@@ -1260,7 +1260,7 @@ final class Library: ObservableObject {
         if lockItem?.id == id { syncLockScreen() }
     }
 
-    // MARK: Воспроизведение у каждых обоев
+    // MARK: Per-wallpaper playback
 
     func effectiveVolume(_ item: WallpaperItem) -> Double { item.volume ?? settings.volume }
     func effectiveSpeed(_ item: WallpaperItem) -> Double { item.speed ?? settings.speed }
@@ -1306,11 +1306,11 @@ final class Library: ObservableObject {
         updateItem(id) { $0.muted = m }
     }
 
-    // MARK: Панель обоев
+    // MARK: Wallpaper panel
 
     func openDetail(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
-        // обои из закрытой папки — только после пароля
+        // wallpapers from a locked folder only after the password
         if isHidden(item), let folderID = item.folderID, !requestUnlock(folderID) { return }
         releasePreview()
         detailID = id
@@ -1345,7 +1345,7 @@ final class Library: ObservableObject {
         updateTilePlayback(sync: false)
     }
 
-    // MARK: Превью-плееры
+    // MARK: Preview players
 
     private func makeLoopPlayer(_ item: WallpaperItem) -> (AVQueuePlayer, AVPlayerLooper) {
         let p = AVQueuePlayer()
@@ -1357,7 +1357,7 @@ final class Library: ObservableObject {
         return (p, looper)
     }
 
-    /// На паузе превью обоев рабочего стола показывает тот же кадр, что и сами обои.
+    /// While paused, the desktop wallpaper's preview shows the same frame as the wallpaper.
     private func applyPreviewState(sync: Bool) {
         guard let p = previewPlayer else { return }
         if previewPaused {
@@ -1370,7 +1370,7 @@ final class Library: ObservableObject {
         }
     }
 
-    /// Пауза / продолжение в превью панели.
+    /// Pause / resume in the panel preview.
     func togglePreviewPause() {
         if detailID != nil && detailID == currentID && previewPaused == paused {
             togglePause()
@@ -1434,7 +1434,7 @@ final class Library: ObservableObject {
         openDetail(pool[((i + delta) % n + n) % n].id)
     }
 
-    /// Полноразмерная картинка для панели (картинки и первый кадр GIF), с кэшем.
+    /// A full-size image for the panel (images and the first GIF frame), cached.
     func previewImage(for item: WallpaperItem) -> NSImage? {
         if let img = imageCache[item.id] { return img }
         guard item.kind != .video, let img = NSImage(contentsOf: url(for: item)) else { return nil }
@@ -1450,9 +1450,9 @@ final class Library: ObservableObject {
         previewLooper = nil
     }
 
-    // MARK: Выбор кадра в превью
+    // MARK: Choosing a frame in the preview
 
-    /// Перемотка превью ползунком. Превью встаёт на паузу (сами обои продолжают играть).
+    /// Scrubs the preview with the slider. The preview pauses (the wallpaper keeps playing).
     func scrubPreview(to t: Double, editing: Bool) {
         guard let p = previewPlayer else { return }
         previewScrubbing = editing
@@ -1465,7 +1465,7 @@ final class Library: ObservableObject {
         p.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
-    /// На кадр вперёд / назад.
+    /// One frame forward / back.
     func stepPreview(_ frames: Int) {
         guard let p = previewPlayer else { return }
         if !previewPaused {
@@ -1475,7 +1475,7 @@ final class Library: ObservableObject {
         p.currentItem?.step(byCount: frames)
     }
 
-    /// Обои, по которым ходят Next / Previous / Random / автосмена: без закрытых папок.
+    /// Wallpapers used by Next / Previous / Random / rotation: without locked folders.
     var browsableItems: [WallpaperItem] {
         items.filter { !isHidden($0) }
     }
@@ -1518,7 +1518,7 @@ final class Library: ObservableObject {
     }
 
     func togglePause() {
-        // у картинок паузы нет
+        // images have no pause
         guard current?.kind != .image else { return }
         paused.toggle()
         WallpaperController.shared.userPaused = paused
@@ -1537,7 +1537,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Автосмена
+    // MARK: Rotation
 
     func rescheduleRotation() {
         rotateTimer?.invalidate()
@@ -1554,7 +1554,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Хоткеи
+    // MARK: Hotkeys
 
     func perform(_ action: HotkeyAction) {
         switch action {
@@ -1577,7 +1577,7 @@ final class Library: ObservableObject {
                 self?.perform(action)
             }
         }
-        // свои хоткеи у обоев: поставить / вернуть прежние
+        // per-wallpaper hotkeys: switch to it / switch back
         for (i, item) in items.enumerated() {
             guard let b = item.hotkey else { continue }
             let id = item.id
@@ -1587,7 +1587,7 @@ final class Library: ObservableObject {
         }
     }
 
-    // MARK: Запись хоткея
+    // MARK: Recording a hotkey
 
     var recordingAction: HotkeyAction? {
         if case .action(let a)? = recordingTarget { return a }
@@ -1601,7 +1601,7 @@ final class Library: ObservableObject {
     func beginRecording(target: HotkeyTarget) {
         endRecording()
         recordingTarget = target
-        // пока записываем — снимаем глобальные хоткеи, чтобы они не перехватывали нажатие
+        // while recording, global hotkeys are unregistered so they don't catch the key press
         HotkeyCenter.shared.unregisterAll()
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, let target = self.recordingTarget else { return event }
@@ -1610,9 +1610,9 @@ final class Library: ObservableObject {
                 return nil
             }
             let mods = HotkeyFormat.carbonMods(event.modifierFlags)
-            if mods == 0 { return nil } // нужен хотя бы один модификатор
+            if mods == 0 { return nil } // at least one modifier is required
             let binding = HotkeyBinding(keyCode: UInt32(event.keyCode), modifiers: mods)
-            // системные сочетания не забираем — запись продолжается, можно нажать другое
+            // system shortcuts aren't taken; recording continues so another one can be pressed
             if let owner = SystemShortcuts.conflict(binding) {
                 self.hotkeyWarning = LF("%@ is already used by %@. Press another combination.", HotkeyFormat.string(binding), owner)
                 NSSound.beep()
@@ -1641,7 +1641,7 @@ final class Library: ObservableObject {
         }
     }
 
-    /// Назначает сочетание; если оно уже занято другим действием или обоями — забирает его оттуда.
+    /// Assigns a combination; if another action or wallpaper has it, it is moved from there.
     private func assign(_ binding: HotkeyBinding, to target: HotkeyTarget) {
         var movedFrom: String?
         for (key, b) in settings.hotkeys where b == binding {
@@ -1673,8 +1673,8 @@ final class Library: ObservableObject {
         registerHotkeys()
     }
 
-    /// Хоткей обоев: первое нажатие ставит их, повторное — возвращает те, что стояли до этого.
-    /// Работает и для обоев из закрытых папок — пароль не нужен.
+    /// Wallpaper hotkey: the first press switches to it, the next press switches back.
+    /// Works for wallpapers in locked folders too, without the password.
     func toggleWallpaperHotkey(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
         switch item.hotkeyScope ?? .both {
@@ -1687,7 +1687,7 @@ final class Library: ObservableObject {
                 applyLockScreen(id)
             }
         case .both:
-            // направление решает рабочий стол: стоят эти обои — возвращаем оба экрана
+            // the desktop decides the direction: if this wallpaper is on, both screens go back
             let goBack = (currentID == id)
             toggleDesktop(id)
             if goBack {
@@ -1732,7 +1732,7 @@ final class Library: ObservableObject {
         save()
     }
 
-    // MARK: Папки
+    // MARK: Folders
 
     var visibleItems: [WallpaperItem] {
         guard let folder = selectedFolderID else { return items.filter { !isHidden($0) } }
@@ -1740,26 +1740,26 @@ final class Library: ObservableObject {
         return items.filter { $0.folderID == folder }
     }
 
-    // MARK: Закрытые папки
+    // MARK: Locked folders
 
     func folder(_ id: UUID?) -> WallpaperFolder? {
         guard let id = id else { return nil }
         return folders.first(where: { $0.id == id })
     }
 
-    /// Папка с паролем, которую ещё не открыли.
+    /// A password-protected folder that hasn't been unlocked yet.
     func isLocked(_ folderID: UUID) -> Bool {
         guard let f = folder(folderID), f.isProtected else { return false }
         return !unlockedFolderIDs.contains(folderID)
     }
 
-    /// Обои лежат в закрытой (не открытой) папке.
+    /// The wallpaper is in a locked (not unlocked) folder.
     func isHidden(_ item: WallpaperItem) -> Bool {
         guard let fid = item.folderID else { return false }
         return isLocked(fid)
     }
 
-    /// Открывает папку: спрашивает пароль, если нужно. true — доступ есть.
+    /// Unlocks a folder, asking for the password if needed. true = access granted.
     @discardableResult
     func requestUnlock(_ folderID: UUID) -> Bool {
         guard let f = folder(folderID) else { return false }
@@ -1810,7 +1810,7 @@ final class Library: ObservableObject {
         hideLockedContent()
     }
 
-    /// Закрывает все папки (окно закрыто, экран заблокирован, сон).
+    /// Locks all folders (window closed, screen locked, sleep).
     func lockAll() {
         guard !unlockedFolderIDs.isEmpty else { return }
         unlockedFolderIDs.removeAll()
@@ -1891,9 +1891,9 @@ final class Library: ObservableObject {
         return handled
     }
 
-    // MARK: Иконки папок
+    // MARK: Folder icons
 
-    // MARK: Мои иконки (своя библиотека для папок)
+    // MARK: My icons (the user's own icon library)
 
     private func reloadUserIcons() {
         let files = (try? FileManager.default.contentsOfDirectory(at: userIconsDir,
@@ -1906,7 +1906,7 @@ final class Library: ObservableObject {
         userIcons = dated.sorted { $0.1 < $1.1 }.map { $0.0 }
     }
 
-    /// Квадратный PNG 512×512 (заполнение с обрезкой).
+    /// A square 512×512 PNG (aspect fill with cropping).
     static func squarePNG(from image: NSImage, side: CGFloat = 512) -> Data? {
         let scaled = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             let s = image.size
@@ -1958,7 +1958,7 @@ final class Library: ObservableObject {
         return img
     }
 
-    /// Ставит иконку из «Моих иконок» на папку (копия — папка не зависит от библиотеки иконок).
+    /// Puts an icon from My Icons on a folder (a copy, so the folder doesn't depend on the icon library).
     func setFolderUserIcon(_ name: String, for folderID: UUID) {
         guard let i = folders.firstIndex(where: { $0.id == folderID }) else { return }
         let file = "\(folderID.uuidString)-\(UUID().uuidString.prefix(8)).png"
@@ -1974,7 +1974,7 @@ final class Library: ObservableObject {
         save()
     }
 
-    // MARK: Цветовые стили
+    // MARK: Color styles
 
     var allStyles: [ColorStyle] { ColorStyle.builtIns + settings.customStyles }
 
@@ -2009,7 +2009,7 @@ final class Library: ObservableObject {
         if settings.colorStyleID == id { settings.colorStyleID = ColorStyle.builtIns[0].id }
     }
 
-    /// Импорт стилей из .json (один стиль или массив).
+    /// Imports styles from .json (one style or an array).
     func importStyles() {
         let p = NSOpenPanel()
         p.allowsMultipleSelection = true
@@ -2027,7 +2027,7 @@ final class Library: ObservableObject {
                 styles = [one]
             }
             for var s in styles {
-                // новый id, чтобы не пересечься со встроенными и уже добавленными
+                // a new id, so it doesn't clash with built-in or existing styles
                 s.id = UUID().uuidString
                 added.append(s)
             }
@@ -2093,7 +2093,7 @@ final class Library: ObservableObject {
             message = LF("Could not read %@.", src.lastPathComponent)
             return
         }
-        // уменьшаем до 512 px и сохраняем как PNG
+        // scale down to 512 px and save as PNG
         let side: CGFloat = 512
         let scaled = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             let s = image.size
@@ -2130,7 +2130,7 @@ final class Library: ObservableObject {
         try? FileManager.default.removeItem(at: iconsDir.appendingPathComponent(file))
     }
 
-    // MARK: Переименование
+    // MARK: Renaming
 
     func renameItem(_ id: UUID) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
@@ -2156,11 +2156,11 @@ final class Library: ObservableObject {
         return value.isEmpty ? nil : value
     }
 
-    // MARK: Миниатюры
+    // MARK: Thumbnails
 
     func loadThumbnail(for item: WallpaperItem) async {
         if thumbs[item.id] != nil { return }
-        // не больше трёх миниатюр одновременно — без рывков при первом открытии большой библиотеки
+        // at most three thumbnails at a time, so opening a large library doesn't stutter
         await ThumbnailGate.shared.enter()
         let img = await thumbnail(for: item)
         await ThumbnailGate.shared.leave()
@@ -2203,7 +2203,7 @@ final class Library: ObservableObject {
     }
 }
 
-/// Ограничивает число одновременно создаваемых миниатюр.
+/// Limits how many thumbnails are generated at once.
 actor ThumbnailGate {
     static let shared = ThumbnailGate()
     private let limit = 3
@@ -2222,7 +2222,7 @@ actor ThumbnailGate {
         if waiters.isEmpty {
             running = max(0, running - 1)
         } else {
-            // место переходит следующему ожидающему
+            // the slot goes to the next waiting task
             waiters.removeFirst().resume()
         }
     }

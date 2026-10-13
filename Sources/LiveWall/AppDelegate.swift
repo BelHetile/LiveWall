@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var libraryWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // запускали как объект входа — тихо, без окна
+        // started as a login item: quietly, without a window
         let loginLaunch = AppDelegate.launchedAsLoginItem()
 
         let lib = Library.shared
@@ -29,13 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
 
-    /// Повторный запуск из Spotlight / Finder / клик по иконке в Доке — показываем библиотеку.
+    /// Launched again from Spotlight / Finder or the Dock icon was clicked: show the library.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showLibrary()
         return true
     }
 
-    /// Минимальное главное меню: без меню Edit в приложении из строки меню не работают ⌘C/⌘V в полях ввода.
+    /// A minimal main menu: without an Edit menu, ⌘C/⌘V don't work in text fields of a menu bar app.
     func setupMainMenu() {
         let main = NSMenu()
 
@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.collectionBehavior.insert(.fullScreenPrimary)
-            // библиотека открывается на весь экран (видимую область без Dock и строки меню)
+            // the library opens full screen (the visible area without the Dock and menu bar)
             if let screen = NSScreen.main ?? NSScreen.screens.first {
                 w.setFrame(screen.visibleFrame, display: true)
             } else {
@@ -107,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             }
             libraryWindow = w
         }
-        // интерфейс создаётся при открытии и освобождается при закрытии окна
+        // the interface is created on open and released when the window closes
         if let w = libraryWindow, !(w.contentView is NSHostingView<LibraryView>) {
             w.contentView = NSHostingView(rootView: LibraryView())
         }
@@ -119,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         Library.shared.flushSave()
     }
 
-    /// Свёрнутое окно не крутит превью.
+    /// A minimized window doesn't play previews.
     func windowDidMiniaturize(_ notification: Notification) {
         guard (notification.object as? NSWindow) === libraryWindow else { return }
         Library.shared.closeDetail()
@@ -131,11 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         Library.shared.tileAppeared()
     }
 
-    /// Окно библиотеки закрыли — закрытые папки снова запираются.
+    /// The library window was closed: locked folders lock again.
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === libraryWindow {
             Library.shared.lockAll()
-            // освобождаем интерфейс, миниатюры и превью-плеер, пока окно закрыто
+            // release the interface, thumbnails and preview player while the window is closed
             DispatchQueue.main.async { [weak self] in
                 guard let w = self?.libraryWindow, !w.isVisible else { return }
                 w.contentView = NSView()
@@ -163,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.removeAllItems()
         let lib = Library.shared
 
-        // шапка: миниатюра + название + статус
+        // header: thumbnail + name + status
         let header = NSMenuItem()
         let hosting = NSHostingView(rootView: MenuHeaderView(library: lib))
         hosting.frame = NSRect(x: 0, y: 0, width: 290, height: 70)
@@ -174,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(menuItem(L("Next Wallpaper"), #selector(nextWallpaper), symbol: "forward.fill"))
         menu.addItem(menuItem(L("Previous Wallpaper"), #selector(previousWallpaper), symbol: "backward.fill"))
         menu.addItem(menuItem(L("Random Wallpaper"), #selector(randomWallpaper), symbol: "shuffle"))
-        // пауза и звук — только у анимированных обоев
+        // pause and sound only for animated wallpapers
         if let kind = lib.current?.kind, kind != .image {
             menu.addItem(menuItem(lib.paused ? L("Resume Video") : L("Pause Video"), #selector(togglePause),
                                   symbol: lib.paused ? "play.fill" : "pause.fill"))
@@ -185,11 +185,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let title = NSMenuItem(title: L("Library"), action: nil, keyEquivalent: "")
             title.isEnabled = false
             menu.addItem(title)
-            // папки — подменю
+            // folders as submenus
             for folder in lib.folders {
                 let fi = NSMenuItem(title: folder.name, action: nil, keyEquivalent: "")
                 if lib.isLocked(folder.id) {
-                    // закрытая папка: содержимое не показываем
+                    // locked folder: don't show its contents
                     fi.image = AppDelegate.symbol("lock.fill")
                     fi.isEnabled = false
                     menu.addItem(fi)

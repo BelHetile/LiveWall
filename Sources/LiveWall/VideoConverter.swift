@@ -22,7 +22,7 @@ enum ConvertError: LocalizedError {
     }
 }
 
-/// Источник сжатых кадров (в порядке декодирования) для VideoToolbox.
+/// A source of compressed frames (in decode order) for VideoToolbox.
 private protocol PacketSource: AnyObject {
     var format: CMVideoFormatDescription { get }
     var duration: Double { get }
@@ -31,12 +31,12 @@ private protocol PacketSource: AnyObject {
     func next() -> CMSampleBuffer?
 }
 
-/// Переводит видео, которое macOS не умеет проигрывать (WebM, MKV, VP9/AV1 в MP4), в обычный HEVC.
+/// Converts videos macOS can't play (WebM, MKV, VP9/AV1 in MP4) to regular HEVC.
 enum VideoConverter {
     static let vp9: CMVideoCodecType = 0x7670_3039   // 'vp09'
     static let av1: CMVideoCodecType = 0x6176_3031   // 'av01'
 
-    /// Проигрывает ли файл сама macOS (AVFoundation).
+    /// Whether macOS (AVFoundation) can play the file by itself.
     static func canPlayNatively(_ url: URL) async -> Bool {
         let ext = url.pathExtension.lowercased()
         if ["webm", "mkv"].contains(ext) { return false }
@@ -54,7 +54,7 @@ enum VideoConverter {
             try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
                           codec: .hevc, token: token, progress: progress)
         } catch ConvertError.encoder {
-            // без кодировщика HEVC (редко) — H.264
+            // no HEVC encoder (rare): fall back to H.264
             try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
                           codec: .h264, token: token, progress: progress)
         }
@@ -64,7 +64,7 @@ enum VideoConverter {
         let ext = url.pathExtension.lowercased()
         if ["webm", "mkv"].contains(ext) { return try MatroskaSource(url: url) }
         if let source = try? await AssetPacketSource.make(url: url) { return source }
-        // расширение врёт — вдруг внутри Matroska
+        // the extension may be wrong; maybe it's Matroska inside
         return try MatroskaSource(url: url)
     }
 
@@ -88,7 +88,7 @@ enum VideoConverter {
         let dims = CMVideoFormatDescriptionGetDimensions(format)
         guard dims.width > 0, dims.height > 0 else { throw ConvertError.badFile }
 
-        // декодер
+        // decoder
         var session: VTDecompressionSession?
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -105,7 +105,7 @@ enum VideoConverter {
         guard status == noErr, let decoder = session else { throw ConvertError.decoder(source.codecName) }
         defer { VTDecompressionSessionInvalidate(decoder) }
 
-        // размер: покрыть экран, но не увеличивать
+        // size: cover the screen, but never upscale
         let natural = CGSize(width: CGFloat(dims.width), height: CGFloat(dims.height))
         let shown = CGRect(origin: .zero, size: natural).applying(source.transform)
         let scale = min(1, max(target.width / max(abs(shown.width), 1), target.height / max(abs(shown.height), 1)))
@@ -166,7 +166,7 @@ enum VideoConverter {
             if duration > 0 { progress(min(0.99, max(0, t / duration))) }
         }
 
-        // кадры декодер отдаёт в порядке декодирования — сортируем по времени показа небольшим буфером
+        // the decoder returns frames in decode order; a small buffer sorts them by presentation time
         var pending: [(CMTime, CVPixelBuffer)] = []
         func absorb(_ frames: [(CMTime, CVPixelBuffer)], flush: Bool) throws {
             for f in frames where f.0.isValid {
@@ -197,7 +197,7 @@ enum VideoConverter {
                 }
                 if st != noErr { box.lock.lock(); box.failures += 1; box.lock.unlock() }
                 try absorb(box.take(), flush: false)
-                // ни одного кадра после десятков попыток — декодер не справляется
+                // no frames after dozens of attempts: the decoder can't handle it
                 if written == 0 && pending.isEmpty && box.failures > 30 { throw ConvertError.decoder(source.codecName) }
             }
             VTDecompressionSessionFinishDelayedFrames(decoder)
@@ -222,7 +222,7 @@ enum VideoConverter {
     }
 }
 
-// MARK: - MP4 / MOV с кодеком, который AVFoundation сама не декодирует
+// MARK: - MP4 / MOV with a codec AVFoundation can't decode by itself
 
 private final class AssetPacketSource: PacketSource {
     let reader: AVAssetReader
@@ -292,7 +292,7 @@ private final class MatroskaSource: PacketSource {
     var codecName: String { storedCodecName }
     let transform = CGAffineTransform.identity
 
-    // элементы верхнего уровня сегмента: на них заканчивается кластер неизвестной длины
+    // segment top-level elements: a cluster of unknown size ends at one of them
     private static let topLevel: Set<UInt64> = [0x1F43_B675, 0x1C53_BB6B, 0x1254_C367, 0x1549_A966,
                                                 0x1654_AE6B, 0x114D_9B74, 0x1043_A770, 0x1941_A469]
 
@@ -302,7 +302,7 @@ private final class MatroskaSource: PacketSource {
         guard let (headerID, headerSize) = MatroskaSource.header(data, &pos), headerID == 0x1A45_DFA3,
               let hs = headerSize else { throw ConvertError.badFile }
         pos += Int(hs)
-        // сегмент (перед ним может быть мусор вроде Void)
+        // the segment (it may be preceded by junk such as Void)
         var segmentEnd = data.count
         var foundSegment = false
         while pos < data.count, let (id, size) = MatroskaSource.header(data, &pos) {
@@ -316,7 +316,7 @@ private final class MatroskaSource: PacketSource {
         }
         guard foundSegment else { throw ConvertError.badFile }
 
-        // настоящее описание формата появится после разбора дорожек
+        // the real format description is created after the tracks are parsed
         format = try MatroskaSource.placeholderFormat()
         try parseSegment(from: pos, to: segmentEnd)
         guard trackNumber != nil else { throw ConvertError.badFile }
@@ -367,9 +367,9 @@ private final class MatroskaSource: PacketSource {
         return sample
     }
 
-    // MARK: Разбор EBML
+    // MARK: EBML parsing
 
-    /// Число переменной длины. `keepMarker` — для идентификаторов. nil в значении — «неизвестный размер».
+    /// A variable-length integer. `keepMarker` is for element IDs. A nil value means "unknown size".
     private static func vint(_ d: Data, _ pos: inout Int, keepMarker: Bool) -> (UInt64?, Int)? {
         guard pos < d.count else { return nil }
         let first = d[pos]
@@ -393,7 +393,7 @@ private final class MatroskaSource: PacketSource {
         return (value, len)
     }
 
-    /// Заголовок элемента: идентификатор и размер (nil — неизвестный).
+    /// An element header: ID and size (nil = unknown).
     private static func header(_ d: Data, _ pos: inout Int) -> (UInt64, UInt64?)? {
         guard let (id, idLen) = vint(d, &pos, keepMarker: true), let idValue = id, idLen <= 4 else { return nil }
         guard let (size, _) = vint(d, &pos, keepMarker: false) else { return nil }
@@ -528,7 +528,7 @@ private final class MatroskaSource: PacketSource {
         height = h
     }
 
-    /// Возвращает позицию, где закончился кластер.
+    /// Returns the position where the cluster ended.
     private func parseCluster(_ start: Int, _ end: Int, unknownSize: Bool) -> Int {
         var pos = start
         var clusterTime: UInt64 = 0
@@ -570,14 +570,14 @@ private final class MatroskaSource: PacketSource {
         let rel = Int16(bitPattern: UInt16(data[pos]) << 8 | UInt16(data[pos + 1]))
         let flags = data[pos + 2]
         pos += 3
-        // кадры видео почти никогда не «упакованы» — такие блоки пропускаем
+        // video frames are almost never laced; such blocks are skipped
         guard (flags >> 1) & 0x03 == 0 else { return }
         let key = groupKey ?? (flags & 0x80 != 0)
         let pts = (Double(clusterTime) + Double(rel)) * timecodeScale / 1e9
         packets.append(Packet(offset: pos, length: end - pos, pts: pts, key: key))
     }
 
-    // MARK: Описание формата
+    // MARK: Format description
 
     private static func niceName(_ codecID: String) -> String {
         switch codecID {
@@ -624,7 +624,7 @@ private final class MatroskaSource: PacketSource {
         return f
     }
 
-    /// Профиль, глубина цвета и размер VP9 — из заголовка первого ключевого кадра.
+    /// VP9 profile, bit depth and size, from the header of the first key frame.
     private func vp9Info() -> (vpcC: Data, width: Int, height: Int)? {
         for p in packets.prefix(60) where p.key {
             let bytes = [UInt8](data[p.offset..<min(p.offset + 32, p.offset + p.length)])

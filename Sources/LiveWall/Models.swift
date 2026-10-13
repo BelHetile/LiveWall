@@ -32,24 +32,24 @@ enum MediaKind: String, Codable {
 struct WallpaperItem: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
-    var file: String          // имя файла внутри папки хранилища
+    var file: String          // file name inside the storage folder
     var kind: MediaKind
     var mode: FillMode
-    // свои настройки воспроизведения у каждых обоев (nil — берутся значения по умолчанию)
+    // per-wallpaper playback settings (nil = use the defaults)
     var volume: Double?
     var speed: Double?
     var muted: Bool?
-    // папка и свой хоткей-переключатель
+    // folder and the wallpaper's own toggle hotkey
     var folderID: UUID?
     var hotkey: HotkeyBinding?
     var hotkeyScope: HotkeyScope?
-    // видео уже оптимизировано (или проверено и не нуждается в этом)
+    // the video is already optimized (or was checked and doesn't need it)
     var optimized: Bool?
-    // кадр видео (секунды) для экрана блокировки; nil — первый кадр
+    // video frame (seconds) for the lock screen; nil = the first frame
     var stillTime: Double?
 }
 
-/// Что переключает хоткей обоев.
+/// What a wallpaper hotkey switches.
 enum HotkeyScope: String, Codable, CaseIterable, Identifiable {
     case desktop, lockScreen, both
 
@@ -70,7 +70,7 @@ enum FolderIcon: Codable, Equatable {
     case symbol(name: String, palette: Int)
     case image(file: String)
 
-    /// Базовый пак иконок (SF Symbols) — рисуются на цветном градиенте.
+    /// Built-in icon pack (SF Symbols), drawn on a color gradient.
     static let basePack: [String] = [
         "folder.fill", "star.fill", "heart.fill", "sparkles", "moon.stars.fill", "sun.max.fill",
         "cloud.fill", "bolt.fill", "flame.fill", "drop.fill", "snowflake", "leaf.fill",
@@ -88,20 +88,20 @@ struct WallpaperFolder: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
     var icon: FolderIcon
-    // закрытая папка: соль и PBKDF2-хеш пароля (base64)
+    // locked folder: salt and PBKDF2 hash of the password (base64)
     var passwordSalt: String?
     var passwordHash: String?
 
     var isProtected: Bool { passwordHash != nil && passwordSalt != nil }
 }
 
-/// Что сейчас записывается в рекордере хоткея.
+/// What the hotkey recorder is recording right now.
 enum HotkeyTarget: Equatable {
     case action(HotkeyAction)
     case wallpaper(UUID)
 }
 
-/// Загрузка обоев по ссылке (для списка с прогрессом).
+/// A wallpaper download from a link (for the progress list).
 struct LinkDownload: Identifiable, Equatable {
     let id: UUID
     var title: String
@@ -135,7 +135,7 @@ enum HotkeyAction: String, Codable, CaseIterable, Identifiable {
 
 struct HotkeyBinding: Codable, Equatable {
     var keyCode: UInt32
-    var modifiers: UInt32   // Carbon-модификаторы (cmdKey, optionKey, ...)
+    var modifiers: UInt32   // Carbon modifiers (cmdKey, optionKey, ...)
 }
 
 // MARK: - Pause rules
@@ -143,7 +143,7 @@ struct HotkeyBinding: Codable, Equatable {
 struct AppRule: Codable, Identifiable, Equatable {
     var bundleID: String
     var name: String
-    var frontmostOnly: Bool      // true — только когда приложение в фокусе, false — пока оно запущено
+    var frontmostOnly: Bool      // true = only while the app is in front, false = while it is running
 
     var id: String { bundleID }
 }
@@ -153,7 +153,7 @@ struct AppRule: Codable, Identifiable, Equatable {
 struct ColorStyle: Codable, Identifiable, Equatable {
     var id: String
     var name: String
-    var primary: String     // hex, например #7D4DFA
+    var primary: String     // hex, e.g. #7D4DFA
     var secondary: String
 
     static let builtIns: [ColorStyle] = [
@@ -173,17 +173,17 @@ struct ColorStyle: Codable, Identifiable, Equatable {
 // MARK: - Settings
 
 struct Settings: Codable, Equatable {
-    // воспроизведение
+    // playback
     var muted = true
     var volume: Double = 0.5
     var speed: Double = 1.0
 
-    // автосмена
+    // automatic rotation
     var autoRotate = false
     var rotateMinutes = 30
     var shuffle = false
 
-    // умная пауза
+    // smart pause
     var pauseWhenAppFocused = false
     var pauseWhenMaximized = true
     var pauseWhenFullscreen = true
@@ -192,22 +192,22 @@ struct Settings: Codable, Equatable {
     var pauseWhenHot = true
     var appRules: [AppRule] = []
 
-    // производительность
+    // performance
     var optimizeOnImport = true
     var optimizeFpsLimit = 30
-    var stopAfterSeconds = 30   // 0 = никогда не выгружать видео на паузе
+    var stopAfterSeconds = 30   // 0 = never unload a paused video
 
-    // внешний вид
+    // appearance
     var colorStyleID = "violet"
     var customStyles: [ColorStyle] = []
 
-    // система
+    // system
     var syncSystemWallpaper = true
     var launchAtLogin = false
     var showInDock = true
     var language: AppLanguage = .system
 
-    // хоткеи
+    // hotkeys
     var hotkeys: [String: HotkeyBinding] = Settings.defaultHotkeys
 
     init() {}
@@ -223,7 +223,7 @@ struct Settings: Codable, Equatable {
         case hotkeys
     }
 
-    // терпимый к старым/неполным сохранениям декодер: отсутствующие ключи берутся по умолчанию
+    // tolerant decoder for old or partial saves: missing keys get their defaults
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Settings()
