@@ -259,25 +259,9 @@ struct AppearanceSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 ForEach(library.settings.customStyles) { style in
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(Theme.gradient(for: style))
-                            .frame(width: 18, height: 18)
-                        Text(style.name)
-                            .lineLimit(1)
-                        Spacer()
-                        ColorPicker(L("Main"), selection: colorBinding(style.id, primary: true), supportsOpacity: false)
-                            .fixedSize()
-                        ColorPicker(L("Second"), selection: colorBinding(style.id, primary: false), supportsOpacity: false)
-                            .fixedSize()
-                        Button {
-                            library.deleteStyle(style.id)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                        .help(L("Delete style"))
-                    }
+                    CustomStyleRow(style: style, library: library,
+                                   primary: colorBinding(style.id, primary: true),
+                                   secondary: colorBinding(style.id, primary: false))
                 }
 
                 HStack {
@@ -391,8 +375,15 @@ struct StyleSwatch: View {
 struct FlowLayout: Layout {
     var spacing: CGFloat = 12
 
+    /// Ширина для переноса: предложенная, а если её нет (запрос «идеального» размера) — разумный предел,
+    /// чтобы раскладка не вытягивалась в одну длинную строку и не распирала форму.
+    private func wrapWidth(_ proposal: ProposedViewSize) -> CGFloat {
+        if let w = proposal.width, w.isFinite, w > 0 { return w }
+        return 560
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? 640
+        let maxWidth = wrapWidth(proposal)
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
@@ -408,7 +399,7 @@ struct FlowLayout: Layout {
             rowHeight = max(rowHeight, size.height)
             widest = max(widest, x - spacing)
         }
-        return CGSize(width: proposal.width ?? widest, height: y + rowHeight)
+        return CGSize(width: min(widest, maxWidth), height: y + rowHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
@@ -426,5 +417,53 @@ struct FlowLayout: Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+}
+
+/// Строка своего стиля: образец, название и две палитры без подписей — не шире формы.
+struct CustomStyleRow: View {
+    let style: ColorStyle
+    @ObservedObject var library: Library
+    let primary: Binding<Color>
+    let secondary: Binding<Color>
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Theme.gradient(for: style))
+                .frame(width: 28, height: 18)
+            Text(style.name)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Text(L("Main"))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            ColorPicker("", selection: primary, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 44)
+            Text(L("Second"))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            ColorPicker("", selection: secondary, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 44)
+            Button {
+                library.renameStyle(style.id)
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Rename…"))
+            Button {
+                library.deleteStyle(style.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Delete style"))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
