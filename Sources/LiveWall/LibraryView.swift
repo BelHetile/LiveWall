@@ -341,6 +341,11 @@ struct DesktopTile: View {
         library.current.map { library.isHidden($0) } ?? false
     }
 
+    /// Анимированные обои (видео, GIF): у них есть пауза.
+    private var isAnimated: Bool {
+        library.current.map { $0.kind != .image } ?? false
+    }
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             ZStack {
@@ -351,8 +356,11 @@ struct DesktopTile: View {
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                     }
-                    if item.kind == .video, let player = WallpaperController.shared.currentPlayer {
+                    if item.kind == .video, let player = library.tilePlayer {
                         PlayerPreview(player: player)
+                    }
+                    if isAnimated && library.paused {
+                        Color.black.opacity(0.25)
                     }
                 }
             }
@@ -370,7 +378,12 @@ struct DesktopTile: View {
             Theme.heroScrim
 
             VStack(alignment: .leading, spacing: 8) {
-                Chip(text: L("DESKTOP"), systemImage: "display")
+                HStack(spacing: 6) {
+                    Chip(text: L("DESKTOP"), systemImage: "display")
+                    if isAnimated && library.paused {
+                        Chip(text: L("PAUSED"), systemImage: "pause.fill")
+                    }
+                }
                 Text(isPrivate ? L("Private wallpaper") : (library.current?.name ?? L("No wallpaper")))
                     .font(.system(size: 18, weight: .heavy))
                     .foregroundStyle(.white)
@@ -379,10 +392,12 @@ struct DesktopTile: View {
                 HStack(spacing: 12) {
                     CircleButton(systemImage: "backward.fill") { library.step(-1) }
                         .help(L("Previous"))
-                    CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 36, prominent: true) {
-                        library.togglePause()
+                    if isAnimated {
+                        CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 36, prominent: true) {
+                            library.togglePause()
+                        }
+                        .help(library.paused ? L("Resume") : L("Pause"))
                     }
-                    .help(library.paused ? L("Resume") : L("Pause"))
                     CircleButton(systemImage: "forward.fill") { library.step(1) }
                         .help(L("Next"))
                     CircleButton(systemImage: "shuffle") { library.random() }
@@ -402,8 +417,10 @@ struct DesktopTile: View {
             if let item = library.current { library.openDetail(item.id) }
         }
         .task(id: library.currentID) {
+            library.tileAppeared()
             if let item = library.current { await library.loadThumbnail(for: item) }
         }
+        .onDisappear { library.tileDisappeared() }
     }
 }
 
@@ -701,8 +718,10 @@ struct WallpaperDetail: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                 }
-                PlayerPreview(player: isDesktop ? WallpaperController.shared.currentPlayer : library.previewPlayer,
-                              gravity: .resizeAspect)
+                PlayerPreview(player: library.previewPlayer, gravity: .resizeAspect)
+                if library.previewPaused {
+                    Color.black.opacity(0.2)
+                }
             } else if let image = library.previewImage(for: item) {
                 Image(nsImage: image)
                     .resizable()
@@ -716,27 +735,34 @@ struct WallpaperDetail: View {
                 CircleButton(systemImage: "chevron.right", size: 36) { library.showAdjacentDetail(1) }
                     .help(L("Next wallpaper"))
             }
-            .padding(16)
+            .padding(14)
 
-            if isDesktop && item.kind == .video {
-                CircleButton(systemImage: library.paused ? "play.fill" : "pause.fill", size: 54, prominent: true) {
-                    library.togglePause()
+            if item.kind == .video {
+                CircleButton(systemImage: library.previewPaused ? "play.fill" : "pause.fill", size: 54, prominent: true) {
+                    library.togglePreviewPause()
                 }
-                .help(library.paused ? L("Resume") : L("Pause"))
+                .help(library.previewPaused ? L("Resume") : L("Pause"))
                 .frame(maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 22)
+                .padding(.bottom, 20)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.06))
         }
         .overlay(alignment: .topLeading) {
             HStack(spacing: 6) {
                 if isDesktop { Chip(text: L("ON DESKTOP"), systemImage: "display") }
                 if isLock { Chip(text: L("ON LOCK SCREEN"), systemImage: "lock.fill") }
                 if !isDesktop && item.kind == .video { Chip(text: L("PREVIEW"), systemImage: "eye") }
+                if item.kind == .video && library.previewPaused { Chip(text: L("PAUSED"), systemImage: "pause.fill") }
             }
-            .padding(16)
+            .padding(14)
         }
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
         .task(id: item.id) { await library.loadThumbnail(for: item) }
     }
 
@@ -883,11 +909,10 @@ struct WallpaperDetail: View {
                     }
 
                     if item.hotkey != nil {
-                        HStack {
+                        VStack(alignment: .leading, spacing: 6) {
                             Text(L("Hotkey switches"))
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
-                            Spacer()
                             Picker("", selection: Binding(get: { item.hotkeyScope ?? .both },
                                                           set: { library.setHotkeyScope($0, for: item.id) })) {
                                 ForEach(HotkeyScope.allCases) { scope in
@@ -896,7 +921,6 @@ struct WallpaperDetail: View {
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
-                            .frame(width: 230)
                         }
                     }
 
@@ -981,6 +1005,22 @@ struct PerformanceSection: View {
                 Text(progress > 0 ? L("Optimizing… You can keep using the Mac.") : L("Waiting in line…"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+            } else if library.unplayable.contains(item.id) {
+                Label(L("macOS can't play this video's format, so it shows up black."), systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    library.optimize(item.id, manual: true)
+                } label: {
+                    Label(L("Convert to a Playable Video"), systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             } else if library.canOptimize(item.id) == false {
                 Label(L("Already optimal for this Mac"), systemImage: "checkmark.seal.fill")
                     .font(.system(size: 12, weight: .medium))

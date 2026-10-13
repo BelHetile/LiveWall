@@ -44,12 +44,18 @@ final class Library: ObservableObject {
     @Published private(set) var lockScreenID: UUID?
     @Published private(set) var detailID: UUID?
     @Published private(set) var previewPlayer: AVQueuePlayer?
+    /// Превью в панели обоев стоит на паузе (для обоев рабочего стола — повторяет паузу обоев).
+    @Published private(set) var previewPaused = false
+    /// Своё беззвучное превью для плитки «Рабочий стол»: обои под окном библиотеки стоят на паузе.
+    @Published private(set) var tilePlayer: AVQueuePlayer?
     @Published private(set) var linkDownloads: [LinkDownload] = []
     @Published var showLinkPopover = false
     @Published var linkText = ""
     /// Прогресс оптимизации видео (0…1); в очереди — с прогрессом 0.
     @Published private(set) var optimizing: [UUID: Double] = [:]
     @Published private(set) var videoInfo: [UUID: VideoInfo] = [:]
+    /// Видео, которые macOS не проигрывает (их нужно перекодировать).
+    @Published private(set) var unplayable: Set<UUID> = []
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
     }
@@ -72,9 +78,16 @@ final class Library: ObservableObject {
     private var spaceObserver: NSObjectProtocol?
     private var lockSyncGeneration = 0
     private var previewLooper: AVPlayerLooper?
+    private var tileLooper: AVPlayerLooper?
+    private var tileFile: String?
+    private var tileVisible = false
     private var imageCache: [UUID: NSImage] = [:]
     private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
     private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
+    private var conversionTokens: [UUID: CancelToken] = [:]
+    private var toolJobs: [UUID: MediaTools.Job] = [:]
+    private var downloadPages: [UUID: URL] = [:]
+    private var installingTools = false
     private var optimizeQueue: [(id: UUID, manual: Bool)] = []
     private var optimizeActive: UUID?
     private var optimizeToken: CancelToken?
@@ -177,6 +190,7 @@ final class Library: ObservableObject {
     /// Окно библиотеки закрыли: отпускаем миниатюры, картинки и превью — при открытии они подгрузятся снова.
     func releaseUICaches() {
         closeDetail()
+        tileDisappeared()
         thumbs.removeAll()
         imageCache.removeAll()
         folderImageCache.removeAll()
@@ -338,8 +352,9 @@ final class Library: ObservableObject {
 
     static func kind(forExtension ext: String) -> MediaKind? {
         let e = ext.lowercased()
-        // AVFoundation их не проигрывает
-        if ["webm", "mkv", "avi", "flv", "wmv", "ogv"].contains(e) { return nil }
+        // WebM и MKV LiveWall перекодирует сам; остальное не умеет
+        if ["webm", "mkv"].contains(e) { return .video }
+        if ["avi", "flv", "wmv", "ogv"].contains(e) { return nil }
         guard !e.isEmpty, let t = UTType(filenameExtension: e) else { return nil }
         if t.conforms(to: .gif) { return .gif }
         if t.conforms(to: .movie) || t.conforms(to: .video) { return .video }
@@ -352,8 +367,8 @@ final class Library: ObservableObject {
         p.allowsMultipleSelection = true
         p.canChooseDirectories = true
         p.canChooseFiles = true
-        p.allowedContentTypes = [.movie, .image]
-        p.message = L("Choose videos (mp4/mov/m4v), images or GIFs. Folders are scanned recursively.")
+        p.allowedContentTypes = [.movie, .image] + ["webm", "mkv"].compactMap { UTType(filenameExtension: $0) }
+        p.message = L("Choose videos (mp4/mov/m4v/webm/mkv), images or GIFs. Folders are scanned recursively.")
         if p.runModal() == .OK {
             importFiles(p.urls)
         }
@@ -389,16 +404,21 @@ final class Library: ObservableObject {
         let supported = files.filter { Library.kind(for: $0) != nil }
         let skipped = files.count - supported.count
         if skipped > 0 {
-            message = LF("%ld file(s) skipped: unsupported format. Use mp4/mov/m4v, png/jpg/heic or gif.", skipped)
+            message = LF("%ld file(s) skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic or gif.", skipped)
         } else {
             message = nil
         }
-        guard !supported.isEmpty else { return }
+        // видео сначала проверяем: то, что macOS не проигрывает, перекодируется
+        for src in supported where Library.kind(for: src) == .video {
+            ingestVideo(src, name: src.deletingPathExtension().lastPathComponent, move: false)
+        }
+        let stills = supported.filter { Library.kind(for: $0) != .video }
+        guard !stills.isEmpty else { return }
 
-        busyCount += supported.count
+        busyCount += stills.count
         let dir = filesDir
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            for src in supported {
+            for src in stills {
                 let kind = Library.kind(for: src) ?? .image
                 let id = UUID()
                 let ext = src.pathExtension.lowercased()
@@ -428,6 +448,199 @@ final class Library: ObservableObject {
             }
         }
     }
+
+    // MARK: Видео: проверка и перекодирование
+
+    /// Видео, которое macOS проигрывает, кладётся в библиотеку как есть; остальное (WebM, MKV, VP9…) перекодируется.
+    /// `row` — строка загрузки, в которой показывать прогресс (для ссылок).
+    func ingestVideo(_ src: URL, name: String, move: Bool, row: UUID? = nil) {
+        busyCount += 1
+        Task { @MainActor [weak self] in
+            let native = await VideoConverter.canPlayNatively(src)
+            guard let self = self else { return }
+            self.busyCount -= 1
+            if native {
+                self.storeVideo(src, name: name, move: move)
+                if let row = row { self.removeDownload(row) }
+            } else {
+                self.convertVideo(src, name: name, move: move, row: row)
+            }
+        }
+    }
+
+    private func storeVideo(_ src: URL, name: String, move: Bool) {
+        let id = UUID()
+        let ext = src.pathExtension.isEmpty ? "mp4" : src.pathExtension.lowercased()
+        let dest = filesDir.appendingPathComponent("\(id.uuidString).\(ext)")
+        do {
+            if move {
+                try FileManager.default.moveItem(at: src, to: dest)
+            } else {
+                try FileManager.default.copyItem(at: src, to: dest)
+            }
+        } catch {
+            if move { try? FileManager.default.removeItem(at: src) }
+            message = LF("Could not copy %@: %@", name, error.localizedDescription)
+            return
+        }
+        let item = WallpaperItem(id: id, name: name, file: dest.lastPathComponent, kind: .video, mode: .fill)
+        items.append(item)
+        save()
+        if currentID == nil { select(id) }
+        if settings.optimizeOnImport { optimize(id, manual: false) }
+    }
+
+    private func convertVideo(_ src: URL, name: String, move: Bool, row: UUID?) {
+        let rowID = row ?? UUID()
+        let title = LF("Converting %@", name)
+        if let i = linkDownloads.firstIndex(where: { $0.id == rowID }) {
+            linkDownloads[i].title = title
+            linkDownloads[i].progress = 0
+            linkDownloads[i].error = nil
+        } else {
+            linkDownloads.append(LinkDownload(id: rowID, title: title, progress: 0, error: nil))
+        }
+        let token = CancelToken()
+        conversionTokens[rowID] = token
+        let id = UUID()
+        let dest = filesDir.appendingPathComponent("\(id.uuidString).mov")
+        let fps = optimizeFpsLimit
+        let target = VideoOptimizer.targetScreenPixels()
+
+        Task.detached(priority: .utility) {
+            var failure: Error?
+            var last = 0.0
+            do {
+                try await VideoConverter.convert(source: src, dest: dest, fpsLimit: fps, target: target, token: token) { v in
+                    guard v - last >= 0.01 || v >= 1 else { return }
+                    last = v
+                    DispatchQueue.main.async { self.setDownloadProgress(rowID, v) }
+                }
+            } catch {
+                failure = error
+            }
+            if move { try? FileManager.default.removeItem(at: src) }
+            let error = failure
+            await MainActor.run {
+                self.conversionTokens[rowID] = nil
+                if let error = error {
+                    try? FileManager.default.removeItem(at: dest)
+                    if let e = error as? OptimizeError, case .cancelled = e {
+                        self.removeDownload(rowID)
+                    } else {
+                        self.failDownload(rowID, LF("%@: %@", name, error.localizedDescription))
+                    }
+                    return
+                }
+                // строку уже закрыли — пользователь передумал
+                guard self.linkDownloads.contains(where: { $0.id == rowID }) else {
+                    try? FileManager.default.removeItem(at: dest)
+                    return
+                }
+                self.removeDownload(rowID)
+                var item = WallpaperItem(id: id, name: name, file: dest.lastPathComponent, kind: .video, mode: .fill)
+                item.optimized = true
+                self.items.append(item)
+                self.save()
+                if self.currentID == nil { self.select(id) }
+            }
+        }
+    }
+
+    // MARK: Видео с YouTube и других сайтов (yt-dlp)
+
+    private func startToolDownload(id: UUID, page: URL) {
+        guard linkDownloads.contains(where: { $0.id == id }) else { return }
+        if !MediaTools.installed {
+            guard MediaTools.askToInstall() else {
+                failDownload(id, L("Videos from this site need yt-dlp and Deno. Allow the download to add them."))
+                return
+            }
+            installTools(row: id) { [weak self] ok in
+                if ok { self?.startToolDownload(id: id, page: page) }
+            }
+            return
+        }
+        if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
+            linkDownloads[i].progress = 0
+            linkDownloads[i].error = nil
+        }
+        let folder = incomingDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let job = MediaTools.fetch(page, into: folder, progress: { [weak self] value, title in
+            guard let self = self, let i = self.linkDownloads.firstIndex(where: { $0.id == id }) else { return }
+            if let t = title { self.linkDownloads[i].title = t }
+            self.setDownloadProgress(id, value)
+        }, completion: { [weak self] result in
+            guard let self = self else { return }
+            self.toolJobs[id] = nil
+            switch result {
+            case .success(let (file, title)):
+                guard self.linkDownloads.contains(where: { $0.id == id }) else {
+                    try? FileManager.default.removeItem(at: folder)
+                    return
+                }
+                let name = title ?? file.deletingPathExtension().lastPathComponent
+                let kind = Library.kind(for: file)
+                if kind == .video {
+                    // папку уберём после того, как файл перенесут
+                    self.ingestVideo(file, name: name, move: true, row: id)
+                } else if kind != nil {
+                    self.addDownloadedFile(file, name: name, ext: file.pathExtension.lowercased())
+                    self.removeDownload(id)
+                } else {
+                    try? FileManager.default.removeItem(at: folder)
+                    self.failDownload(id, L("The site returned a file LiveWall can't use."))
+                }
+            case .failure(let error):
+                try? FileManager.default.removeItem(at: folder)
+                if let e = error as? OptimizeError, case .cancelled = e {
+                    self.removeDownload(id)
+                } else {
+                    self.failDownload(id, error.localizedDescription)
+                }
+            }
+        })
+        if let job = job { toolJobs[id] = job }
+    }
+
+    /// Скачивает или обновляет yt-dlp и Deno. `row` — строка загрузки для прогресса (если есть).
+    func installTools(row: UUID? = nil, completion: ((Bool) -> Void)? = nil) {
+        guard !installingTools else { return }
+        installingTools = true
+        let rowID = row ?? UUID()
+        let oldTitle = linkDownloads.first(where: { $0.id == rowID })?.title
+        if let i = linkDownloads.firstIndex(where: { $0.id == rowID }) {
+            linkDownloads[i].title = L("Downloading yt-dlp and Deno…")
+            linkDownloads[i].progress = 0
+        } else {
+            linkDownloads.append(LinkDownload(id: rowID, title: L("Downloading yt-dlp and Deno…"), progress: 0, error: nil))
+        }
+        objectWillChange.send()
+        Task { @MainActor [weak self] in
+            do {
+                try await MediaTools.install { v in
+                    DispatchQueue.main.async { self?.setDownloadProgress(rowID, v) }
+                }
+                guard let self = self else { return }
+                self.installingTools = false
+                if row != nil, let i = self.linkDownloads.firstIndex(where: { $0.id == rowID }) {
+                    self.linkDownloads[i].title = oldTitle ?? ""
+                } else {
+                    self.removeDownload(rowID)
+                    self.message = L("Video tools are ready.")
+                }
+                completion?(true)
+            } catch {
+                guard let self = self else { return }
+                self.installingTools = false
+                self.failDownload(rowID, error.localizedDescription)
+                completion?(false)
+            }
+        }
+    }
+
+    var toolsInstalling: Bool { installingTools }
 
     // MARK: Импорт по ссылке
 
@@ -496,13 +709,21 @@ final class Library: ObservableObject {
         message = nil
         let id = UUID()
         linkDownloads.append(LinkDownload(id: id, title: Library.displayName(for: url), progress: 0, error: nil))
-        startDownload(id: id, url: url, depth: 0)
+        downloadPages[id] = url
+        if MediaTools.isVideoSite(url) {
+            linkDownloads[linkDownloads.count - 1].title = url.host ?? url.absoluteString
+            startToolDownload(id: id, page: url)
+        } else {
+            startDownload(id: id, url: url, depth: 0)
+        }
     }
 
     func cancelDownload(_ id: UUID) {
         if let task = downloadTasks[id] {
             task.cancel()
         }
+        toolJobs[id]?.cancel()
+        conversionTokens[id]?.cancel()
         removeDownload(id)
     }
 
@@ -513,6 +734,9 @@ final class Library: ObservableObject {
     private func removeDownload(_ id: UUID) {
         downloadTasks[id] = nil
         downloadObservations[id] = nil
+        downloadPages[id] = nil
+        toolJobs[id] = nil
+        try? FileManager.default.removeItem(at: incomingDir.appendingPathComponent(id.uuidString, isDirectory: true))
         linkDownloads.removeAll { $0.id == id }
     }
 
@@ -587,7 +811,8 @@ final class Library: ObservableObject {
             let media = depth == 0 ? Library.findMediaURL(inHTMLAt: file, base: finalURL) : nil
             try? FileManager.default.removeItem(at: file)
             guard let mediaURL = media else {
-                failDownload(id, L("No video or image file found on this page. Paste a direct link to the file."))
+                // файла на странице нет — пусть попробует yt-dlp (он знает сотни сайтов)
+                startToolDownload(id: id, page: downloadPages[id] ?? source)
                 return
             }
             if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
@@ -601,7 +826,7 @@ final class Library: ObservableObject {
         guard let ext = Library.fileExtension(url: finalURL, mime: mime, suggested: response?.suggestedFilename) else {
             try? FileManager.default.removeItem(at: file)
             let type = mime.isEmpty ? "" : " (\(mime))"
-            failDownload(id, LF("Unsupported file type%@. Use mp4/mov/m4v, png/jpg/heic/webp or gif.", type))
+            failDownload(id, LF("Unsupported file type%@. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.", type))
             return
         }
 
@@ -609,6 +834,15 @@ final class Library: ObservableObject {
         if let suggested = response?.suggestedFilename, !suggested.isEmpty,
            Library.kind(forExtension: (suggested as NSString).pathExtension) != nil {
             name = (suggested as NSString).deletingPathExtension
+        }
+        if Library.kind(forExtension: ext) == .video {
+            // временному файлу нужно расширение, чтобы macOS поняла, что это за видео
+            let named = incomingDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
+            if (try? FileManager.default.moveItem(at: file, to: named)) != nil {
+                if let i = linkDownloads.firstIndex(where: { $0.id == id }) { linkDownloads[i].progress = 1 }
+                ingestVideo(named, name: name, move: true, row: id)
+                return
+            }
         }
         removeDownload(id)
         addDownloadedFile(file, name: name, ext: ext)
@@ -622,6 +856,7 @@ final class Library: ObservableObject {
         }
         let byMime: [String: String] = [
             "video/mp4": "mp4", "video/quicktime": "mov", "video/x-m4v": "m4v",
+            "video/webm": "webm", "video/x-matroska": "mkv",
             "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/gif": "gif",
             "image/heic": "heic", "image/heif": "heic", "image/webp": "webp",
             "image/tiff": "tiff", "image/bmp": "bmp",
@@ -666,7 +901,7 @@ final class Library: ObservableObject {
         }
 
         func isVideoFile(_ u: URL) -> Bool {
-            ["mp4", "mov", "m4v"].contains(u.pathExtension.lowercased())
+            ["mp4", "mov", "m4v", "webm"].contains(u.pathExtension.lowercased())
         }
 
         var videos: [URL] = []
@@ -688,7 +923,7 @@ final class Library: ObservableObject {
         for m in matches("<(?:video|source)\\b[^>]*>", in: html) {
             if let src = attribute("src", in: m[0]), let u = resolve(src) { videos.append(u) }
         }
-        for m in matches("https?:\\\\?/\\\\?/[^\"'\\s<>]+?\\.(?:mp4|mov|m4v)(?:\\?[^\"'\\s<>]*)?", in: html) {
+        for m in matches("https?:\\\\?/\\\\?/[^\"'\\s<>]+?\\.(?:mp4|mov|m4v|webm)(?:\\?[^\"'\\s<>]*)?", in: html) {
             if let u = resolve(m[0]) { videos.append(u) }
         }
 
@@ -760,6 +995,8 @@ final class Library: ObservableObject {
         guard force || videoInfo[id] == nil else { return }
         let src = url(for: item)
         Task { @MainActor [weak self] in
+            let native = await VideoConverter.canPlayNatively(src)
+            if native { self?.unplayable.remove(id) } else { self?.unplayable.insert(id) }
             guard let info = await VideoOptimizer.info(for: src) else { return }
             self?.videoInfo[id] = info
         }
@@ -767,6 +1004,7 @@ final class Library: ObservableObject {
 
     /// Можно ли сделать видео легче для этого Mac (nil — сведения ещё не загружены).
     func canOptimize(_ id: UUID) -> Bool? {
+        if unplayable.contains(id) { return true }
         guard let info = videoInfo[id] else { return nil }
         return VideoOptimizer.needsOptimization(info, fpsLimit: optimizeFpsLimit,
                                                 target: VideoOptimizer.targetScreenPixels())
@@ -823,7 +1061,21 @@ final class Library: ObservableObject {
 
         Task.detached(priority: .utility) {
             var outcome: Result<Bool, Error>
-            if let info = await VideoOptimizer.info(for: src),
+            if !(await VideoConverter.canPlayNatively(src)) {
+                // формат, который macOS не проигрывает — перекодируем через VideoToolbox
+                var last = 0.0
+                do {
+                    try await VideoConverter.convert(source: src, dest: temp, fpsLimit: fpsLimit, target: target,
+                                                     token: token) { value in
+                        guard value - last >= 0.01 || value >= 1 else { return }
+                        last = value
+                        DispatchQueue.main.async { self.optimizing[id] = value }
+                    }
+                    outcome = .success(true)
+                } catch {
+                    outcome = .failure(error)
+                }
+            } else if let info = await VideoOptimizer.info(for: src),
                !VideoOptimizer.needsOptimization(info, fpsLimit: fpsLimit, target: target) {
                 outcome = .success(false)
             } else {
@@ -887,10 +1139,12 @@ final class Library: ObservableObject {
             }
             items[idx].file = newName
             items[idx].optimized = true
+            unplayable.remove(id)
             save()
             let item = items[idx]
             if currentID == id {
                 WallpaperController.shared.apply(item: item, url: dest)
+                refreshTilePreview()
             }
             if detailID == id {
                 openDetail(id)
@@ -917,7 +1171,7 @@ final class Library: ObservableObject {
         save()
         applyPlayback(of: item)
         WallpaperController.shared.apply(item: item, url: url(for: item))
-        if detailID == id { releasePreview() }
+        refreshTilePreview()
         syncLockScreen()
     }
 
@@ -969,6 +1223,10 @@ final class Library: ObservableObject {
             p.defaultRate = Float(effectiveSpeed(items[idx]))
             if p.rate != 0 { p.play() }
         }
+        if id == currentID, let p = tilePlayer {
+            p.defaultRate = Float(effectiveSpeed(items[idx]))
+            if p.rate != 0 { p.play() }
+        }
     }
 
     func setVolume(_ v: Double, for id: UUID) {
@@ -991,22 +1249,103 @@ final class Library: ObservableObject {
         if isHidden(item), let folderID = item.folderID, !requestUnlock(folderID) { return }
         releasePreview()
         detailID = id
-        if item.kind == .video { loadVideoInfo(id) }
-        // для не активного видео — своё беззвучное превью
-        if item.kind == .video && id != currentID {
-            let p = AVQueuePlayer()
-            p.isMuted = true
-            p.preventsDisplaySleepDuringVideoPlayback = false
-            previewLooper = AVPlayerLooper(player: p, templateItem: AVPlayerItem(url: url(for: item)))
-            p.defaultRate = Float(effectiveSpeed(item))
-            p.play()
+        if item.kind == .video {
+            loadVideoInfo(id)
+            let (p, looper) = makeLoopPlayer(item)
+            previewLooper = looper
             previewPlayer = p
+            previewPaused = (id == currentID) ? paused : false
+            applyPreviewState(sync: true)
         }
+        updateTilePlayback(sync: false)
     }
 
     func closeDetail() {
         releasePreview()
         detailID = nil
+        updateTilePlayback(sync: false)
+    }
+
+    // MARK: Превью-плееры
+
+    private func makeLoopPlayer(_ item: WallpaperItem) -> (AVQueuePlayer, AVPlayerLooper) {
+        let p = AVQueuePlayer()
+        p.isMuted = true
+        p.preventsDisplaySleepDuringVideoPlayback = false
+        p.automaticallyWaitsToMinimizeStalling = false
+        let looper = AVPlayerLooper(player: p, templateItem: AVPlayerItem(url: url(for: item)))
+        p.defaultRate = Float(effectiveSpeed(item))
+        return (p, looper)
+    }
+
+    /// На паузе превью обоев рабочего стола показывает тот же кадр, что и сами обои.
+    private func applyPreviewState(sync: Bool) {
+        guard let p = previewPlayer else { return }
+        if previewPaused {
+            p.pause()
+            if sync, detailID == currentID, let t = WallpaperController.shared.playbackTime {
+                p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        } else {
+            p.play()
+        }
+    }
+
+    /// Пауза / продолжение в превью панели.
+    func togglePreviewPause() {
+        if detailID != nil && detailID == currentID {
+            togglePause()
+        } else {
+            previewPaused.toggle()
+            applyPreviewState(sync: false)
+        }
+    }
+
+    func tileAppeared() {
+        tileVisible = true
+        refreshTilePreview()
+    }
+
+    func tileDisappeared() {
+        tileVisible = false
+        releaseTilePreview()
+    }
+
+    private func refreshTilePreview() {
+        guard tileVisible, let item = current, item.kind == .video, !isHidden(item) else {
+            releaseTilePreview()
+            return
+        }
+        if tilePlayer != nil && tileFile == item.file {
+            tilePlayer?.defaultRate = Float(effectiveSpeed(item))
+            updateTilePlayback(sync: false)
+            return
+        }
+        releaseTilePreview()
+        let (p, looper) = makeLoopPlayer(item)
+        tileLooper = looper
+        tilePlayer = p
+        tileFile = item.file
+        updateTilePlayback(sync: true)
+    }
+
+    private func releaseTilePreview() {
+        tilePlayer?.pause()
+        tilePlayer = nil
+        tileLooper = nil
+        tileFile = nil
+    }
+
+    private func updateTilePlayback(sync: Bool) {
+        guard let p = tilePlayer else { return }
+        if paused || detailID != nil {
+            p.pause()
+            if sync, paused, let t = WallpaperController.shared.playbackTime {
+                p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        } else {
+            p.play()
+        }
     }
 
     func showAdjacentDetail(_ delta: Int) {
@@ -1073,8 +1412,15 @@ final class Library: ObservableObject {
     }
 
     func togglePause() {
+        // у картинок паузы нет
+        guard current?.kind != .image else { return }
         paused.toggle()
         WallpaperController.shared.userPaused = paused
+        if detailID != nil && detailID == currentID {
+            previewPaused = paused
+            applyPreviewState(sync: true)
+        }
+        updateTilePlayback(sync: true)
     }
 
     func toggleMute() {

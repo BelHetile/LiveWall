@@ -166,6 +166,31 @@ struct SettingsTab: View {
                     .disabled(!library.settings.autoRotate)
             }
 
+            Section {
+                HStack {
+                    if MediaTools.installed {
+                        Label(L("yt-dlp and Deno are installed"), systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Label(L("Not installed — they will be downloaded when you first add such a link"), systemImage: "arrow.down.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if MediaTools.installed && !MediaTools.ownCopy {
+                        Text(L("from Homebrew"))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button(MediaTools.installed ? L("Update") : L("Install")) { library.installTools() }
+                            .disabled(library.toolsInstalling)
+                    }
+                }
+            } header: {
+                Text(L("YouTube and other sites"))
+            } footer: {
+                Text(L("Links to YouTube, Vimeo, TikTok and hundreds of other sites are downloaded with yt-dlp (it needs Deno for YouTube). If a site stops working, update the tools. Formats macOS can't play (WebM, MKV, VP9, AV1) are converted to HEVC automatically."))
+                    .foregroundStyle(.secondary)
+            }
+
             Section(L("System")) {
                 Toggle(L("Launch at login"), isOn: $library.settings.launchAtLogin)
                 Toggle(L("Show in Dock"), isOn: $library.settings.showInDock)

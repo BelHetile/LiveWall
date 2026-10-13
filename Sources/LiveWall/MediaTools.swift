@@ -1,0 +1,236 @@
+import AppKit
+import VideoToolbox
+
+/// yt-dlp и Deno: скачивание видео с YouTube и похожих сайтов.
+/// Оба — свободные программы; LiveWall берёт их из Homebrew или скачивает из официальных релизов на GitHub.
+enum MediaTools {
+    static let dir: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let d = base.appendingPathComponent("LiveWall/Tools", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    static func find(_ name: String) -> URL? {
+        let candidates = [dir.appendingPathComponent(name).path, "/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
+    }
+
+    static var ytdlp: URL? { find("yt-dlp") }
+    static var deno: URL? { find("deno") }
+    static var installed: Bool { ytdlp != nil && deno != nil }
+    /// Скачаны самим LiveWall (их можно обновить), а не из Homebrew.
+    static var ownCopy: Bool { FileManager.default.fileExists(atPath: dir.appendingPathComponent("yt-dlp").path) }
+
+    /// Сайты, где видео не лежит файлом: сразу идём через yt-dlp.
+    static func isVideoSite(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        let sites = ["youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "tiktok.com", "twitch.tv",
+                     "dailymotion.com", "bilibili.com", "b23.tv", "x.com", "twitter.com", "instagram.com",
+                     "facebook.com", "fb.watch", "reddit.com", "redd.it", "streamable.com", "vk.com",
+                     "vkvideo.ru", "rutube.ru", "pinterest.com", "pin.it"]
+        return sites.contains(where: { host == $0 || host.hasSuffix("." + $0) })
+    }
+
+    enum ToolError: LocalizedError {
+        case download(String)
+        case failed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .download(let text): return LF("Could not download the tools: %@", text)
+            case .failed(let text): return text
+            }
+        }
+    }
+
+    /// Согласие пользователя на скачивание инструментов.
+    static func askToInstall() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = L("Download video tools?")
+        alert.informativeText = L("To add videos from YouTube and similar sites, LiveWall uses two free open-source tools: yt-dlp and Deno (about 100 MB, from their official GitHub releases). They are stored in LiveWall's folder and can be updated in Settings.")
+        alert.addButton(withTitle: L("Download"))
+        alert.addButton(withTitle: L("Cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Скачивает (или обновляет) yt-dlp и Deno в папку LiveWall.
+    static func install(progress: @escaping (Double) -> Void) async throws {
+        let ytURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
+        #if arch(arm64)
+        let denoName = "deno-aarch64-apple-darwin.zip"
+        #else
+        let denoName = "deno-x86_64-apple-darwin.zip"
+        #endif
+        let denoURL = URL(string: "https://github.com/denoland/deno/releases/latest/download/\(denoName)")!
+
+        let yt = try await download(ytURL) { progress($0 * 0.4) }
+        let ytDest = dir.appendingPathComponent("yt-dlp")
+        try? FileManager.default.removeItem(at: ytDest)
+        try FileManager.default.moveItem(at: yt, to: ytDest)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ytDest.path)
+
+        let zip = try await download(denoURL) { progress(0.4 + $0 * 0.55) }
+        defer { try? FileManager.default.removeItem(at: zip) }
+        let unpack = dir.appendingPathComponent("deno-unpack", isDirectory: true)
+        try? FileManager.default.removeItem(at: unpack)
+        let status = try runQuiet(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, unpack.path])
+        guard status == 0 else { throw ToolError.download("unzip") }
+        let denoDest = dir.appendingPathComponent("deno")
+        try? FileManager.default.removeItem(at: denoDest)
+        try FileManager.default.moveItem(at: unpack.appendingPathComponent("deno"), to: denoDest)
+        try? FileManager.default.removeItem(at: unpack)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: denoDest.path)
+        progress(1)
+    }
+
+    private static func runQuiet(_ exe: URL, _ args: [String]) throws -> Int32 {
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    private final class DownloadState {
+        var observation: NSKeyValueObservation?
+    }
+
+    private static func download(_ url: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+        let state = DownloadState()
+        return try await withCheckedThrowingContinuation { (c: CheckedContinuation<URL, Error>) in
+            let task = URLSession.shared.downloadTask(with: url) { tmp, response, error in
+                state.observation = nil
+                if let error = error {
+                    c.resume(throwing: ToolError.download(error.localizedDescription))
+                    return
+                }
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    c.resume(throwing: ToolError.download("HTTP \(http.statusCode)"))
+                    return
+                }
+                guard let tmp = tmp else {
+                    c.resume(throwing: ToolError.download("no file"))
+                    return
+                }
+                let keep = dir.appendingPathComponent(UUID().uuidString)
+                do {
+                    try FileManager.default.moveItem(at: tmp, to: keep)
+                    c.resume(returning: keep)
+                } catch {
+                    c.resume(throwing: ToolError.download(error.localizedDescription))
+                }
+            }
+            state.observation = task.progress.observe(\.fractionCompleted, options: [.new]) { p, _ in
+                progress(p.fractionCompleted)
+            }
+            task.resume()
+        }
+    }
+
+    // MARK: Скачивание видео
+
+    /// Порядок форматов: разрешение не выше экрана; кодек — тот, что Mac декодирует железом.
+    static func formatSort() -> String {
+        let target = VideoOptimizer.targetScreenPixels()
+        let height = Int(min(2160, max(720, min(target.width, target.height))))
+        if height <= 1080 { return "res:\(height),vcodec:h264" }
+        if VTIsHardwareDecodeSupported(VideoConverter.av1) { return "res:\(height)" }
+        return "res:\(height),vcodec:vp9"
+    }
+
+    final class Job {
+        let process = Process()
+        fileprivate var buffer = ""
+        fileprivate var title: String?
+        fileprivate var file: String?
+        fileprivate var lastError: String?
+
+        func cancel() {
+            if process.isRunning { process.terminate() }
+        }
+    }
+
+    /// Запускает yt-dlp. `progress` и `completion` вызываются на главной очереди.
+    static func fetch(_ url: URL, into folder: URL, progress: @escaping (Double, String?) -> Void,
+                      completion: @escaping (Result<(URL, String?), Error>) -> Void) -> Job? {
+        guard let exe = ytdlp else {
+            completion(.failure(ToolError.failed(L("yt-dlp is not installed."))))
+            return nil
+        }
+        let job = Job()
+        let p = job.process
+        p.executableURL = exe
+        p.arguments = [
+            "--no-playlist", "--newline", "--progress", "--no-part", "--no-mtime", "--no-colors",
+            "-f", "bv*/b", "-S", formatSort(),
+            "-o", folder.appendingPathComponent("%(id)s.%(ext)s").path,
+            "--print", "before_dl:LWTITLE %(title)s",
+            "--print", "after_move:LWFILE %(filepath)s",
+            "--", url.absoluteString,
+        ]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = [dir.path, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].joined(separator: ":")
+        p.environment = env
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+
+        let regex = try? NSRegularExpression(pattern: "\\[download\\]\\s+([0-9.]+)%")
+        // вызывается только на главной очереди
+        let consume: (String, Bool) -> Void = { text, final in
+            job.buffer += text
+            if final { job.buffer += "\n" }
+            while let nl = job.buffer.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
+                let line = String(job.buffer[..<nl]).trimmingCharacters(in: .whitespaces)
+                job.buffer.removeSubrange(...nl)
+                if line.hasPrefix("LWTITLE ") {
+                    job.title = String(line.dropFirst(8))
+                    progress(0, job.title)
+                } else if line.hasPrefix("LWFILE ") {
+                    job.file = String(line.dropFirst(7))
+                } else if line.hasPrefix("ERROR:") {
+                    job.lastError = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                } else if let re = regex,
+                          let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                          let r = Range(m.range(at: 1), in: line), let v = Double(line[r]) {
+                    progress(min(1, v / 100), nil)
+                }
+            }
+        }
+        let reader = pipe.fileHandleForReading
+        reader.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            let text = String(decoding: chunk, as: UTF8.self)
+            DispatchQueue.main.async { consume(text, false) }
+        }
+        p.terminationHandler = { proc in
+            reader.readabilityHandler = nil
+            let rest = String(decoding: reader.readDataToEndOfFile(), as: UTF8.self)
+            DispatchQueue.main.async {
+                consume(rest, true)
+                if proc.terminationReason == .uncaughtSignal {
+                    completion(.failure(OptimizeError.cancelled))
+                } else if proc.terminationStatus == 0, let path = job.file,
+                          FileManager.default.fileExists(atPath: path) {
+                    completion(.success((URL(fileURLWithPath: path), job.title)))
+                } else {
+                    let text = job.lastError ?? LF("yt-dlp stopped with code %ld.", Int(proc.terminationStatus))
+                    completion(.failure(ToolError.failed(text)))
+                }
+            }
+        }
+        do {
+            try p.run()
+        } catch {
+            completion(.failure(ToolError.failed(error.localizedDescription)))
+            return nil
+        }
+        return job
+    }
+}

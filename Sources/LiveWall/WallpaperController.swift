@@ -69,6 +69,11 @@ final class WallpaperController: NSObject {
     }
 
     var currentPlayer: AVPlayer? { player }
+    /// Позиция видео обоев (и когда оно выгружено).
+    var playbackTime: CMTime? {
+        if isStopped { return stoppedTime }
+        return player?.currentTime()
+    }
     /// Плеер появился или выгружен — превью в библиотеке перерисовываются.
     var onPlayerChange: (() -> Void)?
 

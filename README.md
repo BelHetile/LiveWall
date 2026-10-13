@@ -66,9 +66,10 @@ and Intel.
 ## Features
 
 **Wallpapers**
-- Videos (mp4, mov, m4v — H.264/HEVC), images (png, jpg, heic, webp) and animated GIFs.
+- Videos (mp4, mov, m4v, webm, mkv), images (png, jpg, heic, webp) and animated GIFs. Formats macOS can't play
+  (WebM/VP9, MKV, AV1 on M3 and newer) are converted to HEVC automatically.
 - Add them with **Add**, by dragging files, folders or links into the window, or by pasting a link (**⌘V**).
-  Links can point straight to a file or to a web page that has one.
+  Links can point to a file, a web page that has one, or YouTube, Vimeo, TikTok and hundreds of other sites.
 - Fill modes per wallpaper: **Fill, Fit, Stretch, Center**. Volume, mute and playback speed per wallpaper.
 - Works on every display and every Space, below your desktop icons. Smooth crossfade when switching.
 
@@ -133,7 +134,9 @@ Hotkeys don't need any permissions in System Settings.
   can't be recovered. The files themselves are not encrypted on disk.
 - **Wallpaper Engine.** Video wallpapers (`.mp4`) work directly. *Scene* wallpapers (`scene.pkg`) only run inside
   Wallpaper Engine and can't be played on a Mac.
-- **Links.** Sites that don't serve a file directly (YouTube and similar) aren't supported.
+- **YouTube and other sites** are downloaded with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
+  [Deno](https://deno.com). LiveWall asks before downloading them the first time (or uses them from Homebrew) and can
+  update them in **Settings → YouTube and other sites**. VP8 videos can't be decoded on a Mac.
 
 ## Where your data lives
 

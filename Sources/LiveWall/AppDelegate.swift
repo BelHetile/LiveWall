@@ -119,6 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         Library.shared.flushSave()
     }
 
+    /// Свёрнутое окно не крутит превью.
+    func windowDidMiniaturize(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === libraryWindow else { return }
+        Library.shared.closeDetail()
+        Library.shared.tileDisappeared()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === libraryWindow else { return }
+        Library.shared.tileAppeared()
+    }
+
     /// Окно библиотеки закрыли — закрытые папки снова запираются.
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === libraryWindow {
@@ -162,8 +174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(menuItem(L("Next Wallpaper"), #selector(nextWallpaper), symbol: "forward.fill"))
         menu.addItem(menuItem(L("Previous Wallpaper"), #selector(previousWallpaper), symbol: "backward.fill"))
         menu.addItem(menuItem(L("Random Wallpaper"), #selector(randomWallpaper), symbol: "shuffle"))
-        menu.addItem(menuItem(lib.paused ? L("Resume Video") : L("Pause Video"), #selector(togglePause),
-                              symbol: lib.paused ? "play.fill" : "pause.fill"))
+        // пауза и звук — только у анимированных обоев
+        if let kind = lib.current?.kind, kind != .image {
+            menu.addItem(menuItem(lib.paused ? L("Resume Video") : L("Pause Video"), #selector(togglePause),
+                                  symbol: lib.paused ? "play.fill" : "pause.fill"))
+        }
 
         if !lib.items.isEmpty {
             menu.addItem(.separator())
@@ -212,9 +227,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         modeParent.isEnabled = lib.current != nil
         menu.addItem(modeParent)
 
-        let isMuted = lib.current.map { lib.effectiveMuted($0) } ?? lib.settings.muted
-        menu.addItem(menuItem(L("Mute Video"), #selector(toggleMute), state: isMuted ? .on : .off,
-                              symbol: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
+        if let current = lib.current, current.kind == .video {
+            let isMuted = lib.effectiveMuted(current)
+            menu.addItem(menuItem(L("Mute Video"), #selector(toggleMute), state: isMuted ? .on : .off,
+                                  symbol: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"))
+        }
         menu.addItem(.separator())
         menu.addItem(menuItem(L("Open LiveWall…"), #selector(openLibrary), symbol: "macwindow"))
         menu.addItem(menuItem(L("Settings…"), #selector(openSettings), symbol: "gearshape"))
@@ -339,13 +356,15 @@ struct MenuHeaderView: View {
 
     private var statusText: String {
         guard let item = library.current else { return L("Add wallpapers in LiveWall") }
+        if item.kind == .image { return "\(item.kind.title) · \(item.mode.title)" }
         if library.paused { return L("Paused by you") }
         if let r = library.pauseReason { return LF("Paused · %@", r) }
         return item.kind == .video ? LF("Playing · %@", item.mode.title) : "\(item.kind.title) · \(item.mode.title)"
     }
 
     private var statusColor: Color {
-        if library.current == nil { return .secondary }
+        guard let item = library.current else { return .secondary }
+        if item.kind == .image { return .green }
         if library.paused || library.pauseReason != nil { return .orange }
         return .green
     }
