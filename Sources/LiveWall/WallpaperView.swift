@@ -99,6 +99,22 @@ final class WallpaperView: NSView {
         }
     }
 
+    /// Видео выгружено: вместо слоя плеера — его кадр, без анимации.
+    func showStill(_ image: CGImage, mode: FillMode, videoSize: CGSize) {
+        readyObservation = nil
+        self.mode = mode
+        self.videoSize = videoSize
+        let l = CALayer()
+        l.contents = image
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        configure(l)
+        layer?.addSublayer(l)
+        for old in stack { old.removeFromSuperlayer() }
+        stack = [l]
+        CATransaction.commit()
+    }
+
     /// Пауза анимации GIF без потери позиции.
     func setAnimationPaused(_ paused: Bool) {
         for l in stack where !(l is AVPlayerLayer) {

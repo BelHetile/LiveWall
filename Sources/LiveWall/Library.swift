@@ -47,6 +47,9 @@ final class Library: ObservableObject {
     @Published private(set) var linkDownloads: [LinkDownload] = []
     @Published var showLinkPopover = false
     @Published var linkText = ""
+    /// Прогресс оптимизации видео (0…1); в очереди — с прогрессом 0.
+    @Published private(set) var optimizing: [UUID: Double] = [:]
+    @Published private(set) var videoInfo: [UUID: VideoInfo] = [:]
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
     }
@@ -72,6 +75,9 @@ final class Library: ObservableObject {
     private var imageCache: [UUID: NSImage] = [:]
     private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
     private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
+    private var optimizeQueue: [(id: UUID, manual: Bool)] = []
+    private var optimizeActive: UUID?
+    private var optimizeToken: CancelToken?
 
     private struct Index: Codable {
         var items: [WallpaperItem]
@@ -189,6 +195,7 @@ final class Library: ObservableObject {
         // объект входа привязан к идентификатору приложения — обновляем регистрацию
         if settings.launchAtLogin { LoginItem.set(true) }
         applyControllerSettings()
+        WallpaperController.shared.onPlayerChange = { [weak self] in self?.objectWillChange.send() }
         WallpaperController.shared.start()
 
         let monitor = PauseMonitor.shared
@@ -230,6 +237,7 @@ final class Library: ObservableObject {
         let c = WallpaperController.shared
         applyPlayback(of: current)
         c.userPaused = paused
+        c.stopAfter = TimeInterval(max(0, settings.stopAfterSeconds))
         PauseMonitor.shared.settings = settings
     }
 
@@ -415,6 +423,7 @@ final class Library: ObservableObject {
                     self.busyCount -= 1
                     self.save()
                     if self.currentID == nil { self.select(item.id) }
+                    if item.kind == .video && self.settings.optimizeOnImport { self.optimize(item.id, manual: false) }
                 }
             }
         }
@@ -707,6 +716,7 @@ final class Library: ObservableObject {
         items.append(item)
         save()
         if currentID == nil { select(id) }
+        if kind == .video && settings.optimizeOnImport { optimize(id, manual: false) }
     }
 
     func remove(_ id: UUID) {
@@ -717,6 +727,8 @@ final class Library: ObservableObject {
         try? FileManager.default.removeItem(at: stillsDir.appendingPathComponent("\(id.uuidString).png"))
         thumbs[id] = nil
         imageCache[id] = nil
+        videoInfo[id] = nil
+        cancelOptimize(id)
         if detailID == id { closeDetail() }
         if lockScreenID == id {
             lockScreenID = nil
@@ -736,6 +748,159 @@ final class Library: ObservableObject {
             }
         } else {
             save()
+        }
+    }
+
+    // MARK: Оптимизация видео
+
+    var optimizeFpsLimit: Double { Double(min(max(settings.optimizeFpsLimit, 15), 120)) }
+
+    func loadVideoInfo(_ id: UUID, force: Bool = false) {
+        guard let item = items.first(where: { $0.id == id }), item.kind == .video else { return }
+        guard force || videoInfo[id] == nil else { return }
+        let src = url(for: item)
+        Task { @MainActor [weak self] in
+            guard let info = await VideoOptimizer.info(for: src) else { return }
+            self?.videoInfo[id] = info
+        }
+    }
+
+    /// Можно ли сделать видео легче для этого Mac (nil — сведения ещё не загружены).
+    func canOptimize(_ id: UUID) -> Bool? {
+        guard let info = videoInfo[id] else { return nil }
+        return VideoOptimizer.needsOptimization(info, fpsLimit: optimizeFpsLimit,
+                                                target: VideoOptimizer.targetScreenPixels())
+    }
+
+    /// Ставит видео в очередь. `manual` — пользователь нажал кнопку (сообщаем об итоге).
+    func optimize(_ id: UUID, manual: Bool) {
+        guard let item = items.first(where: { $0.id == id }), item.kind == .video else { return }
+        guard optimizing[id] == nil else { return }
+        optimizing[id] = 0
+        optimizeQueue.append((id, manual))
+        runNextOptimization()
+    }
+
+    /// Все видео, которые ещё не оптимизированы.
+    func optimizeAll() {
+        let ids = items.filter { $0.kind == .video && $0.optimized != true }.map { $0.id }
+        if ids.isEmpty {
+            message = L("All videos are already optimized.")
+            return
+        }
+        for id in ids { optimize(id, manual: false) }
+    }
+
+    var pendingOptimizationCount: Int {
+        items.filter { $0.kind == .video && $0.optimized != true }.count
+    }
+
+    func cancelOptimize(_ id: UUID) {
+        if optimizeActive == id {
+            optimizeToken?.cancel()
+        } else {
+            optimizeQueue.removeAll { $0.id == id }
+            optimizing[id] = nil
+        }
+    }
+
+    private func runNextOptimization() {
+        guard optimizeActive == nil, !optimizeQueue.isEmpty else { return }
+        let job = optimizeQueue.removeFirst()
+        guard let item = items.first(where: { $0.id == job.id }) else {
+            optimizing[job.id] = nil
+            runNextOptimization()
+            return
+        }
+        let id = item.id
+        let src = url(for: item)
+        let fpsLimit = optimizeFpsLimit
+        let target = VideoOptimizer.targetScreenPixels()
+        let temp = incomingDir.appendingPathComponent("\(id.uuidString)-optimized.mov")
+        let token = CancelToken()
+        optimizeActive = id
+        optimizeToken = token
+
+        Task.detached(priority: .utility) {
+            var outcome: Result<Bool, Error>
+            if let info = await VideoOptimizer.info(for: src),
+               !VideoOptimizer.needsOptimization(info, fpsLimit: fpsLimit, target: target) {
+                outcome = .success(false)
+            } else {
+                var last = 0.0
+                do {
+                    try await VideoOptimizer.transcode(source: src, dest: temp, fpsLimit: fpsLimit, target: target,
+                                                       token: token) { value in
+                        guard value - last >= 0.01 || value >= 1 else { return }
+                        last = value
+                        DispatchQueue.main.async { self.optimizing[id] = value }
+                    }
+                    outcome = .success(true)
+                } catch {
+                    outcome = .failure(error)
+                }
+            }
+            let result = outcome
+            await MainActor.run {
+                self.finishOptimization(id: id, temp: temp, manual: job.manual, result: result)
+            }
+        }
+    }
+
+    private func finishOptimization(id: UUID, temp: URL, manual: Bool, result: Result<Bool, Error>) {
+        optimizeActive = nil
+        optimizeToken = nil
+        optimizing[id] = nil
+        defer { runNextOptimization() }
+        guard let idx = items.firstIndex(where: { $0.id == id }) else {
+            try? FileManager.default.removeItem(at: temp)
+            return
+        }
+        let name = items[idx].name
+        switch result {
+        case .failure(let error):
+            try? FileManager.default.removeItem(at: temp)
+            if let e = error as? OptimizeError, case .cancelled = e { return }
+            message = LF("Could not optimize %@: %@", name, error.localizedDescription)
+        case .success(false):
+            items[idx].optimized = true
+            save()
+            if manual { message = LF("%@ is already light enough for this Mac.", name) }
+        case .success(true):
+            let old = url(for: items[idx])
+            let oldSize = (try? old.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let newSize = (try? temp.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let newName = "\(id.uuidString).mov"
+            let dest = filesDir.appendingPathComponent(newName)
+            do {
+                if dest.path == old.path {
+                    _ = try FileManager.default.replaceItemAt(dest, withItemAt: temp)
+                } else {
+                    try? FileManager.default.removeItem(at: dest)
+                    try FileManager.default.moveItem(at: temp, to: dest)
+                    try? FileManager.default.removeItem(at: old)
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: temp)
+                message = LF("Could not optimize %@: %@", name, error.localizedDescription)
+                return
+            }
+            items[idx].file = newName
+            items[idx].optimized = true
+            save()
+            let item = items[idx]
+            if currentID == id {
+                WallpaperController.shared.apply(item: item, url: dest)
+            }
+            if detailID == id {
+                openDetail(id)
+            }
+            loadVideoInfo(id, force: true)
+            if oldSize > 0 && newSize > 0 {
+                let fmt = ByteCountFormatter()
+                message = LF("%@ optimized: %@ → %@.", name, fmt.string(fromByteCount: Int64(oldSize)),
+                             fmt.string(fromByteCount: Int64(newSize)))
+            }
         }
     }
 
@@ -826,6 +991,7 @@ final class Library: ObservableObject {
         if isHidden(item), let folderID = item.folderID, !requestUnlock(folderID) { return }
         releasePreview()
         detailID = id
+        if item.kind == .video { loadVideoInfo(id) }
         // для не активного видео — своё беззвучное превью
         if item.kind == .video && id != currentID {
             let p = AVQueuePlayer()

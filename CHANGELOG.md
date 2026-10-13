@@ -5,6 +5,15 @@ All notable changes to LiveWall are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Optimize for This Mac**: a video can be re-encoded to HEVC at the size of your largest screen with a frame rate
+  limit (24, 30 or 60 fps). Available in the wallpaper panel, the card's context menu and Settings → Performance
+  (*Optimize All Videos*); new videos are optimized automatically (can be turned off). Videos that are already light
+  are left alone.
+- **Unload paused video**: after a video has been paused for a while (10 s – 5 min, or never) it is unloaded from
+  memory and the exact paused frame stays on screen; it loads back from the same spot when playback resumes.
+- The wallpaper panel shows the video's resolution, frame rate and codec, and scrolls when it doesn't fit.
+
 ### Performance
 - Window coverage is only checked while a video or GIF is on, less often and with timer tolerance; the power source
   is reported by the system instead of being polled.

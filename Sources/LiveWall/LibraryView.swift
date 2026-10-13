@@ -534,7 +534,7 @@ struct WallpaperCard: View {
                 Button {
                     library.moveItem(item.id, to: nil)
                 } label: {
-                    if item.folderID == nil { Label(L("No Folder"), systemImage: "checkmark") } else { Text("No Folder") }
+                    if item.folderID == nil { Label(L("No Folder"), systemImage: "checkmark") } else { Text(L("No Folder")) }
                 }
                 if !library.folders.isEmpty { Divider() }
                 ForEach(library.folders) { folder in
@@ -558,6 +558,13 @@ struct WallpaperCard: View {
                             Text(m.title)
                         }
                     }
+                }
+            }
+            if item.kind == .video {
+                if library.optimizing[item.id] != nil {
+                    Button(L("Cancel Optimization")) { library.cancelOptimize(item.id) }
+                } else {
+                    Button(L("Optimize for This Mac")) { library.optimize(item.id, manual: true) }
                 }
             }
             Button(L("Reveal in Finder")) { library.revealInFinder(item) }
@@ -616,6 +623,12 @@ struct WallpaperCard: View {
                 .padding(6)
                 .background(.ultraThinMaterial, in: Circle())
                 .padding(8)
+        }
+        .overlay(alignment: .bottom) {
+            if let progress = library.optimizing[item.id] {
+                OptimizeBadge(progress: progress)
+                    .padding(8)
+            }
         }
         .shadow(color: .black.opacity(isHovered ? 0.35 : 0.12), radius: isHovered ? 14 : 5, y: isHovered ? 8 : 2)
         .contentShape(Rectangle())
@@ -766,137 +779,144 @@ struct WallpaperDetail: View {
                 .help(L("Close"))
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: L("Use as"))
-                HStack(spacing: 10) {
-                    TargetButton(title: L("Desktop"), symbol: "display", active: isDesktop) {
-                        library.setDesktop(item.id)
-                    }
-                    TargetButton(title: L("Lock Screen"), symbol: "lock.fill", active: isLock) {
-                        library.setLockScreen(item.id)
-                    }
-                }
-                if library.lockScreenID == item.id {
-                    Button(L("Lock screen: follow the desktop again")) {
-                        library.lockScreenFollowDesktop()
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
-                }
-            }
-
-            if item.kind == .video {
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionLabel(text: L("Playback"))
-
-                    if isDesktop {
-                        Button {
-                            library.togglePause()
-                        } label: {
-                            Label(library.paused ? L("Resume") : L("Pause"),
-                                  systemImage: library.paused ? "play.fill" : "pause.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .contentShape(Rectangle())
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionLabel(text: L("Use as"))
+                        HStack(spacing: 10) {
+                            TargetButton(title: L("Desktop"), symbol: "display", active: isDesktop) {
+                                library.setDesktop(item.id)
+                            }
+                            TargetButton(title: L("Lock Screen"), symbol: "lock.fill", active: isLock) {
+                                library.setLockScreen(item.id)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        if let reason = library.pauseReason, !library.paused {
-                            Label(LF("Auto-paused: %@", reason), systemImage: "pause.circle")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.orange)
+                        if library.lockScreenID == item.id {
+                            Button(L("Lock screen: follow the desktop again")) {
+                                library.lockScreenFollowDesktop()
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
                         }
                     }
 
-                    HStack(spacing: 10) {
-                        let muted = library.effectiveMuted(item)
-                        Button {
-                            library.setMuted(!muted, for: item.id)
-                        } label: {
-                            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .frame(width: 22)
+                    if item.kind == .video {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SectionLabel(text: L("Playback"))
+
+                            if isDesktop {
+                                Button {
+                                    library.togglePause()
+                                } label: {
+                                    Label(library.paused ? L("Resume") : L("Pause"),
+                                          systemImage: library.paused ? "play.fill" : "pause.fill")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                if let reason = library.pauseReason, !library.paused {
+                                    Label(LF("Auto-paused: %@", reason), systemImage: "pause.circle")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                let muted = library.effectiveMuted(item)
+                                Button {
+                                    library.setMuted(!muted, for: item.id)
+                                } label: {
+                                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                        .frame(width: 22)
+                                }
+                                .buttonStyle(.plain)
+                                .help(muted ? L("Unmute") : L("Mute"))
+                                Slider(value: volumeBinding, in: 0...1)
+                                    .disabled(muted)
+                                Text(muted ? L("Muted") : "\(Int((library.effectiveVolume(item) * 100).rounded()))%")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 44, alignment: .trailing)
+                            }
+
+                            HStack {
+                                Text(L("Speed"))
+                                    .font(.system(size: 12))
+                                Spacer()
+                            }
+                            Picker("", selection: speedBinding) {
+                                ForEach(speeds, id: \.self) { v in
+                                    Text(WallpaperDetail.speedLabel(v)).tag(v)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
                         }
-                        .buttonStyle(.plain)
-                        .help(muted ? L("Unmute") : L("Mute"))
-                        Slider(value: volumeBinding, in: 0...1)
-                            .disabled(muted)
-                        Text(muted ? L("Muted") : "\(Int((library.effectiveVolume(item) * 100).rounded()))%")
-                            .font(.system(size: 11, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 44, alignment: .trailing)
                     }
 
-                    HStack {
-                        Text(L("Speed"))
-                            .font(.system(size: 12))
+                    HStack(alignment: .center, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            SectionLabel(text: L("Folder"))
+                            Menu {
+                                Button(L("No Folder")) { library.moveItem(item.id, to: nil) }
+                                if !library.folders.isEmpty { Divider() }
+                                ForEach(library.folders) { folder in
+                                    Button(folder.name) { library.moveItem(item.id, to: folder.id) }
+                                }
+                                Divider()
+                                Button(L("New Folder…")) { library.createFolder(moving: [item.id]) }
+                            } label: {
+                                Text(library.folders.first(where: { $0.id == item.folderID })?.name ?? L("No Folder"))
+                                    .lineLimit(1)
+                            }
+                            .fixedSize()
+                        }
                         Spacer()
-                    }
-                    Picker("", selection: speedBinding) {
-                        ForEach(speeds, id: \.self) { v in
-                            Text(WallpaperDetail.speedLabel(v)).tag(v)
+                        VStack(alignment: .trailing, spacing: 8) {
+                            SectionLabel(text: L("Hotkey"))
+                            WallpaperHotkeyRecorder(item: item, library: library)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                }
-            }
 
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel(text: L("Folder"))
-                    Menu {
-                        Button(L("No Folder")) { library.moveItem(item.id, to: nil) }
-                        if !library.folders.isEmpty { Divider() }
-                        ForEach(library.folders) { folder in
-                            Button(folder.name) { library.moveItem(item.id, to: folder.id) }
-                        }
-                        Divider()
-                        Button(L("New Folder…")) { library.createFolder(moving: [item.id]) }
-                    } label: {
-                        Text(library.folders.first(where: { $0.id == item.folderID })?.name ?? L("No Folder"))
-                            .lineLimit(1)
-                    }
-                    .fixedSize()
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 8) {
-                    SectionLabel(text: L("Hotkey"))
-                    WallpaperHotkeyRecorder(item: item, library: library)
-                }
-            }
-
-            if item.hotkey != nil {
-                HStack {
-                    Text(L("Hotkey switches"))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Picker("", selection: Binding(get: { item.hotkeyScope ?? .both },
-                                                  set: { library.setHotkeyScope($0, for: item.id) })) {
-                        ForEach(HotkeyScope.allCases) { scope in
-                            Text(scope.title).tag(scope)
+                    if item.hotkey != nil {
+                        HStack {
+                            Text(L("Hotkey switches"))
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Picker("", selection: Binding(get: { item.hotkeyScope ?? .both },
+                                                          set: { library.setHotkeyScope($0, for: item.id) })) {
+                                ForEach(HotkeyScope.allCases) { scope in
+                                    Text(scope.title).tag(scope)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(width: 230)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 230)
-                }
-            }
 
-            VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: L("Fill mode"))
-                Picker("", selection: modeBinding) {
-                    ForEach(FillMode.allCases) { m in
-                        Text(m.title).tag(m)
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionLabel(text: L("Fill mode"))
+                        Picker("", selection: modeBinding) {
+                            ForEach(FillMode.allCases) { m in
+                                Text(m.title).tag(m)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    if item.kind == .video {
+                        PerformanceSection(item: item, library: library)
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer(minLength: 0)
 
             HStack {
                 Button {
@@ -921,6 +941,91 @@ struct WallpaperDetail: View {
     static func speedLabel(_ v: Double) -> String {
         let s = v == v.rounded() ? "\(Int(v))" : "\(v)"
         return s + "×"
+    }
+}
+
+/// Оптимизация видео в панели обоев.
+struct PerformanceSection: View {
+    let item: WallpaperItem
+    @ObservedObject var library: Library
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel(text: L("Performance"))
+            if let info = library.videoInfo[item.id] {
+                Label(info.summary, systemImage: "film")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L("Reading video info…"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let progress = library.optimizing[item.id] {
+                HStack(spacing: 10) {
+                    ProgressView(value: progress)
+                    Text("\(Int((progress * 100).rounded()))%")
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, alignment: .trailing)
+                    Button {
+                        library.cancelOptimize(item.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L("Cancel Optimization"))
+                }
+                Text(progress > 0 ? L("Optimizing… You can keep using the Mac.") : L("Waiting in line…"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else if library.canOptimize(item.id) == false {
+                Label(L("Already optimal for this Mac"), systemImage: "checkmark.seal.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.green)
+            } else if library.canOptimize(item.id) == true {
+                Button {
+                    library.optimize(item.id, manual: true)
+                } label: {
+                    Label(L("Optimize for This Mac"), systemImage: "bolt.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Text(LF("Re-encodes to HEVC at your screen size and up to %ld fps, so it uses less energy. The original is replaced.",
+                        Int(library.optimizeFpsLimit)))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Полоска прогресса оптимизации на карточке.
+struct OptimizeBadge: View {
+    let progress: Double
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 9, weight: .bold))
+            ProgressView(value: progress)
+                .progressViewStyle(.linear)
+                .tint(.white)
+            Text("\(Int((progress * 100).rounded()))%")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
     }
 }
 

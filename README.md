@@ -93,6 +93,12 @@ and Intel.
 - an app from your **App rules** is running or in front (e.g. games);
 - the display sleeps or the screen is locked.
 
+**Performance**
+- *Optimize for This Mac*: re-encodes a video to HEVC at your screen size and up to 30 fps (24/60 in Settings),
+  automatically for new videos. A 4K 60 fps clip becomes much cheaper to decode.
+- A video paused for a while (30 s by default) is unloaded from memory and replaced by its exact paused frame, then
+  loaded back when playback resumes — like Wallpaper Engine's *Stop* setting.
+
 **And also**
 - Lock screen: a still frame of the chosen wallpaper (macOS doesn't allow live video there).
 - Automatic rotation by timer, in order or shuffled.
@@ -120,6 +126,7 @@ Hotkeys don't need any permissions in System Settings.
 
 - **Battery.** Hardware decoding keeps the cost low, but a full-screen video still uses some power. Smart pause
   stops playback whenever the desktop isn't visible; turn on *Running on battery* in Settings to pause on battery.
+  For the lowest cost, optimize your videos (wallpaper panel → *Optimize for This Mac*).
 - **Lock screen.** macOS doesn't let apps show live video on the lock screen, so LiveWall sets a still frame there
   (Wallpaper Engine on Windows does the same).
 - **Locked folders** hide wallpapers inside LiveWall. Passwords are stored only as a salted PBKDF2-SHA256 hash and

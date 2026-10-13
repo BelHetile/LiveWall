@@ -43,6 +43,8 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var folderID: UUID?
     var hotkey: HotkeyBinding?
     var hotkeyScope: HotkeyScope?
+    // видео уже оптимизировано (или проверено и не нуждается в этом)
+    var optimized: Bool?
 }
 
 /// Что переключает хоткей обоев.
@@ -188,6 +190,11 @@ struct Settings: Codable, Equatable {
     var pauseWhenHot = true
     var appRules: [AppRule] = []
 
+    // производительность
+    var optimizeOnImport = true
+    var optimizeFpsLimit = 30
+    var stopAfterSeconds = 30   // 0 = никогда не выгружать видео на паузе
+
     // внешний вид
     var colorStyleID = "violet"
     var customStyles: [ColorStyle] = []
@@ -208,6 +215,7 @@ struct Settings: Codable, Equatable {
         case autoRotate, rotateMinutes, shuffle
         case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
+        case optimizeOnImport, optimizeFpsLimit, stopAfterSeconds
         case colorStyleID, customStyles
         case syncSystemWallpaper, launchAtLogin, showInDock, language
         case hotkeys
@@ -230,6 +238,9 @@ struct Settings: Codable, Equatable {
         pauseInLowPower = (try? c.decodeIfPresent(Bool.self, forKey: .pauseInLowPower)) ?? d.pauseInLowPower
         pauseWhenHot = (try? c.decodeIfPresent(Bool.self, forKey: .pauseWhenHot)) ?? d.pauseWhenHot
         appRules = (try? c.decodeIfPresent([AppRule].self, forKey: .appRules)) ?? d.appRules
+        optimizeOnImport = (try? c.decodeIfPresent(Bool.self, forKey: .optimizeOnImport)) ?? d.optimizeOnImport
+        optimizeFpsLimit = (try? c.decodeIfPresent(Int.self, forKey: .optimizeFpsLimit)) ?? d.optimizeFpsLimit
+        stopAfterSeconds = (try? c.decodeIfPresent(Int.self, forKey: .stopAfterSeconds)) ?? d.stopAfterSeconds
         colorStyleID = (try? c.decodeIfPresent(String.self, forKey: .colorStyleID)) ?? d.colorStyleID
         customStyles = (try? c.decodeIfPresent([ColorStyle].self, forKey: .customStyles)) ?? d.customStyles
         syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper

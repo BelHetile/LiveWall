@@ -107,6 +107,40 @@ struct SettingsTab: View {
             }
 
             Section {
+                Picker(L("Unload paused video after"), selection: $library.settings.stopAfterSeconds) {
+                    Text(L("10 seconds")).tag(10)
+                    Text(L("30 seconds")).tag(30)
+                    Text(L("1 minute")).tag(60)
+                    Text(L("5 minutes")).tag(300)
+                    Text(L("Never")).tag(0)
+                }
+                Toggle(L("Optimize new videos automatically"), isOn: $library.settings.optimizeOnImport)
+                Picker(L("Frame rate limit"), selection: $library.settings.optimizeFpsLimit) {
+                    Text("24 fps").tag(24)
+                    Text("30 fps").tag(30)
+                    Text("60 fps").tag(60)
+                }
+                HStack {
+                    if library.optimizing.isEmpty {
+                        Text(LF("Videos not optimized yet: %ld", library.pendingOptimizationCount))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text(LF("Optimizing videos: %ld left", library.optimizing.count))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(L("Optimize All Videos")) { library.optimizeAll() }
+                        .disabled(!library.optimizing.isEmpty || library.pendingOptimizationCount == 0)
+                }
+            } header: {
+                Text(L("Performance"))
+            } footer: {
+                Text(L("A paused video still holds its decoded frames in memory. After the delay LiveWall unloads it and shows the exact paused frame, then loads it back when playback resumes. Optimizing re-encodes a video to HEVC at your screen size with the frame rate limit, which cuts decoding work; videos that are already light are left as they are."))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle(L("Put a still frame of the desktop wallpaper on the lock screen"), isOn: $library.settings.syncSystemWallpaper)
                 if let lock = library.lockItem, library.lockScreenID != nil {
                     HStack {
