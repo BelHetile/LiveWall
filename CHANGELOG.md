@@ -15,6 +15,12 @@ All notable changes to LiveWall are listed here. The format follows
 - The wallpaper panel shows the video's resolution, frame rate and codec, and scrolls when it doesn't fit.
 - **WebM and MKV** (VP9, AV1 on M3 and newer, H.264/HEVC) and MP4 files with codecs macOS can't play are converted
   to HEVC with VideoToolbox on import. Videos already in the library that show up black get a *Convert* button.
+- **Lock screen frame**: pick which frame of a video goes to the lock screen (pause the preview, *Use Current
+  Frame*). Turning the lock-screen option off brings back the macOS wallpaper you had before LiveWall.
+- The DMG contains **Install LiveWall.command**, which copies the app to Applications, clears the download flag
+  and starts it.
+- Hotkeys that macOS or apps already use (Spotlight, screenshots, ⌘Tab, ⌘Q, Mission Control, …, including ones you
+  changed in System Settings) or that another app has taken can't be assigned; LiveWall says what uses them.
 - **YouTube, Vimeo, TikTok and other sites**: such links are downloaded with yt-dlp (plus Deno for YouTube). Both
   are downloaded from their official GitHub releases on first use, after asking, and can be updated in Settings.
 
@@ -22,6 +28,10 @@ All notable changes to LiveWall are listed here. The format follows
 - Library previews play on their own instead of mirroring the (often paused) desktop wallpaper. When the wallpaper
   is paused, the previews pause on the same frame and show a *Paused* badge.
 - Images no longer show pause and sound controls (library, menu bar).
+- GIFs pause reliably (the animation is taken off while paused, so it also costs nothing), and the library shows
+  them animated with the same pause.
+- The lock-screen option is now called *Show the wallpaper on the lock screen* and controls a separately chosen
+  lock-screen wallpaper too.
 - The preview in the wallpaper panel has a margin and rounded corners; panel controls no longer overflow.
 - Repository layout: scripts live in `scripts/`, `Info.plist` in `Resources/`.
 

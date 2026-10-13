@@ -45,6 +45,8 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var hotkeyScope: HotkeyScope?
     // видео уже оптимизировано (или проверено и не нуждается в этом)
     var optimized: Bool?
+    // кадр видео (секунды) для экрана блокировки; nil — первый кадр
+    var stillTime: Double?
 }
 
 /// Что переключает хоткей обоев.

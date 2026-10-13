@@ -37,11 +37,14 @@ update.
 <summary><b>Or install the DMG by hand</b></summary>
 
 1. Download **LiveWall.dmg** from the [latest release](https://github.com/BelHetile/LiveWall/releases/latest).
-2. Open it and drag **LiveWall** to **Applications**.
-3. The first time, macOS will say it can't verify the developer (LiveWall is free and not notarized by Apple):
-   - **macOS 15 and newer:** open LiveWall once, then go to **System Settings → Privacy & Security**, scroll down
+2. Open it and double-click **Install LiveWall.command**: it copies LiveWall to **Applications**, clears the
+   download flag (so macOS won't ask about the developer again) and starts it.
+3. LiveWall is free and not notarized by Apple, so macOS asks once before running the installer:
+   - **macOS 15 and newer:** double-click it once, then go to **System Settings → Privacy & Security**, scroll down
      and click **Open Anyway**.
-   - **macOS 13–14:** right-click LiveWall in Applications → **Open** → **Open**.
+   - **macOS 13–14:** right-click **Install LiveWall.command** → **Open** → **Open**.
+
+   You can also just drag **LiveWall** to **Applications**; then the same question comes up for LiveWall itself.
 
 </details>
 

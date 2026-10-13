@@ -141,19 +141,28 @@ struct SettingsTab: View {
             }
 
             Section {
-                Toggle(L("Put a still frame of the desktop wallpaper on the lock screen"), isOn: $library.settings.syncSystemWallpaper)
+                Toggle(L("Show the wallpaper on the lock screen"), isOn: $library.settings.syncSystemWallpaper)
                 if let lock = library.lockItem, library.lockScreenID != nil {
                     HStack {
-                        Text(LF("Custom lock screen: %@", lock.name))
+                        Text(LF("Separate lock screen wallpaper: %@", lock.name))
                             .lineLimit(1)
                         Spacer()
                         Button(L("Follow desktop")) { library.lockScreenFollowDesktop() }
                     }
                 }
+                if !library.settings.syncSystemWallpaper && library.restoreFailed {
+                    HStack {
+                        Text(L("LiveWall doesn't know which macOS wallpaper you had before, so the last frame is still set."))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button(L("Choose in System Settings…")) { LockScreenSync.openWallpaperSettings() }
+                    }
+                }
             } header: {
                 Text(L("Lock screen"))
             } footer: {
-                Text(L("macOS does not allow live video on the lock screen, so LiveWall puts a still frame of the current wallpaper there (Wallpaper Engine on Windows does the same)."))
+                Text(L("macOS doesn't let apps show live video on the lock screen. So LiveWall sets one frame of the wallpaper as the regular macOS wallpaper: you see it on the lock screen and for a moment when switching Spaces. Pick the frame in a video's panel (by default it's the first one). Turn this off to get back the macOS wallpaper you had before."))
                     .foregroundStyle(.secondary)
             }
 
@@ -203,6 +212,10 @@ struct SettingsTab: View {
                         Spacer()
                         HotkeyRecorder(action: action, library: library)
                     }
+                }
+                if library.recordingAction != nil, let warning = library.hotkeyWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
                 }
                 Text(L("Hotkeys for switching to a specific wallpaper are set in that wallpaper's panel — none are assigned until you set them. They also work for wallpapers in locked folders, without the password."))
                     .font(.system(size: 11))

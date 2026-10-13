@@ -72,6 +72,61 @@ struct VisualEffectBackground: NSViewRepresentable {
 }
 
 /// Живое превью: тот же AVPlayer, что крутит обои на рабочем столе.
+/// Анимированный GIF для превью в библиотеке (тот же слой, что и на рабочем столе).
+struct GIFPreview: NSViewRepresentable {
+    let url: URL
+    var paused: Bool
+    var fill = true
+
+    final class HostView: NSView {
+        var gif: GIFLayer?
+        var url: URL?
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        func load(_ newURL: URL, fill: Bool) {
+            guard newURL != url else { return }
+            gif?.removeFromSuperlayer()
+            let l = GIFLayer(url: newURL)
+            l.contentsGravity = fill ? .resizeAspectFill : .resizeAspect
+            l.masksToBounds = true
+            layer?.addSublayer(l)
+            gif = l
+            url = newURL
+            needsLayout = true
+        }
+
+        override func layout() {
+            super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            gif?.frame = bounds
+            gif?.contentsScale = window?.backingScaleFactor ?? 2
+            CATransaction.commit()
+        }
+    }
+
+    func makeNSView(context: Context) -> HostView {
+        let v = HostView()
+        v.load(url, fill: fill)
+        v.gif?.setPaused(paused)
+        return v
+    }
+
+    func updateNSView(_ nsView: HostView, context: Context) {
+        nsView.load(url, fill: fill)
+        nsView.gif?.contentsGravity = fill ? .resizeAspectFill : .resizeAspect
+        nsView.gif?.setPaused(paused)
+    }
+}
+
 struct PlayerPreview: NSViewRepresentable {
     let player: AVPlayer?
     var gravity: AVLayerVideoGravity = .resizeAspectFill

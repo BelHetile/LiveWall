@@ -359,6 +359,9 @@ struct DesktopTile: View {
                     if item.kind == .video, let player = library.tilePlayer {
                         PlayerPreview(player: player)
                     }
+                    if item.kind == .gif && !isPrivate {
+                        GIFPreview(url: library.url(for: item), paused: library.paused || library.detailID != nil)
+                    }
                     if isAnimated && library.paused {
                         Color.black.opacity(0.25)
                     }
@@ -484,9 +487,9 @@ struct LockTile: View {
     }
 
     private var subtitle: String {
+        if !library.settings.syncSystemWallpaper { return L("Off — enable in Settings or pick a wallpaper") }
         if library.lockScreenID != nil { return L("Custom · still frame") }
-        if library.settings.syncSystemWallpaper { return L("Same as desktop · still frame") }
-        return L("Off — enable in Settings or pick a wallpaper")
+        return L("Same as desktop · still frame")
     }
 }
 
@@ -722,6 +725,11 @@ struct WallpaperDetail: View {
                 if library.previewPaused {
                     Color.black.opacity(0.2)
                 }
+            } else if item.kind == .gif {
+                GIFPreview(url: library.url(for: item), paused: library.previewPaused, fill: false)
+                if library.previewPaused {
+                    Color.black.opacity(0.2)
+                }
             } else if let image = library.previewImage(for: item) {
                 Image(nsImage: image)
                     .resizable()
@@ -737,7 +745,7 @@ struct WallpaperDetail: View {
             }
             .padding(14)
 
-            if item.kind == .video {
+            if item.kind != .image {
                 CircleButton(systemImage: library.previewPaused ? "play.fill" : "pause.fill", size: 54, prominent: true) {
                     library.togglePreviewPause()
                 }
@@ -757,7 +765,7 @@ struct WallpaperDetail: View {
                 if isDesktop { Chip(text: L("ON DESKTOP"), systemImage: "display") }
                 if isLock { Chip(text: L("ON LOCK SCREEN"), systemImage: "lock.fill") }
                 if !isDesktop && item.kind == .video { Chip(text: L("PREVIEW"), systemImage: "eye") }
-                if item.kind == .video && library.previewPaused { Chip(text: L("PAUSED"), systemImage: "pause.fill") }
+                if item.kind != .image && library.previewPaused { Chip(text: L("PAUSED"), systemImage: "pause.fill") }
             }
             .padding(14)
         }
@@ -823,6 +831,31 @@ struct WallpaperDetail: View {
                             }
                             .buttonStyle(.link)
                             .font(.system(size: 11))
+                        }
+                        if item.kind == .video {
+                            HStack(spacing: 6) {
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                                Text(item.stillTime.map { LF("Lock screen frame: %@", WallpaperDetail.timeLabel($0)) }
+                                     ?? L("Lock screen frame: the first one"))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button(L("Use Current Frame")) { library.useCurrentFrameForLockScreen(item.id) }
+                                    .buttonStyle(.link)
+                                if item.stillTime != nil {
+                                    Button {
+                                        library.resetLockScreenFrame(item.id)
+                                    } label: {
+                                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(L("Back to the first frame"))
+                                }
+                            }
+                            .font(.system(size: 11))
+                            .help(L("Pause the preview on the frame you like, then click “Use Current Frame”."))
                         }
                     }
 
@@ -960,6 +993,12 @@ struct WallpaperDetail: View {
             .font(.system(size: 12))
         }
         .padding(22)
+    }
+
+    static func timeLabel(_ t: Double) -> String {
+        let minutes = Int(t) / 60
+        let seconds = t - Double(minutes * 60)
+        return String(format: "%d:%04.1f", minutes, seconds)
     }
 
     static func speedLabel(_ v: Double) -> String {
@@ -1547,6 +1586,7 @@ struct WallpaperHotkeyRecorder: View {
     private var recording: Bool { library.recordingTarget == .wallpaper(item.id) }
 
     var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
         HStack(spacing: 6) {
             Button {
                 if recording {
@@ -1569,6 +1609,15 @@ struct WallpaperHotkeyRecorder: View {
                 .buttonStyle(.plain)
                 .help(L("Remove hotkey"))
             }
+        }
+        if recording, let warning = library.hotkeyWarning {
+            Text(warning)
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 200, alignment: .trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         }
     }
 }

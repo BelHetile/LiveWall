@@ -30,6 +30,10 @@ final class Library: ObservableObject {
     @Published var dropTargeted = false
     @Published private(set) var thumbs: [UUID: NSImage] = [:]
     @Published private(set) var recordingTarget: HotkeyTarget?
+    /// Почему последнее нажатие при записи хоткея не подошло.
+    @Published private(set) var hotkeyWarning: String?
+    /// Не получилось вернуть прежние обои macOS (LiveWall их не запомнил).
+    @Published private(set) var restoreFailed = false
     @Published private(set) var folders: [WallpaperFolder] = []
     @Published var selectedFolderID: UUID?
     @Published var iconPickerFolderID: UUID?
@@ -259,12 +263,13 @@ final class Library: ObservableObject {
 
     /// Обои для экрана блокировки: выбранные явно, иначе — те же, что на рабочем столе.
     var lockItem: WallpaperItem? {
+        guard settings.syncSystemWallpaper else { return nil }
         if let id = lockScreenID, let item = items.first(where: { $0.id == id }) { return item }
-        return settings.syncSystemWallpaper ? current : nil
+        return current
     }
 
     func syncLockScreen() {
-        guard settings.syncSystemWallpaper || lockScreenID != nil, let item = lockItem else { return }
+        guard settings.syncSystemWallpaper, let item = lockItem else { return }
         let src = url(for: item)
         let dir = stillsDir
         lockSyncGeneration += 1
@@ -340,7 +345,10 @@ final class Library: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
         }
         if settings.syncSystemWallpaper && !old.syncSystemWallpaper {
+            restoreFailed = false
             syncLockScreen()
+        } else if !settings.syncSystemWallpaper && old.syncSystemWallpaper {
+            stopSystemWallpaper()
         }
     }
 
@@ -959,7 +967,11 @@ final class Library: ObservableObject {
         let item = items[idx]
         try? FileManager.default.removeItem(at: url(for: item))
         try? FileManager.default.removeItem(at: thumbsDir.appendingPathComponent("\(id.uuidString).png"))
-        try? FileManager.default.removeItem(at: stillsDir.appendingPathComponent("\(id.uuidString).png"))
+        if let stills = try? FileManager.default.contentsOfDirectory(atPath: stillsDir.path) {
+            for f in stills where f.hasPrefix(id.uuidString) {
+                try? FileManager.default.removeItem(at: stillsDir.appendingPathComponent(f))
+            }
+        }
         thumbs[id] = nil
         imageCache[id] = nil
         videoInfo[id] = nil
@@ -1185,7 +1197,11 @@ final class Library: ObservableObject {
         guard items.contains(where: { $0.id == id }) else { return }
         lockScreenID = id
         save()
-        syncLockScreen()
+        if settings.syncSystemWallpaper {
+            syncLockScreen()
+        } else {
+            settings.syncSystemWallpaper = true   // включит синхронизацию и сам поставит кадр
+        }
     }
 
     /// Экран блокировки снова повторяет рабочий стол.
@@ -1193,6 +1209,26 @@ final class Library: ObservableObject {
         lockScreenID = nil
         save()
         syncLockScreen()
+    }
+
+    /// LiveWall больше не ставит кадр в системные обои — возвращаем те, что были до него.
+    func stopSystemWallpaper() {
+        lockSyncGeneration += 1
+        restoreFailed = !LockScreenSync.restoreOriginal()
+    }
+
+    /// Кадр для экрана блокировки — то место, где сейчас стоит превью в панели.
+    func useCurrentFrameForLockScreen(_ id: UUID) {
+        guard let p = previewPlayer, detailID == id else { return }
+        let t = CMTimeGetSeconds(p.currentTime())
+        guard t.isFinite else { return }
+        updateItem(id) { $0.stillTime = max(0, t) }
+        if lockItem?.id == id { syncLockScreen() }
+    }
+
+    func resetLockScreenFrame(_ id: UUID) {
+        updateItem(id) { $0.stillTime = nil }
+        if lockItem?.id == id { syncLockScreen() }
     }
 
     // MARK: Воспроизведение у каждых обоев
@@ -1249,12 +1285,12 @@ final class Library: ObservableObject {
         if isHidden(item), let folderID = item.folderID, !requestUnlock(folderID) { return }
         releasePreview()
         detailID = id
+        previewPaused = (id == currentID) ? paused : false
         if item.kind == .video {
             loadVideoInfo(id)
             let (p, looper) = makeLoopPlayer(item)
             previewLooper = looper
             previewPlayer = p
-            previewPaused = (id == currentID) ? paused : false
             applyPreviewState(sync: true)
         }
         updateTilePlayback(sync: false)
@@ -1506,6 +1542,17 @@ final class Library: ObservableObject {
             let mods = HotkeyFormat.carbonMods(event.modifierFlags)
             if mods == 0 { return nil } // нужен хотя бы один модификатор
             let binding = HotkeyBinding(keyCode: UInt32(event.keyCode), modifiers: mods)
+            // системные сочетания не забираем — запись продолжается, можно нажать другое
+            if let owner = SystemShortcuts.conflict(binding) {
+                self.hotkeyWarning = LF("%@ is already used by %@. Press another combination.", HotkeyFormat.string(binding), owner)
+                NSSound.beep()
+                return nil
+            }
+            if SystemShortcuts.takenByAnotherApp(binding) {
+                self.hotkeyWarning = LF("%@ is already used by another app. Press another combination.", HotkeyFormat.string(binding))
+                NSSound.beep()
+                return nil
+            }
             self.assign(binding, to: target)
             self.endRecording()
             return nil
@@ -1513,6 +1560,7 @@ final class Library: ObservableObject {
     }
 
     func endRecording() {
+        hotkeyWarning = nil
         if let m = recordMonitor {
             NSEvent.removeMonitor(m)
             recordMonitor = nil

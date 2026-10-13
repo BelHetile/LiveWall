@@ -57,6 +57,8 @@ jobs:
           mkdir dmg
           cp -R LiveWall.app dmg/
           ln -s /Applications dmg/Applications
+          cp ../scripts/dmg-install.command "dmg/Install LiveWall.command"
+          chmod +x "dmg/Install LiveWall.command"
           hdiutil create -volname LiveWall -srcfolder dmg -ov -format UDZO LiveWall.dmg
           shasum -a 256 LiveWall-macOS.zip LiveWall.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -78,7 +80,7 @@ jobs:
             echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash'
             echo '```'
             echo
-            echo "Or download **LiveWall.dmg**, open it and drag LiveWall to Applications (see the README for the first-launch steps)."
+            echo "Or download **LiveWall.dmg**, open it and double-click **Install LiveWall.command** (or drag LiveWall to Applications; see the README for the first-launch steps)."
           } >> build/notes.md
           cat build/notes.md
 
