@@ -43,6 +43,10 @@ struct LibraryView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: library.detailID)
         .animation(.easeInOut(duration: 0.2), value: library.section)
+        .sheet(isPresented: Binding(get: { library.iconPickerFolderID != nil },
+                                    set: { if !$0 { library.iconPickerFolderID = nil } })) {
+            FolderIconPicker(library: library)
+        }
         .frame(minWidth: 980, minHeight: 640)
         .ignoresSafeArea(.container, edges: .top)
     }
@@ -203,6 +207,8 @@ struct WallpapersPage: View {
                 } else {
                     NowSection(library: library)
 
+                    FoldersStrip(library: library)
+
                     if let msg = library.message {
                         MessageBanner(text: msg) { library.message = nil }
                     }
@@ -211,9 +217,18 @@ struct WallpapersPage: View {
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 380), spacing: 20)],
                               spacing: 22) {
-                        ForEach(Array(library.items.enumerated()), id: \.element.id) { index, item in
-                            WallpaperCard(item: item, index: index, library: library)
+                        ForEach(library.visibleItems) { item in
+                            WallpaperCard(item: item,
+                                          index: library.items.firstIndex(where: { $0.id == item.id }) ?? 0,
+                                          library: library)
                         }
+                    }
+                    if library.visibleItems.isEmpty {
+                        Text("This folder is empty. Drag wallpapers onto the folder or use “Move to Folder” in a wallpaper’s menu.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
                     }
                 }
             }
@@ -230,8 +245,31 @@ struct WallpapersPage: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("Library")
-                .font(.system(size: 22, weight: .bold))
+            if let folder = library.selectedFolder {
+                Text(folder.name)
+                    .font(.system(size: 22, weight: .bold))
+                    .onTapGesture(count: 2) { library.renameFolder(folder.id) }
+                Text("\(library.visibleItems.count)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button {
+                    library.renameFolder(folder.id)
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Rename folder")
+                Button {
+                    library.iconPickerFolderID = folder.id
+                } label: {
+                    Image(systemName: "paintbrush")
+                }
+                .buttonStyle(.borderless)
+                .help("Change folder icon")
+            } else {
+                Text("All Wallpapers")
+                    .font(.system(size: 22, weight: .bold))
+            }
             if library.busyCount > 0 {
                 ProgressView().controlSize(.small).padding(.leading, 6)
                 Text("Importing \(library.busyCount)…")
@@ -428,6 +466,8 @@ struct WallpaperCard: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .onTapGesture(count: 2) { library.renameItem(item.id) }
+                        .help("Double-click to rename")
                     HStack(spacing: 4) {
                         Image(systemName: item.kind.symbol)
                         Text("\(item.kind.title) · \(item.mode.title)")
@@ -436,7 +476,15 @@ struct WallpaperCard: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if index < 9 {
+                if let hk = item.hotkey {
+                    Text(HotkeyFormat.string(hk))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.violet)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Theme.violet.opacity(0.12), in: Capsule())
+                        .help("Press to switch to this wallpaper, press again to go back")
+                } else if index < 9 && library.settings.numberHotkeys {
                     Text("⌃⌥⌘\(index + 1)")
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(.tertiary)
@@ -444,6 +492,7 @@ struct WallpaperCard: View {
             }
             .padding(.horizontal, 2)
         }
+        .onDrag { NSItemProvider(object: item.id.uuidString as NSString) }
         .scaleEffect(isHovered ? 1.03 : 1.0)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isHovered)
         .onHover { inside in
@@ -457,6 +506,24 @@ struct WallpaperCard: View {
             Button("Set on Desktop") { library.setDesktop(item.id) }
             Button("Set on Lock Screen") { library.setLockScreen(item.id) }
             Button("Adjust…") { library.openDetail(item.id) }
+            Button("Rename…") { library.renameItem(item.id) }
+            Menu("Move to Folder") {
+                Button {
+                    library.moveItem(item.id, to: nil)
+                } label: {
+                    if item.folderID == nil { Label("No Folder", systemImage: "checkmark") } else { Text("No Folder") }
+                }
+                if !library.folders.isEmpty { Divider() }
+                ForEach(library.folders) { folder in
+                    Button {
+                        library.moveItem(item.id, to: folder.id)
+                    } label: {
+                        if item.folderID == folder.id { Label(folder.name, systemImage: "checkmark") } else { Text(folder.name) }
+                    }
+                }
+                Divider()
+                Button("New Folder…") { library.createFolder(moving: [item.id]) }
+            }
             Menu("Fill Mode") {
                 ForEach(FillMode.allCases) { m in
                     Button {
@@ -643,9 +710,20 @@ struct WallpaperDetail: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.name)
-                        .font(.system(size: 20, weight: .bold))
-                        .lineLimit(2)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(item.name)
+                            .font(.system(size: 20, weight: .bold))
+                            .lineLimit(2)
+                            .onTapGesture(count: 2) { library.renameItem(item.id) }
+                        Button {
+                            library.renameItem(item.id)
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Rename")
+                    }
                     Label("\(item.kind.title) · \(item.mode.title)", systemImage: item.kind.symbol)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -739,6 +817,30 @@ struct WallpaperDetail: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
+                }
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel(text: "Folder")
+                    Menu {
+                        Button("No Folder") { library.moveItem(item.id, to: nil) }
+                        if !library.folders.isEmpty { Divider() }
+                        ForEach(library.folders) { folder in
+                            Button(folder.name) { library.moveItem(item.id, to: folder.id) }
+                        }
+                        Divider()
+                        Button("New Folder…") { library.createFolder(moving: [item.id]) }
+                    } label: {
+                        Text(library.folders.first(where: { $0.id == item.folderID })?.name ?? "No Folder")
+                            .lineLimit(1)
+                    }
+                    .fixedSize()
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 8) {
+                    SectionLabel(text: "Hotkey")
+                    WallpaperHotkeyRecorder(item: item, library: library)
                 }
             }
 
@@ -976,6 +1078,249 @@ struct DownloadsList: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+}
+
+// MARK: - Folders
+
+struct FoldersStrip: View {
+    @ObservedObject var library: Library
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Folders")
+                    .font(.system(size: 15, weight: .bold))
+                Spacer()
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    FolderTile(title: "All Wallpapers",
+                               count: library.items.count,
+                               icon: .symbol(name: "square.grid.2x2.fill", palette: 7),
+                               selected: library.selectedFolderID == nil,
+                               dropTargeted: library.allTileDropTargeted)
+                        .onTapGesture { library.selectedFolderID = nil }
+                        .onDrop(of: [.plainText], isTargeted: $library.allTileDropTargeted) { providers in
+                            library.handleFolderDrop(providers, folderID: nil)
+                        }
+
+                    ForEach(library.folders) { folder in
+                        FolderTile(title: folder.name,
+                                   count: library.count(in: folder.id),
+                                   icon: folder.icon,
+                                   selected: library.selectedFolderID == folder.id,
+                                   dropTargeted: library.folderDropTarget == folder.id)
+                            .onTapGesture { library.selectedFolderID = folder.id }
+                            .onDrop(of: [.plainText], isTargeted: dropBinding(folder.id)) { providers in
+                                library.handleFolderDrop(providers, folderID: folder.id)
+                            }
+                            .contextMenu {
+                                Button("Rename…") { library.renameFolder(folder.id) }
+                                Button("Change Icon…") { library.iconPickerFolderID = folder.id }
+                                Divider()
+                                Button("Delete Folder", role: .destructive) { library.deleteFolder(folder.id) }
+                            }
+                    }
+
+                    Button {
+                        if let id = library.createFolder() { library.selectedFolderID = id }
+                    } label: {
+                        VStack(spacing: 8) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                            Text("New Folder")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .frame(width: 130, height: 104)
+                        .background {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                                .foregroundStyle(Color.primary.opacity(0.25))
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 2)
+            }
+        }
+    }
+
+    private func dropBinding(_ id: UUID) -> Binding<Bool> {
+        Binding(get: { library.folderDropTarget == id },
+                set: { inside in
+                    if inside {
+                        library.folderDropTarget = id
+                    } else if library.folderDropTarget == id {
+                        library.folderDropTarget = nil
+                    }
+                })
+    }
+}
+
+struct FolderTile: View {
+    let title: String
+    let count: Int
+    let icon: FolderIcon
+    let selected: Bool
+    let dropTargeted: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            FolderIconView(icon: icon, size: 44)
+            VStack(spacing: 1) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("\(count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 130, height: 104)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(selected ? Theme.violet.opacity(0.16) : Color.primary.opacity(0.05))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(dropTargeted || selected ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Color.clear),
+                              lineWidth: dropTargeted ? 3 : 2)
+        }
+        .scaleEffect(dropTargeted ? 1.06 : 1)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: dropTargeted)
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+struct FolderIconPicker: View {
+    @ObservedObject var library: Library
+
+    private var folder: WallpaperFolder? {
+        library.folders.first(where: { $0.id == library.iconPickerFolderID })
+    }
+
+    private var currentPalette: Int {
+        if case .symbol(_, let p)? = folder?.icon { return p }
+        return 0
+    }
+
+    private var currentSymbol: String? {
+        if case .symbol(let n, _)? = folder?.icon { return n }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let folder = folder {
+                HStack(spacing: 14) {
+                    FolderIconView(icon: folder.icon, size: 60)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Folder Icon")
+                            .font(.system(size: 16, weight: .bold))
+                        Text(folder.name)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Done") { library.iconPickerFolderID = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+
+                SectionLabel(text: "Color")
+                HStack(spacing: 10) {
+                    ForEach(0..<Theme.folderPalettes.count, id: \.self) { i in
+                        Circle()
+                            .fill(Theme.folderGradient(i))
+                            .frame(width: 28, height: 28)
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(Color.primary, lineWidth: currentPalette == i && currentSymbol != nil ? 2.5 : 0)
+                                    .padding(-4)
+                            }
+                            .contentShape(Circle())
+                            .onTapGesture { library.setFolderPalette(i, for: folder.id) }
+                    }
+                }
+                .padding(.leading, 4)
+
+                SectionLabel(text: "Icon")
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 9), spacing: 10) {
+                        ForEach(FolderIcon.basePack, id: \.self) { name in
+                            FolderIconView(icon: .symbol(name: name, palette: currentPalette), size: 50)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 50 * 0.26 + 3, style: .continuous)
+                                        .strokeBorder(Color.primary, lineWidth: currentSymbol == name ? 2.5 : 0)
+                                        .padding(-3)
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture { library.setFolderSymbol(name, for: folder.id) }
+                                .help(name)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(height: 250)
+
+                HStack {
+                    Button {
+                        library.chooseFolderImage(for: folder.id)
+                    } label: {
+                        Label("Choose Image…", systemImage: "photo")
+                    }
+                    if case .image = folder.icon {
+                        Text("Using a custom image")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            } else {
+                Text("Folder not found")
+                Button("Close") { library.iconPickerFolderID = nil }
+            }
+        }
+        .padding(22)
+        .frame(width: 600)
+    }
+}
+
+struct WallpaperHotkeyRecorder: View {
+    let item: WallpaperItem
+    @ObservedObject var library: Library
+
+    private var recording: Bool { library.recordingTarget == .wallpaper(item.id) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                if recording {
+                    library.endRecording()
+                } else {
+                    library.beginRecording(target: .wallpaper(item.id))
+                }
+            } label: {
+                Text(recording ? "Press shortcut…" : (item.hotkey.map { HotkeyFormat.string($0) } ?? "Set Hotkey"))
+                    .frame(minWidth: 96)
+            }
+            .help("Press once to switch to this wallpaper, press again to return to the previous one")
+            if item.hotkey != nil && !recording {
+                Button {
+                    library.clearWallpaperHotkey(item.id)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove hotkey")
             }
         }
     }

@@ -31,6 +31,9 @@ This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` 
   - drag files, folders or links from the browser into the window.
 
   Supported: mp4 / mov / m4v (H.264, HEVC), png / jpg / heic / webp, gif. Files are stored in `~/Library/Application Support/LiveWall/`.
+- **Folders**: create folders under the "Now" row, drag wallpapers onto them (or use *Move to Folder*), rename them and give them an icon from the built-in pack (50+ icons × 8 colors) or your own image. Folders also appear as submenus in the menu bar.
+- **Rename** wallpapers and folders by double-clicking the name, from the context menu or with the pencil button.
+- **Per-wallpaper hotkey**: set it in the wallpaper's panel. Press it once to switch to that wallpaper, press it again to go back to the one that was on before.
 - Click a wallpaper to open its panel: put it on the **Desktop** or the **Lock Screen**, pause, set its own volume and speed, choose the fill mode (**Fill, Fit, Stretch, Center**).
 - Settings: default playback, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
 

@@ -29,7 +29,12 @@ final class Library: ObservableObject {
     @Published var message: String?
     @Published var dropTargeted = false
     @Published private(set) var thumbs: [UUID: NSImage] = [:]
-    @Published private(set) var recordingAction: HotkeyAction?
+    @Published private(set) var recordingTarget: HotkeyTarget?
+    @Published private(set) var folders: [WallpaperFolder] = []
+    @Published var selectedFolderID: UUID?
+    @Published var iconPickerFolderID: UUID?
+    @Published var folderDropTarget: UUID?
+    @Published var allTileDropTargeted = false
     @Published private(set) var busyCount = 0
     @Published private(set) var pauseReason: String?
     @Published var section: LibrarySection = .wallpapers
@@ -50,6 +55,9 @@ final class Library: ObservableObject {
     private let stillsDir: URL
     private let indexURL: URL
     private let incomingDir: URL
+    private let iconsDir: URL
+    private var previousID: UUID?
+    private var folderImageCache: [String: NSImage] = [:]
     private var loading = true
     private var rotateTimer: Timer?
     private var recordMonitor: Any?
@@ -64,6 +72,8 @@ final class Library: ObservableObject {
         var items: [WallpaperItem]
         var currentID: UUID?
         var lockScreenID: UUID?
+        var folders: [WallpaperFolder]?
+        var previousID: UUID?
     }
 
     var current: WallpaperItem? {
@@ -78,6 +88,8 @@ final class Library: ObservableObject {
         stillsDir = root.appendingPathComponent("Stills", isDirectory: true)
         indexURL = root.appendingPathComponent("library.json")
         incomingDir = root.appendingPathComponent("Incoming", isDirectory: true)
+        iconsDir = root.appendingPathComponent("Icons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: iconsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
@@ -99,6 +111,13 @@ final class Library: ObservableObject {
             items = idx.items.filter { FileManager.default.fileExists(atPath: filesDir.appendingPathComponent($0.file).path) }
             currentID = items.contains(where: { $0.id == idx.currentID }) ? idx.currentID : items.first?.id
             lockScreenID = items.contains(where: { $0.id == idx.lockScreenID }) ? idx.lockScreenID : nil
+            folders = idx.folders ?? []
+            previousID = items.contains(where: { $0.id == idx.previousID }) ? idx.previousID : nil
+            // обои из удалённых папок — в «Все»
+            let folderIDs = Set(folders.map { $0.id })
+            for i in items.indices where items[i].folderID != nil && !folderIDs.contains(items[i].folderID!) {
+                items[i].folderID = nil
+            }
         }
         if let data = UserDefaults.standard.data(forKey: "settings"),
            let s = try? JSONDecoder().decode(Settings.self, from: data) {
@@ -107,7 +126,8 @@ final class Library: ObservableObject {
     }
 
     private func save() {
-        let idx = Index(items: items, currentID: currentID, lockScreenID: lockScreenID)
+        let idx = Index(items: items, currentID: currentID, lockScreenID: lockScreenID,
+                        folders: folders, previousID: previousID)
         if let data = try? JSONEncoder().encode(idx) {
             try? data.write(to: indexURL, options: .atomic)
         }
@@ -636,7 +656,9 @@ final class Library: ObservableObject {
             syncLockScreen()
         }
         let wasCurrent = (id == currentID)
+        let hadHotkey = item.hotkey != nil
         items.remove(at: idx)
+        if hadHotkey { registerHotkeys() }
         if wasCurrent {
             if items.isEmpty {
                 currentID = nil
@@ -658,6 +680,7 @@ final class Library: ObservableObject {
 
     func select(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        if let old = currentID, old != id { previousID = old }
         currentID = id
         save()
         applyPlayback(of: item)
@@ -864,6 +887,14 @@ final class Library: ObservableObject {
                 self?.perform(action)
             }
         }
+        // свои хоткеи у обоев: поставить / вернуть прежние
+        for (i, item) in items.enumerated() {
+            guard let b = item.hotkey else { continue }
+            let id = item.id
+            hk.register(id: UInt32(1000 + i), binding: b) { [weak self] in
+                self?.toggleWallpaperHotkey(id)
+            }
+        }
         if settings.numberHotkeys {
             let codes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
                                 kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
@@ -879,20 +910,30 @@ final class Library: ObservableObject {
 
     // MARK: Запись хоткея
 
+    var recordingAction: HotkeyAction? {
+        if case .action(let a)? = recordingTarget { return a }
+        return nil
+    }
+
     func beginRecording(_ action: HotkeyAction) {
+        beginRecording(target: .action(action))
+    }
+
+    func beginRecording(target: HotkeyTarget) {
         endRecording()
-        recordingAction = action
+        recordingTarget = target
         // пока записываем — снимаем глобальные хоткеи, чтобы они не перехватывали нажатие
         HotkeyCenter.shared.unregisterAll()
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self, let action = self.recordingAction else { return event }
+            guard let self = self, let target = self.recordingTarget else { return event }
             if event.keyCode == 53 { // Esc
                 self.endRecording()
                 return nil
             }
             let mods = HotkeyFormat.carbonMods(event.modifierFlags)
             if mods == 0 { return nil } // нужен хотя бы один модификатор
-            self.settings.hotkeys[action.rawValue] = HotkeyBinding(keyCode: UInt32(event.keyCode), modifiers: mods)
+            let binding = HotkeyBinding(keyCode: UInt32(event.keyCode), modifiers: mods)
+            self.assign(binding, to: target)
             self.endRecording()
             return nil
         }
@@ -903,10 +944,214 @@ final class Library: ObservableObject {
             NSEvent.removeMonitor(m)
             recordMonitor = nil
         }
-        if recordingAction != nil {
-            recordingAction = nil
+        if recordingTarget != nil {
+            recordingTarget = nil
             registerHotkeys()
         }
+    }
+
+    /// Назначает сочетание; если оно уже занято другим действием или обоями — забирает его оттуда.
+    private func assign(_ binding: HotkeyBinding, to target: HotkeyTarget) {
+        var movedFrom: String?
+        for (key, b) in settings.hotkeys where b == binding {
+            if case .action(let a) = target, a.rawValue == key { continue }
+            settings.hotkeys[key] = nil
+            movedFrom = HotkeyAction(rawValue: key)?.title ?? key
+        }
+        for i in items.indices where items[i].hotkey == binding {
+            if case .wallpaper(let id) = target, items[i].id == id { continue }
+            items[i].hotkey = nil
+            movedFrom = items[i].name
+        }
+        switch target {
+        case .action(let a):
+            settings.hotkeys[a.rawValue] = binding
+        case .wallpaper(let id):
+            if let i = items.firstIndex(where: { $0.id == id }) { items[i].hotkey = binding }
+        }
+        save()
+        if let from = movedFrom {
+            message = "\(HotkeyFormat.string(binding)) was moved from “\(from)”."
+        }
+    }
+
+    func clearWallpaperHotkey(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].hotkey = nil
+        save()
+        registerHotkeys()
+    }
+
+    /// Хоткей обоев: первое нажатие ставит их, повторное — возвращает те, что стояли до этого.
+    func toggleWallpaperHotkey(_ id: UUID) {
+        if currentID == id {
+            if let prev = previousID, prev != id, items.contains(where: { $0.id == prev }) {
+                select(prev)
+            }
+        } else {
+            select(id)
+        }
+    }
+
+    // MARK: Папки
+
+    var visibleItems: [WallpaperItem] {
+        guard let folder = selectedFolderID else { return items }
+        return items.filter { $0.folderID == folder }
+    }
+
+    var selectedFolder: WallpaperFolder? {
+        folders.first(where: { $0.id == selectedFolderID })
+    }
+
+    func count(in folderID: UUID) -> Int {
+        items.filter { $0.folderID == folderID }.count
+    }
+
+    @discardableResult
+    func createFolder(moving itemIDs: [UUID] = []) -> UUID? {
+        guard let name = Library.promptForName(title: "New Folder", message: "Name the folder.",
+                                               initial: "New Folder", confirm: "Create") else { return nil }
+        let folder = WallpaperFolder(id: UUID(), name: name,
+                                     icon: .symbol(name: "folder.fill", palette: folders.count % Theme.folderPalettes.count))
+        folders.append(folder)
+        for id in itemIDs { moveItem(id, to: folder.id) }
+        save()
+        return folder.id
+    }
+
+    func renameFolder(_ id: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        guard let name = Library.promptForName(title: "Rename Folder", message: nil,
+                                               initial: folders[i].name, confirm: "Rename") else { return }
+        folders[i].name = name
+        save()
+    }
+
+    func deleteFolder(_ id: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        if case .image(let file) = folders[i].icon { removeIconFile(file) }
+        folders.remove(at: i)
+        for j in items.indices where items[j].folderID == id { items[j].folderID = nil }
+        if selectedFolderID == id { selectedFolderID = nil }
+        save()
+    }
+
+    func moveItem(_ itemID: UUID, to folderID: UUID?) {
+        guard let i = items.firstIndex(where: { $0.id == itemID }) else { return }
+        items[i].folderID = folderID
+        save()
+    }
+
+    func handleFolderDrop(_ providers: [NSItemProvider], folderID: UUID?) -> Bool {
+        var handled = false
+        for provider in providers where provider.canLoadObject(ofClass: NSString.self) {
+            handled = true
+            _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
+                guard let s = obj as? String, let id = UUID(uuidString: s) else { return }
+                DispatchQueue.main.async { self.moveItem(id, to: folderID) }
+            }
+        }
+        return handled
+    }
+
+    // MARK: Иконки папок
+
+    func setFolderSymbol(_ name: String, for id: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        var palette = 0
+        switch folders[i].icon {
+        case .symbol(_, let p): palette = p
+        case .image(let file): removeIconFile(file)
+        }
+        folders[i].icon = .symbol(name: name, palette: palette)
+        save()
+    }
+
+    func setFolderPalette(_ palette: Int, for id: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        var name = "folder.fill"
+        switch folders[i].icon {
+        case .symbol(let n, _): name = n
+        case .image(let file): removeIconFile(file)
+        }
+        folders[i].icon = .symbol(name: name, palette: palette)
+        save()
+    }
+
+    func chooseFolderImage(for id: UUID) {
+        guard let i = folders.firstIndex(where: { $0.id == id }) else { return }
+        let p = NSOpenPanel()
+        p.allowsMultipleSelection = false
+        p.canChooseDirectories = false
+        p.allowedContentTypes = [.image]
+        p.message = "Choose an image for the folder icon."
+        guard p.runModal() == .OK, let src = p.url else { return }
+        guard let image = NSImage(contentsOf: src) else {
+            message = "Could not read \(src.lastPathComponent)."
+            return
+        }
+        // уменьшаем до 512 px и сохраняем как PNG
+        let side: CGFloat = 512
+        let scaled = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let s = image.size
+            guard s.width > 0, s.height > 0 else { return true }
+            let k = max(rect.width / s.width, rect.height / s.height)
+            let w = s.width * k, h = s.height * k
+            image.draw(in: NSRect(x: (rect.width - w) / 2, y: (rect.height - h) / 2, width: w, height: h))
+            return true
+        }
+        guard let tiff = scaled.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        let file = "\(id.uuidString)-\(UUID().uuidString.prefix(8)).png"
+        do {
+            try png.write(to: iconsDir.appendingPathComponent(file), options: .atomic)
+        } catch {
+            message = "Could not save the icon: \(error.localizedDescription)"
+            return
+        }
+        if case .image(let old) = folders[i].icon { removeIconFile(old) }
+        folders[i].icon = .image(file: file)
+        save()
+    }
+
+    func folderImage(file: String) -> NSImage? {
+        if let img = folderImageCache[file] { return img }
+        guard let img = NSImage(contentsOf: iconsDir.appendingPathComponent(file)) else { return nil }
+        folderImageCache[file] = img
+        return img
+    }
+
+    private func removeIconFile(_ file: String) {
+        folderImageCache[file] = nil
+        try? FileManager.default.removeItem(at: iconsDir.appendingPathComponent(file))
+    }
+
+    // MARK: Переименование
+
+    func renameItem(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        guard let name = Library.promptForName(title: "Rename Wallpaper", message: nil,
+                                               initial: items[i].name, confirm: "Rename") else { return }
+        items[i].name = name
+        save()
+    }
+
+    static func promptForName(title: String, message: String?, initial: String, confirm: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        if let message = message { alert.informativeText = message }
+        alert.addButton(withTitle: confirm)
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = initial
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     // MARK: Миниатюры

@@ -17,6 +17,23 @@ enum Theme {
                                           startPoint: .top,
                                           endPoint: .bottom)
 
+    /// Цветовые темы для иконок папок.
+    static let folderPalettes: [[Color]] = [
+        [Color(red: 0.49, green: 0.30, blue: 0.98), Color(red: 0.93, green: 0.33, blue: 0.62)],
+        [Color(red: 0.20, green: 0.48, blue: 1.00), Color(red: 0.20, green: 0.82, blue: 0.95)],
+        [Color(red: 0.16, green: 0.72, blue: 0.47), Color(red: 0.10, green: 0.60, blue: 0.70)],
+        [Color(red: 1.00, green: 0.62, blue: 0.25), Color(red: 0.98, green: 0.36, blue: 0.52)],
+        [Color(red: 0.95, green: 0.27, blue: 0.27), Color(red: 1.00, green: 0.55, blue: 0.20)],
+        [Color(red: 0.98, green: 0.80, blue: 0.20), Color(red: 1.00, green: 0.56, blue: 0.16)],
+        [Color(red: 0.36, green: 0.30, blue: 0.85), Color(red: 0.62, green: 0.30, blue: 0.86)],
+        [Color(red: 0.38, green: 0.40, blue: 0.46), Color(red: 0.12, green: 0.13, blue: 0.16)],
+    ]
+
+    static func folderGradient(_ index: Int) -> LinearGradient {
+        let colors = folderPalettes[((index % folderPalettes.count) + folderPalettes.count) % folderPalettes.count]
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
     static let cardRadius: CGFloat = 12
     static let heroRadius: CGFloat = 18
 }
@@ -160,5 +177,39 @@ extension FillMode {
         case .stretch: return "arrow.left.and.right"
         case .center: return "dot.square"
         }
+    }
+}
+
+// MARK: - Folder icon
+
+struct FolderIconView: View {
+    let icon: FolderIcon
+    var size: CGFloat = 44
+
+    var body: some View {
+        Group {
+            switch icon {
+            case .symbol(let name, let palette):
+                ZStack {
+                    RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                        .fill(Theme.folderGradient(palette))
+                    Image(systemName: name)
+                        .font(.system(size: size * 0.46, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.18), radius: size * 0.05, y: size * 0.02)
+                }
+            case .image(let file):
+                ZStack {
+                    Color.gray.opacity(0.25)
+                    if let img = Library.shared.folderImage(file: file) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
+            }
+        }
+        .frame(width: size, height: size)
     }
 }

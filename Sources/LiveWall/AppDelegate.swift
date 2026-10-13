@@ -116,16 +116,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let title = NSMenuItem(title: "Library", action: nil, keyEquivalent: "")
             title.isEnabled = false
             menu.addItem(title)
-            for it in lib.items.prefix(30) {
-                let m = menuItem(it.name, #selector(pickWallpaper(_:)), state: it.id == lib.currentID ? .on : .off)
-                m.representedObject = it.id
-                if let thumb = lib.thumbs[it.id] {
-                    m.image = AppDelegate.roundedThumb(thumb, size: NSSize(width: 40, height: 25))
-                } else {
-                    m.image = AppDelegate.symbol(it.kind.symbol)
-                    Task { await lib.loadThumbnail(for: it) }
+            // папки — подменю
+            for folder in lib.folders {
+                let sub = NSMenu()
+                for it in lib.items where it.folderID == folder.id {
+                    sub.addItem(wallpaperMenuItem(it, lib: lib))
                 }
-                menu.addItem(m)
+                let fi = NSMenuItem(title: folder.name, action: nil, keyEquivalent: "")
+                if case .symbol(let name, _) = folder.icon {
+                    fi.image = AppDelegate.symbol(name)
+                } else {
+                    fi.image = AppDelegate.symbol("folder.fill")
+                }
+                fi.submenu = sub
+                fi.isEnabled = !sub.items.isEmpty
+                menu.addItem(fi)
+            }
+            for it in lib.items.filter({ $0.folderID == nil }).prefix(30) {
+                menu.addItem(wallpaperMenuItem(it, lib: lib))
             }
         }
 
@@ -151,6 +159,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuItem("Settings…", #selector(openSettings), symbol: "gearshape"))
         menu.addItem(.separator())
         menu.addItem(menuItem("Quit LiveWall", #selector(quit), symbol: "power"))
+    }
+
+    private func wallpaperMenuItem(_ it: WallpaperItem, lib: Library) -> NSMenuItem {
+        let m = menuItem(it.name, #selector(pickWallpaper(_:)), state: it.id == lib.currentID ? .on : .off)
+        m.representedObject = it.id
+        if let thumb = lib.thumbs[it.id] {
+            m.image = AppDelegate.roundedThumb(thumb, size: NSSize(width: 40, height: 25))
+        } else {
+            m.image = AppDelegate.symbol(it.kind.symbol)
+            Task { await lib.loadThumbnail(for: it) }
+        }
+        return m
     }
 
     static func symbol(_ name: String) -> NSImage? {

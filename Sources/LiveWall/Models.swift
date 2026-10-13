@@ -39,6 +39,41 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var volume: Double?
     var speed: Double?
     var muted: Bool?
+    // папка и свой хоткей-переключатель
+    var folderID: UUID?
+    var hotkey: HotkeyBinding?
+}
+
+// MARK: - Folders
+
+enum FolderIcon: Codable, Equatable {
+    case symbol(name: String, palette: Int)
+    case image(file: String)
+
+    /// Базовый пак иконок (SF Symbols) — рисуются на цветном градиенте.
+    static let basePack: [String] = [
+        "folder.fill", "star.fill", "heart.fill", "sparkles", "moon.stars.fill", "sun.max.fill",
+        "cloud.fill", "bolt.fill", "flame.fill", "drop.fill", "snowflake", "leaf.fill",
+        "mountain.2.fill", "globe.americas.fill", "beach.umbrella.fill", "tent.fill", "sailboat.fill", "airplane",
+        "car.fill", "bicycle", "house.fill", "building.2.fill", "pawprint.fill", "cat.fill",
+        "dog.fill", "bird.fill", "fish.fill", "hare.fill", "tortoise.fill", "gamecontroller.fill",
+        "music.note", "headphones", "film.fill", "camera.fill", "paintpalette.fill", "paintbrush.fill",
+        "theatermasks.fill", "book.fill", "graduationcap.fill", "laptopcomputer", "desktopcomputer", "cup.and.saucer.fill",
+        "crown.fill", "gift.fill", "trophy.fill", "wand.and.stars", "atom", "eye.fill",
+        "face.smiling.fill", "flag.fill", "bookmark.fill", "tag.fill", "lock.fill", "briefcase.fill",
+    ]
+}
+
+struct WallpaperFolder: Codable, Identifiable, Equatable {
+    var id: UUID
+    var name: String
+    var icon: FolderIcon
+}
+
+/// Что сейчас записывается в рекордере хоткея.
+enum HotkeyTarget: Equatable {
+    case action(HotkeyAction)
+    case wallpaper(UUID)
 }
 
 /// Загрузка обоев по ссылке (для списка с прогрессом).
