@@ -3,6 +3,7 @@ name: Release
 # Publish a release either by pushing a tag like v1.0.0, or from the Actions tab:
 # Release → Run workflow → enter a version (e.g. 1.0.0); the tag is created for you.
 # Running it by hand without a version only builds and uploads the files as an artifact.
+# Running it by hand for a version that already exists moves its tag to the current commit and replaces its files.
 on:
   push:
     tags: ['v*']
@@ -90,11 +91,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.version.outputs.value }}"
-          gh release create "$TAG" \
-            build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
-            --title "LiveWall ${{ steps.version.outputs.value }}" \
-            --notes-file build/notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # run again by hand for an existing version: move the tag to this commit and replace the files
+            if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+              git tag -f "$TAG" "$GITHUB_SHA"
+              git push -f origin "refs/tags/$TAG"
+            fi
+            gh release upload "$TAG" build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --title "LiveWall ${{ steps.version.outputs.value }}" --notes-file build/notes.md
+          else
+            gh release create "$TAG" \
+              build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
+              --target "$GITHUB_SHA" \
+              --title "LiveWall ${{ steps.version.outputs.value }}" \
+              --notes-file build/notes.md
+          fi
 
       - name: Upload build
         uses: actions/upload-artifact@v4
