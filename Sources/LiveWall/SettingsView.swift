@@ -229,23 +229,22 @@ struct AppearanceSection: View {
     var body: some View {
         Group {
             Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 14) {
-                        ForEach(library.allStyles) { style in
-                            StyleSwatch(style: style, selected: library.settings.colorStyleID == style.id)
-                                .onTapGesture { library.selectStyle(style.id) }
-                                .contextMenu {
-                                    Button("Export…") { library.exportStyle(style.id) }
-                                    if !style.isBuiltIn {
-                                        Button("Rename…") { library.renameStyle(style.id) }
-                                        Button("Delete", role: .destructive) { library.deleteStyle(style.id) }
-                                    }
+                // раскладка с переносом: не прокручивается и не прыгает при добавлении стиля
+                FlowLayout(spacing: 12) {
+                    ForEach(library.allStyles) { style in
+                        StyleSwatch(style: style, selected: library.settings.colorStyleID == style.id)
+                            .onTapGesture { library.selectStyle(style.id) }
+                            .contextMenu {
+                                Button("Export…") { library.exportStyle(style.id) }
+                                if !style.isBuiltIn {
+                                    Button("Rename…") { library.renameStyle(style.id) }
+                                    Button("Delete", role: .destructive) { library.deleteStyle(style.id) }
                                 }
-                        }
+                            }
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 2)
                 }
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 ForEach(library.settings.customStyles) { style in
                     HStack(spacing: 10) {
@@ -295,47 +294,20 @@ struct AppearanceSection: View {
             }
 
             Section {
-                HStack {
-                    Text("Transparency")
-                    Slider(value: $library.settings.windowTransparency, in: 0...0.95)
-                    Text("\(Int((library.settings.windowTransparency * 100).rounded()))%")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-                Toggle("Blur what's behind the window", isOn: $library.settings.windowBlur)
-                HStack {
-                    Text("Blur strength")
-                    Slider(value: $library.settings.blurAmount, in: 0.1...1)
-                    Text("\(Int((library.settings.blurAmount * 100).rounded()))%")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-                .disabled(!library.settings.windowBlur)
-            } header: {
-                Text("Window")
-            } footer: {
-                Text("With blur off and high transparency you see your live wallpaper right through the library.")
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 if library.userIcons.isEmpty {
                     Text("No icons yet. Import PNG, JPG, HEIC or other images — they become available for every folder.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(library.userIcons, id: \.self) { name in
-                                UserIconThumb(name: name, size: 46, library: library)
-                                    .contextMenu {
-                                        Button("Remove", role: .destructive) { library.removeUserIcon(name) }
-                                    }
-                            }
+                    FlowLayout(spacing: 10) {
+                        ForEach(library.userIcons, id: \.self) { name in
+                            UserIconThumb(name: name, size: 46, library: library)
+                                .contextMenu {
+                                    Button("Remove", role: .destructive) { library.removeUserIcon(name) }
+                                }
                         }
-                        .padding(.vertical, 4)
                     }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 HStack {
                     Button {
@@ -396,8 +368,51 @@ struct StyleSwatch: View {
             Text(style.name)
                 .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .lineLimit(1)
-                .frame(width: 70)
+                .frame(width: 72)
         }
+        .padding(4)
         .contentShape(Rectangle())
+    }
+}
+
+/// Простая раскладка «в строку с переносом» — стабильна внутри Form.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 12
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? 640
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: proposal.width ?? widest, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

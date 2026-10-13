@@ -175,9 +175,6 @@ struct Settings: Codable, Equatable {
     // внешний вид
     var colorStyleID = "violet"
     var customStyles: [ColorStyle] = []
-    var windowBlur = true
-    var blurAmount: Double = 1.0
-    var windowTransparency: Double = 0.55
 
     // система
     var syncSystemWallpaper = true
@@ -194,7 +191,7 @@ struct Settings: Codable, Equatable {
         case autoRotate, rotateMinutes, shuffle
         case pauseWhenAppFocused, pauseWhenMaximized, pauseWhenFullscreen
         case pauseOnBattery, pauseInLowPower, pauseWhenHot, appRules
-        case colorStyleID, customStyles, windowBlur, blurAmount, windowTransparency
+        case colorStyleID, customStyles
         case syncSystemWallpaper, launchAtLogin
         case numberHotkeys, hotkeys
     }
@@ -218,9 +215,6 @@ struct Settings: Codable, Equatable {
         appRules = (try? c.decodeIfPresent([AppRule].self, forKey: .appRules)) ?? d.appRules
         colorStyleID = (try? c.decodeIfPresent(String.self, forKey: .colorStyleID)) ?? d.colorStyleID
         customStyles = (try? c.decodeIfPresent([ColorStyle].self, forKey: .customStyles)) ?? d.customStyles
-        windowBlur = (try? c.decodeIfPresent(Bool.self, forKey: .windowBlur)) ?? d.windowBlur
-        blurAmount = (try? c.decodeIfPresent(Double.self, forKey: .blurAmount)) ?? d.blurAmount
-        windowTransparency = (try? c.decodeIfPresent(Double.self, forKey: .windowTransparency)) ?? d.windowTransparency
         syncSystemWallpaper = (try? c.decodeIfPresent(Bool.self, forKey: .syncSystemWallpaper)) ?? d.syncSystemWallpaper
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? d.launchAtLogin
         numberHotkeys = (try? c.decodeIfPresent(Bool.self, forKey: .numberHotkeys)) ?? d.numberHotkeys

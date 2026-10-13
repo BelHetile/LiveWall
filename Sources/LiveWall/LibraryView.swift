@@ -56,15 +56,8 @@ struct LibraryBackground: View {
     @ObservedObject var library: Library
 
     var body: some View {
-        let s = library.settings
         ZStack {
-            if s.windowBlur {
-                VisualEffectBackground(material: .underWindowBackground)
-                    .opacity(s.blurAmount)
-            }
-            // плотность фона: чем выше прозрачность, тем сильнее виден рабочий стол
             Color(nsColor: .windowBackgroundColor)
-                .opacity(1 - s.windowTransparency)
             LinearGradient(colors: [Theme.violet.opacity(0.16), .clear],
                            startPoint: .topLeading, endPoint: .center)
             RadialGradient(colors: [Theme.magenta.opacity(0.12), .clear],
@@ -1344,8 +1337,8 @@ struct FolderIconPicker: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
+                    ScrollView {
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 9), spacing: 10) {
                             ForEach(library.userIcons, id: \.self) { name in
                                 UserIconThumb(name: name, size: 50, library: library)
                                     .onTapGesture { library.setFolderUserIcon(name, for: folder.id) }
@@ -1356,6 +1349,7 @@ struct FolderIconPicker: View {
                         }
                         .padding(4)
                     }
+                    .frame(maxHeight: 120)
                 }
 
                 HStack {

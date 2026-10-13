@@ -65,9 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.minSize = NSSize(width: 980, height: 640)
             w.isReleasedWhenClosed = false
             w.delegate = self
-            // прозрачность и размытие рисует сам интерфейс
-            w.isOpaque = false
-            w.backgroundColor = .clear
             w.collectionBehavior.insert(.fullScreenPrimary)
             w.contentView = NSHostingView(rootView: LibraryView())
             // библиотека открывается на весь экран (видимую область без Dock и строки меню)
