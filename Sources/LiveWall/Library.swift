@@ -37,6 +37,9 @@ final class Library: ObservableObject {
     @Published private(set) var lockScreenID: UUID?
     @Published private(set) var detailID: UUID?
     @Published private(set) var previewPlayer: AVQueuePlayer?
+    @Published private(set) var linkDownloads: [LinkDownload] = []
+    @Published var showLinkPopover = false
+    @Published var linkText = ""
     @Published var settings = Settings() {
         didSet { settingsChanged(old: oldValue) }
     }
@@ -46,6 +49,7 @@ final class Library: ObservableObject {
     private let thumbsDir: URL
     private let stillsDir: URL
     private let indexURL: URL
+    private let incomingDir: URL
     private var loading = true
     private var rotateTimer: Timer?
     private var recordMonitor: Any?
@@ -53,6 +57,8 @@ final class Library: ObservableObject {
     private var lockSyncGeneration = 0
     private var previewLooper: AVPlayerLooper?
     private var imageCache: [UUID: NSImage] = [:]
+    private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
+    private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
 
     private struct Index: Codable {
         var items: [WallpaperItem]
@@ -71,6 +77,8 @@ final class Library: ObservableObject {
         thumbsDir = root.appendingPathComponent("Thumbs", isDirectory: true)
         stillsDir = root.appendingPathComponent("Stills", isDirectory: true)
         indexURL = root.appendingPathComponent("library.json")
+        incomingDir = root.appendingPathComponent("Incoming", isDirectory: true)
+        try? FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: stillsDir, withIntermediateDirectories: true)
@@ -230,7 +238,14 @@ final class Library: ObservableObject {
     // MARK: Импорт
 
     static func kind(for url: URL) -> MediaKind? {
-        guard let t = UTType(filenameExtension: url.pathExtension.lowercased()) else { return nil }
+        kind(forExtension: url.pathExtension)
+    }
+
+    static func kind(forExtension ext: String) -> MediaKind? {
+        let e = ext.lowercased()
+        // AVFoundation их не проигрывает
+        if ["webm", "mkv", "avi", "flv", "wmv", "ogv"].contains(e) { return nil }
+        guard !e.isEmpty, let t = UTType(filenameExtension: e) else { return nil }
         if t.conforms(to: .gif) { return .gif }
         if t.conforms(to: .movie) || t.conforms(to: .video) { return .video }
         if t.conforms(to: .image) { return .image }
@@ -253,7 +268,13 @@ final class Library: ObservableObject {
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url = url else { return }
-                DispatchQueue.main.async { self.importFiles([url]) }
+                DispatchQueue.main.async {
+                    if url.isFileURL {
+                        self.importFiles([url])
+                    } else {
+                        self.addFromLink(url.absoluteString)
+                    }
+                }
             }
         }
     }
@@ -310,6 +331,295 @@ final class Library: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: Импорт по ссылке
+
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+
+    /// Отправка ссылки из поля ввода.
+    func submitLink() {
+        let text = linkText
+        linkText = ""
+        showLinkPopover = false
+        addFromLink(text)
+    }
+
+    /// ⌘V в окне библиотеки: файлы или ссылки из буфера обмена.
+    func pasteFromClipboard() {
+        let pb = NSPasteboard.general
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
+            let files = urls.filter { $0.isFileURL }
+            if !files.isEmpty { importFiles(files) }
+            for u in urls where !u.isFileURL {
+                addFromLink(u.absoluteString)
+            }
+            return
+        }
+        if let s = pb.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            addFromLink(s)
+        } else {
+            message = "Clipboard has no link or file to add."
+        }
+    }
+
+    static func normalizeLink(_ text: String) -> URL? {
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = s.split(whereSeparator: { $0 == "\n" || $0 == " " || $0 == "\t" }).first {
+            s = String(first)
+        }
+        guard !s.isEmpty else { return nil }
+        let lower = s.lowercased()
+        if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") && !lower.hasPrefix("file://") {
+            s = "https://" + s
+        }
+        let url = URL(string: s)
+            ?? s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap { URL(string: $0) }
+        guard let u = url else { return nil }
+        if u.isFileURL { return u }
+        guard let host = u.host, host.contains(".") || host == "localhost" else { return nil }
+        return u
+    }
+
+    static func displayName(for url: URL) -> String {
+        let last = (url.deletingPathExtension().lastPathComponent.removingPercentEncoding
+            ?? url.deletingPathExtension().lastPathComponent)
+        if !last.isEmpty && last != "/" { return last }
+        return url.host ?? "Wallpaper"
+    }
+
+    func addFromLink(_ text: String) {
+        guard let url = Library.normalizeLink(text) else {
+            message = "That doesn't look like a link."
+            return
+        }
+        if url.isFileURL {
+            importFiles([url])
+            return
+        }
+        message = nil
+        let id = UUID()
+        linkDownloads.append(LinkDownload(id: id, title: Library.displayName(for: url), progress: 0, error: nil))
+        startDownload(id: id, url: url, depth: 0)
+    }
+
+    func cancelDownload(_ id: UUID) {
+        if let task = downloadTasks[id] {
+            task.cancel()
+        }
+        removeDownload(id)
+    }
+
+    func dismissDownload(_ id: UUID) {
+        removeDownload(id)
+    }
+
+    private func removeDownload(_ id: UUID) {
+        downloadTasks[id] = nil
+        downloadObservations[id] = nil
+        linkDownloads.removeAll { $0.id == id }
+    }
+
+    private func failDownload(_ id: UUID, _ text: String) {
+        downloadTasks[id] = nil
+        downloadObservations[id] = nil
+        if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
+            linkDownloads[i].error = text
+        }
+    }
+
+    private func setDownloadProgress(_ id: UUID, _ value: Double) {
+        guard let i = linkDownloads.firstIndex(where: { $0.id == id }) else { return }
+        if abs(linkDownloads[i].progress - value) >= 0.01 || value >= 1 {
+            linkDownloads[i].progress = value
+        }
+    }
+
+    private func startDownload(id: UUID, url: URL, depth: Int) {
+        var request = URLRequest(url: url)
+        request.setValue(Library.userAgent, forHTTPHeaderField: "User-Agent")
+        let dir = incomingDir
+        let task = URLSession.shared.downloadTask(with: request) { [weak self] tmp, response, error in
+            // временный файл удаляется сразу после выхода из обработчика — переносим его к себе
+            var saved: URL?
+            if let tmp = tmp {
+                let dest = dir.appendingPathComponent(UUID().uuidString)
+                if (try? FileManager.default.moveItem(at: tmp, to: dest)) != nil {
+                    saved = dest
+                }
+            }
+            DispatchQueue.main.async {
+                self?.finishDownload(id: id, source: url, file: saved, response: response, error: error, depth: depth)
+            }
+        }
+        downloadObservations[id] = task.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] progress, _ in
+            let value = progress.fractionCompleted
+            DispatchQueue.main.async { self?.setDownloadProgress(id, value) }
+        }
+        downloadTasks[id] = task
+        task.resume()
+    }
+
+    private func finishDownload(id: UUID, source: URL, file: URL?, response: URLResponse?, error: Error?, depth: Int) {
+        // загрузку уже отменили
+        guard linkDownloads.contains(where: { $0.id == id }) else {
+            if let file = file { try? FileManager.default.removeItem(at: file) }
+            return
+        }
+        downloadTasks[id] = nil
+        downloadObservations[id] = nil
+
+        if let nsError = error as NSError?, nsError.code == NSURLErrorCancelled {
+            removeDownload(id)
+            return
+        }
+        guard let file = file, error == nil else {
+            failDownload(id, error?.localizedDescription ?? "Download failed.")
+            return
+        }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: file)
+            failDownload(id, "The server answered \(http.statusCode).")
+            return
+        }
+
+        let mime = response?.mimeType?.lowercased() ?? ""
+        let finalURL = response?.url ?? source
+
+        // страница, а не файл: ищем на ней видео или картинку
+        if mime.hasPrefix("text/html") || mime == "application/xhtml+xml" {
+            let media = depth == 0 ? Library.findMediaURL(inHTMLAt: file, base: finalURL) : nil
+            try? FileManager.default.removeItem(at: file)
+            guard let mediaURL = media else {
+                failDownload(id, "No video or image file found on this page. Paste a direct link to the file.")
+                return
+            }
+            if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
+                linkDownloads[i].title = Library.displayName(for: mediaURL)
+                linkDownloads[i].progress = 0
+            }
+            startDownload(id: id, url: mediaURL, depth: depth + 1)
+            return
+        }
+
+        guard let ext = Library.fileExtension(url: finalURL, mime: mime, suggested: response?.suggestedFilename) else {
+            try? FileManager.default.removeItem(at: file)
+            let type = mime.isEmpty ? "" : " (\(mime))"
+            failDownload(id, "Unsupported file type\(type). Use mp4/mov/m4v, png/jpg/heic/webp or gif.")
+            return
+        }
+
+        var name = Library.displayName(for: finalURL)
+        if let suggested = response?.suggestedFilename, !suggested.isEmpty,
+           Library.kind(forExtension: (suggested as NSString).pathExtension) != nil {
+            name = (suggested as NSString).deletingPathExtension
+        }
+        removeDownload(id)
+        addDownloadedFile(file, name: name, ext: ext)
+    }
+
+    static func fileExtension(url: URL, mime: String, suggested: String?) -> String? {
+        let candidates = [suggested.map { ($0 as NSString).pathExtension } ?? "", url.pathExtension]
+        for c in candidates {
+            let e = c.lowercased()
+            if kind(forExtension: e) != nil { return e == "jpeg" ? "jpg" : e }
+        }
+        let byMime: [String: String] = [
+            "video/mp4": "mp4", "video/quicktime": "mov", "video/x-m4v": "m4v",
+            "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/gif": "gif",
+            "image/heic": "heic", "image/heif": "heic", "image/webp": "webp",
+            "image/tiff": "tiff", "image/bmp": "bmp",
+        ]
+        return byMime[mime]
+    }
+
+    /// Ищет на HTML-странице ссылку на видео или картинку: og:video, <video>/<source>, прямые .mp4, затем og:image.
+    static func findMediaURL(inHTMLAt file: URL, base: URL) -> URL? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        let data = handle.readData(ofLength: 4 * 1024 * 1024)
+        try? handle.close()
+        let html = String(decoding: data, as: UTF8.self)
+
+        func matches(_ pattern: String, in text: String) -> [[String]] {
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+            let ns = text as NSString
+            return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { m in
+                (0..<m.numberOfRanges).map { i in
+                    let r = m.range(at: i)
+                    return r.location == NSNotFound ? "" : ns.substring(with: r)
+                }
+            }
+        }
+
+        func attribute(_ name: String, in tag: String) -> String? {
+            let found = matches("\\b\(name)\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", in: tag)
+            guard let m = found.first else { return nil }
+            let value = [m[2], m[3], m[4]].first(where: { !$0.isEmpty }) ?? ""
+            return value.isEmpty ? nil : value
+        }
+
+        func resolve(_ raw: String) -> URL? {
+            let cleaned = raw
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "\\/", with: "/")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, !cleaned.hasPrefix("data:"), !cleaned.hasPrefix("blob:") else { return nil }
+            guard let u = URL(string: cleaned, relativeTo: base)?.absoluteURL,
+                  let scheme = u.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+            return u
+        }
+
+        func isVideoFile(_ u: URL) -> Bool {
+            ["mp4", "mov", "m4v"].contains(u.pathExtension.lowercased())
+        }
+
+        var videos: [URL] = []
+        var images: [URL] = []
+
+        for m in matches("<meta\\b[^>]*>", in: html) {
+            let tag = m[0]
+            let key = (attribute("property", in: tag) ?? attribute("name", in: tag) ?? "").lowercased()
+            guard let content = attribute("content", in: tag), let u = resolve(content) else { continue }
+            switch key {
+            case "og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream":
+                videos.append(u)
+            case "og:image:secure_url", "og:image", "og:image:url", "twitter:image":
+                images.append(u)
+            default:
+                break
+            }
+        }
+        for m in matches("<(?:video|source)\\b[^>]*>", in: html) {
+            if let src = attribute("src", in: m[0]), let u = resolve(src) { videos.append(u) }
+        }
+        for m in matches("https?:\\\\?/\\\\?/[^\"'\\s<>]+?\\.(?:mp4|mov|m4v)(?:\\?[^\"'\\s<>]*)?", in: html) {
+            if let u = resolve(m[0]) { videos.append(u) }
+        }
+
+        // сначала то, что точно похоже на видеофайл
+        if let v = videos.first(where: isVideoFile) { return v }
+        if let v = videos.first { return v }
+        return images.first
+    }
+
+    private func addDownloadedFile(_ file: URL, name: String, ext: String) {
+        guard let kind = Library.kind(forExtension: ext) else {
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        let id = UUID()
+        let dest = filesDir.appendingPathComponent("\(id.uuidString).\(ext)")
+        do {
+            try FileManager.default.moveItem(at: file, to: dest)
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            message = "Could not save \(name): \(error.localizedDescription)"
+            return
+        }
+        let item = WallpaperItem(id: id, name: name, file: dest.lastPathComponent, kind: kind, mode: .fill)
+        items.append(item)
+        save()
+        if currentID == nil { select(id) }
     }
 
     func remove(_ id: UUID) {

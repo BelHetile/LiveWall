@@ -24,12 +24,15 @@ This builds `build/LiveWall.app`, ad-hoc signs it, copies it to `/Applications` 
 
 ## Use
 
-- The icon sits in the menu bar (no Dock icon). **Open Library…** opens the window.
-- Add wallpapers with **Add…**, by dragging files/folders into the window, or from the menu bar later.
-  Supported: mp4 / mov / m4v (H.264, HEVC), png / jpg / heic, gif.
-  Files are copied to `~/Library/Application Support/LiveWall/`.
-- Click a card to apply it. Each card has its own fill mode: **Fill, Fit, Stretch, Center**.
-- Settings tab: volume, speed, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
+- The icon sits in the menu bar (no Dock icon). **Open LiveWall…** opens the library full screen; the gear in the top-right corner opens Settings.
+- Add wallpapers:
+  - **Add** — pick files or folders;
+  - **Link** button (or just press **⌘V** with a link copied) — paste a direct link to a video/image, or a web page that has one (LiveWall looks for `og:video`, `<video>`/`<source>` and `og:image`);
+  - drag files, folders or links from the browser into the window.
+
+  Supported: mp4 / mov / m4v (H.264, HEVC), png / jpg / heic / webp, gif. Files are stored in `~/Library/Application Support/LiveWall/`.
+- Click a wallpaper to open its panel: put it on the **Desktop** or the **Lock Screen**, pause, set its own volume and speed, choose the fill mode (**Fill, Fit, Stretch, Center**).
+- Settings: default playback, smart pause, app rules, lock screen, auto-rotation, launch at login, hotkeys.
 
 ## Smart pause (like Wallpaper Engine's Performance settings)
 

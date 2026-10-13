@@ -34,6 +34,12 @@ struct LibraryView: View {
                 WallpaperDetail(item: item, library: library)
                     .transition(.opacity)
             }
+
+            // ⌘V в окне: добавить ссылку или файлы из буфера обмена
+            Button("Paste") { library.pasteFromClipboard() }
+                .keyboardShortcut("v", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
         }
         .animation(.easeInOut(duration: 0.2), value: library.detailID)
         .animation(.easeInOut(duration: 0.2), value: library.section)
@@ -111,6 +117,21 @@ struct TopBar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Add wallpapers")
+
+                Button {
+                    library.showLinkPopover = true
+                } label: {
+                    Image(systemName: "link.badge.plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .background(Color.primary.opacity(0.08), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Add from a link (or press ⌘V with a link copied)")
+                .popover(isPresented: $library.showLinkPopover, arrowEdge: .bottom) {
+                    LinkPopover(library: library)
+                }
             }
 
             Button {
@@ -172,6 +193,10 @@ struct WallpapersPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                if !library.linkDownloads.isEmpty {
+                    DownloadsList(library: library)
+                }
+
                 if library.items.isEmpty {
                     EmptyDropZone(library: library)
                         .padding(.top, 40)
@@ -197,7 +222,7 @@ struct WallpapersPage: View {
             .padding(.bottom, 28)
         }
         .overlay { DropOverlay(active: library.dropTargeted) }
-        .onDrop(of: [.fileURL], isTargeted: $library.dropTargeted) { providers in
+        .onDrop(of: [.fileURL, .url], isTargeted: $library.dropTargeted) { providers in
             library.handleDrop(providers)
             return true
         }
@@ -810,12 +835,18 @@ struct EmptyDropZone: View {
                     .font(.system(size: 32, weight: .semibold))
                     .foregroundStyle(.white)
             }
-            Text("Drop videos, images or GIFs here")
+            Text("Drop videos, images, GIFs or links here")
                 .font(.system(size: 20, weight: .semibold))
             Text("mp4 · mov · m4v · png · jpg · heic · gif — folders work too")
                 .foregroundStyle(.secondary)
-            Button("Choose Files…") { library.presentImportPanel() }
-                .controlSize(.large)
+            HStack(spacing: 10) {
+                Button("Choose Files…") { library.presentImportPanel() }
+                Button("Add from Link…") { library.showLinkPopover = true }
+            }
+            .controlSize(.large)
+            Text("Tip: copy a link to a video or image and press ⌘V here")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 90)
@@ -849,5 +880,103 @@ struct DropOverlay: View {
         .padding(10)
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.15), value: active)
+    }
+}
+
+// MARK: - Links
+
+struct LinkPopover: View {
+    @ObservedObject var library: Library
+
+    private var isEmpty: Bool {
+        library.linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add from link")
+                .font(.system(size: 15, weight: .bold))
+            Text("Paste a direct link to a video or image, or a web page that contains one.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("https://example.com/wallpaper.mp4", text: $library.linkText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { if !isEmpty { library.submitLink() } }
+            HStack {
+                Button {
+                    if let s = NSPasteboard.general.string(forType: .string) {
+                        library.linkText = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                Spacer()
+                Button("Cancel") { library.showLinkPopover = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") { library.submitLink() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isEmpty)
+            }
+            Text("mp4 · mov · m4v · jpg · png · heic · webp · gif")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(16)
+        .frame(width: 420)
+    }
+}
+
+struct DownloadsList: View {
+    @ObservedObject var library: Library
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(library.linkDownloads) { d in
+                HStack(spacing: 12) {
+                    Image(systemName: d.error == nil ? "arrow.down.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(d.error == nil ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Color.orange))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(d.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let error = d.error {
+                            Text(error)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                                .lineLimit(2)
+                        } else {
+                            ProgressView(value: min(max(d.progress, 0), 1))
+                                .progressViewStyle(.linear)
+                                .tint(Theme.violet)
+                        }
+                    }
+                    if d.error == nil {
+                        Text("\(Int((d.progress * 100).rounded()))%")
+                            .font(.system(size: 11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                    Button {
+                        if d.error == nil {
+                            library.cancelDownload(d.id)
+                        } else {
+                            library.dismissDownload(d.id)
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(d.error == nil ? "Cancel download" : "Dismiss")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
     }
 }

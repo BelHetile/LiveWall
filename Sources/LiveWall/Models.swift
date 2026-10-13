@@ -41,6 +41,14 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var muted: Bool?
 }
 
+/// Загрузка обоев по ссылке (для списка с прогрессом).
+struct LinkDownload: Identifiable, Equatable {
+    let id: UUID
+    var title: String
+    var progress: Double
+    var error: String?
+}
+
 // MARK: - Hotkeys
 
 enum HotkeyAction: String, Codable, CaseIterable, Identifiable {
