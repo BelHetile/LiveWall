@@ -5,6 +5,8 @@ All notable changes to LiveWall are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-13
+
 ### Added
 - Settings → System: open the library at launch or not, open it filling the screen, in full screen (its own Space)
   or at the last size and position, and hide the menu bar icon.
