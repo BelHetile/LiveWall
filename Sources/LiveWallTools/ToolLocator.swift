@@ -4,6 +4,13 @@ import LiveWallCore
 public protocol ToolExecutableResolving: Sendable {
     func executableURL(for tool: MediaTool) -> URL?
     func brewExecutableURL() -> URL?
+    func ffprobeExecutableURL() -> URL?
+}
+
+public extension ToolExecutableResolving {
+    func ffprobeExecutableURL() -> URL? {
+        return nil
+    }
 }
 
 public struct ToolLocator: ToolExecutableResolving, Sendable {
@@ -35,6 +42,10 @@ public struct ToolLocator: ToolExecutableResolving, Sendable {
 
     public func brewExecutableURL() -> URL? {
         return locate(named: ToolLocator.brewExecutableName)
+    }
+
+    public func ffprobeExecutableURL() -> URL? {
+        return locate(named: "ffprobe")
     }
 
     public func locate(named name: String) -> URL? {

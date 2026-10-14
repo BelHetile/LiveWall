@@ -2,6 +2,7 @@ import Foundation
 
 public enum LiveWallError: Error, Equatable, Sendable {
     case mediaUnreadable(path: String, reason: String)
+    case mediaRejected(reason: String)
     case codecUnsupported(path: String)
     case downloadFailed(jobID: String, stderr: String)
     case toolMissing(tool: String)

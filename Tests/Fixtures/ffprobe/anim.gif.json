@@ -1,0 +1,63 @@
+{
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "gif",
+            "codec_long_name": "CompuServe GIF (Graphics Interchange Format)",
+            "codec_type": "video",
+            "codec_tag_string": "[0][0][0][0]",
+            "codec_tag": "0x0000",
+            "width": 160,
+            "height": 120,
+            "coded_width": 160,
+            "coded_height": 120,
+            "has_b_frames": 0,
+            "sample_aspect_ratio": "1:1",
+            "display_aspect_ratio": "4:3",
+            "pix_fmt": "bgra",
+            "level": -99,
+            "r_frame_rate": "10/1",
+            "avg_frame_rate": "10/1",
+            "time_base": "1/100",
+            "start_pts": 0,
+            "start_time": "0.000000",
+            "duration_ts": 80,
+            "duration": "0.800000",
+            "nb_frames": "8",
+            "disposition": {
+                "default": 0,
+                "dub": 0,
+                "original": 0,
+                "comment": 0,
+                "lyrics": 0,
+                "karaoke": 0,
+                "forced": 0,
+                "hearing_impaired": 0,
+                "visual_impaired": 0,
+                "clean_effects": 0,
+                "attached_pic": 0,
+                "timed_thumbnails": 0,
+                "non_diegetic": 0,
+                "captions": 0,
+                "descriptions": 0,
+                "metadata": 0,
+                "dependent": 0,
+                "still_image": 0,
+                "multilayer": 0
+            }
+        }
+    ],
+    "format": {
+        "filename": "Tests/Fixtures/anim.gif",
+        "nb_streams": 1,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "gif",
+        "format_long_name": "CompuServe Graphics Interchange Format (GIF)",
+        "start_time": "0.000000",
+        "duration": "0.800000",
+        "size": "21590",
+        "bit_rate": "215900",
+        "probe_score": 100
+    }
+}

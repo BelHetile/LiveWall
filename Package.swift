@@ -21,7 +21,7 @@ let package = Package(
     targets: [
         .target(name: "LiveWallCore"),
         .target(name: "LiveWallEngine", dependencies: ["LiveWallCore", "LiveWallIPC"]),
-        .target(name: "LiveWallMedia"),
+        .target(name: "LiveWallMedia", dependencies: ["LiveWallCore", "LiveWallTools"]),
         .target(name: "LiveWallTools", dependencies: ["LiveWallCore"]),
         .target(name: "LiveWallIPC"),
         .executableTarget(
@@ -34,7 +34,7 @@ let package = Package(
         .executableTarget(name: "LiveWallHotkeyProbe", dependencies: ["LiveWallEngine"]),
         .testTarget(name: "LiveWallCoreTests", dependencies: ["LiveWallCore"]),
         .testTarget(name: "LiveWallEngineTests", dependencies: ["LiveWallEngine", "LiveWallCore", "LiveWallIPC"]),
-        .testTarget(name: "LiveWallMediaTests", dependencies: ["LiveWallMedia"]),
+        .testTarget(name: "LiveWallMediaTests", dependencies: ["LiveWallMedia", "LiveWallCore", "LiveWallTools"]),
         .testTarget(name: "LiveWallToolsTests", dependencies: ["LiveWallTools", "LiveWallCore"]),
         .testTarget(name: "LiveWallIPTests", dependencies: ["LiveWallIPC"])
     ],

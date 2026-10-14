@@ -447,6 +447,8 @@ public actor DownloadService {
                 return "unreadable media: \(path) (\(reason))"
             case let .codecUnsupported(path):
                 return "unsupported codec: \(path)"
+            case let .mediaRejected(reason):
+                return "media rejected: \(reason)"
             case .consentRequired:
                 return "tool install consent required"
             case let .libraryCorrupt(path):

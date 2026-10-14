@@ -406,6 +406,8 @@ public final class EngineController {
                 return "unreadable media: \(path) (\(reason))"
             case let .codecUnsupported(path):
                 return "unsupported codec: \(path)"
+            case let .mediaRejected(reason):
+                return "media rejected: \(reason)"
             case let .libraryCorrupt(path):
                 return "corrupt library: \(path)"
             case let .swapStateCorrupt(path):
