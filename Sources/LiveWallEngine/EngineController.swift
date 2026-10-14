@@ -418,6 +418,10 @@ public final class EngineController {
                 return "download failed: \(jobID) (\(stderr))"
             case let .toolMissing(tool):
                 return "missing tool: \(tool)"
+            case let .toolAcquisitionFailed(tools, stderr):
+                return "tool install failed: \(tools.joined(separator: ", ")) (\(stderr))"
+            case .consentRequired:
+                return "tool install consent required"
             }
         default:
             return String(describing: error)

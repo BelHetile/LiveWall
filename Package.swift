@@ -22,7 +22,7 @@ let package = Package(
         .target(name: "LiveWallCore"),
         .target(name: "LiveWallEngine", dependencies: ["LiveWallCore", "LiveWallIPC"]),
         .target(name: "LiveWallMedia"),
-        .target(name: "LiveWallTools"),
+        .target(name: "LiveWallTools", dependencies: ["LiveWallCore"]),
         .target(name: "LiveWallIPC"),
         .executableTarget(
             name: "LiveWall",
@@ -35,7 +35,7 @@ let package = Package(
         .testTarget(name: "LiveWallCoreTests", dependencies: ["LiveWallCore"]),
         .testTarget(name: "LiveWallEngineTests", dependencies: ["LiveWallEngine", "LiveWallCore", "LiveWallIPC"]),
         .testTarget(name: "LiveWallMediaTests", dependencies: ["LiveWallMedia"]),
-        .testTarget(name: "LiveWallToolsTests", dependencies: ["LiveWallTools"]),
+        .testTarget(name: "LiveWallToolsTests", dependencies: ["LiveWallTools", "LiveWallCore"]),
         .testTarget(name: "LiveWallIPTests", dependencies: ["LiveWallIPC"])
     ],
     swiftLanguageModes: [.v6]
