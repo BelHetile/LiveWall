@@ -12,4 +12,8 @@ public enum LiveWallPaths {
     public static func toolsDirectory() -> URL {
         return dataDirectory().appendingPathComponent("Tools", isDirectory: true)
     }
+
+    public static func incomingDirectory() -> URL {
+        return dataDirectory().appendingPathComponent("Incoming", isDirectory: true)
+    }
 }
