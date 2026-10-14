@@ -29,7 +29,7 @@ public final class StillSyncService {
         guard let persisted = try await store.load() else {
             return
         }
-        try applyOriginal(persisted)
+        applyOriginal(persisted)
         try await store.clear()
     }
 
@@ -58,10 +58,14 @@ public final class StillSyncService {
         guard isOwning else {
             return
         }
+        defer { resetOwnership() }
         if let captured {
-            try applyOriginal(captured)
+            applyOriginal(captured)
         }
         try await store.clear()
+    }
+
+    private func resetOwnership() {
         captured = nil
         persistedIDs = []
         request = nil
@@ -238,7 +242,7 @@ public final class StillSyncService {
         }
     }
 
-    private func applyOriginal(_ state: SwapState) throws {
+    private func applyOriginal(_ state: SwapState) {
         for entry in state.displays {
             guard workspace.screens.contains(where: { $0.displayID == entry.displayID }) else {
                 continue
@@ -246,7 +250,7 @@ public final class StillSyncService {
             guard let url = URL(string: entry.originalURL) else {
                 continue
             }
-            try workspace.setDesktopImageURL(url, for: entry.displayID)
+            try? workspace.setDesktopImageURL(url, for: entry.displayID)
         }
     }
 
