@@ -5,6 +5,7 @@ public enum LiveWallError: Error, Equatable, Sendable {
     case mediaRejected(reason: String)
     case codecUnsupported(path: String)
     case downloadFailed(jobID: String, stderr: String)
+    case transcodeFailed(reason: String)
     case toolMissing(tool: String)
     case toolAcquisitionFailed(tools: [String], stderr: String)
     case consentRequired

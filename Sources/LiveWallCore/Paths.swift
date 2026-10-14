@@ -20,4 +20,8 @@ public enum LiveWallPaths {
     public static func thumbsDirectory() -> URL {
         return dataDirectory().appendingPathComponent("Thumbs", isDirectory: true)
     }
+
+    public static func cacheDirectory() -> URL {
+        return dataDirectory().appendingPathComponent("cache", isDirectory: true)
+    }
 }

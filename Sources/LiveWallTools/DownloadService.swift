@@ -437,6 +437,8 @@ public actor DownloadService {
             switch liveWallError {
             case let .downloadFailed(_, stderr):
                 return stderr
+            case let .transcodeFailed(reason):
+                return "transcode failed: \(reason)"
             case let .toolMissing(tool):
                 return "missing tool: \(tool)"
             case let .ipc(code, message):

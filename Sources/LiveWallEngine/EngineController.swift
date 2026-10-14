@@ -418,6 +418,8 @@ public final class EngineController {
                 return "\(code): \(message)"
             case let .downloadFailed(jobID, stderr):
                 return "download failed: \(jobID) (\(stderr))"
+            case let .transcodeFailed(reason):
+                return "transcode failed: \(reason)"
             case let .toolMissing(tool):
                 return "missing tool: \(tool)"
             case let .toolAcquisitionFailed(tools, stderr):
