@@ -13,11 +13,12 @@ let package = Package(
         .library(name: "LiveWallTools", targets: ["LiveWallTools"]),
         .library(name: "LiveWallIPC", targets: ["LiveWallIPC"]),
         .executable(name: "LiveWall", targets: ["LiveWall"]),
-        .executable(name: "lwctl", targets: ["lwctl"])
+        .executable(name: "lwctl", targets: ["lwctl"]),
+        .executable(name: "LiveWallPlaybackProbe", targets: ["LiveWallPlaybackProbe"])
     ],
     targets: [
         .target(name: "LiveWallCore"),
-        .target(name: "LiveWallEngine"),
+        .target(name: "LiveWallEngine", dependencies: ["LiveWallCore"]),
         .target(name: "LiveWallMedia"),
         .target(name: "LiveWallTools"),
         .target(name: "LiveWallIPC"),
@@ -26,8 +27,9 @@ let package = Package(
             dependencies: ["LiveWallCore", "LiveWallEngine", "LiveWallMedia", "LiveWallTools", "LiveWallIPC"]
         ),
         .executableTarget(name: "lwctl", dependencies: ["LiveWallIPC"]),
+        .executableTarget(name: "LiveWallPlaybackProbe", dependencies: ["LiveWallEngine"]),
         .testTarget(name: "LiveWallCoreTests", dependencies: ["LiveWallCore"]),
-        .testTarget(name: "LiveWallEngineTests", dependencies: ["LiveWallEngine"]),
+        .testTarget(name: "LiveWallEngineTests", dependencies: ["LiveWallEngine", "LiveWallCore"]),
         .testTarget(name: "LiveWallMediaTests", dependencies: ["LiveWallMedia"]),
         .testTarget(name: "LiveWallToolsTests", dependencies: ["LiveWallTools"]),
         .testTarget(name: "LiveWallIPTests", dependencies: ["LiveWallIPC"])

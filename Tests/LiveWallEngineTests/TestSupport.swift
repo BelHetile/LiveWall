@@ -1,5 +1,9 @@
 import Foundation
 
+func pumpRunLoop(_ interval: TimeInterval) {
+    RunLoop.main.run(until: Date().addingTimeInterval(interval))
+}
+
 enum EngineE2E {
     static let enabled = ProcessInfo.processInfo.environment["LW_E2E"] == "1"
 }

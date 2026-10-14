@@ -31,6 +31,7 @@ public final class WallpaperWindow: NSWindow {
     }
 
     public func installContentView(_ view: NSView) {
+        view.frame = contentRect(forFrameRect: frame)
         view.autoresizingMask = [.width, .height]
         contentView = view
     }
