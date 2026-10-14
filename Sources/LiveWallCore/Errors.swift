@@ -7,4 +7,6 @@ public enum LiveWallError: Error, Equatable, Sendable {
     case toolMissing(tool: String)
     case libraryCorrupt(path: String)
     case ipc(code: String, message: String)
+    case swapStateCorrupt(path: String)
+    case stillUnavailable(path: String, reason: String)
 }

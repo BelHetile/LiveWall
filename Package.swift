@@ -14,7 +14,8 @@ let package = Package(
         .library(name: "LiveWallIPC", targets: ["LiveWallIPC"]),
         .executable(name: "LiveWall", targets: ["LiveWall"]),
         .executable(name: "lwctl", targets: ["lwctl"]),
-        .executable(name: "LiveWallPlaybackProbe", targets: ["LiveWallPlaybackProbe"])
+        .executable(name: "LiveWallPlaybackProbe", targets: ["LiveWallPlaybackProbe"]),
+        .executable(name: "LiveWallStillProbe", targets: ["LiveWallStillProbe"])
     ],
     targets: [
         .target(name: "LiveWallCore"),
@@ -28,6 +29,7 @@ let package = Package(
         ),
         .executableTarget(name: "lwctl", dependencies: ["LiveWallIPC"]),
         .executableTarget(name: "LiveWallPlaybackProbe", dependencies: ["LiveWallEngine"]),
+        .executableTarget(name: "LiveWallStillProbe", dependencies: ["LiveWallEngine", "LiveWallCore"]),
         .testTarget(name: "LiveWallCoreTests", dependencies: ["LiveWallCore"]),
         .testTarget(name: "LiveWallEngineTests", dependencies: ["LiveWallEngine", "LiveWallCore"]),
         .testTarget(name: "LiveWallMediaTests", dependencies: ["LiveWallMedia"]),
