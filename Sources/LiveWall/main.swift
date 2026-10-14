@@ -1,4 +1,8 @@
-import Dispatch
+import AppKit
+import Foundation
 
-print("LiveWall")
-dispatchMain()
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
+let delegate = AppDelegate()
+application.delegate = delegate
+application.run()
