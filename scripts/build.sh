@@ -1,118 +1,48 @@
 #!/bin/bash
-# Builds LiveWall.app from source.
-#
-#   scripts/build.sh               build for this Mac            -> build/LiveWall.app
-#   scripts/build.sh --install     build, copy to /Applications and launch
-#   scripts/build.sh --universal   Apple Silicon + Intel binary  (used for releases)
-#
-# LIVEWALL_VERSION=1.2.3 scripts/build.sh   sets the version shown in About.
 set -euo pipefail
-SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-# run from the repository root, wherever the script is called from
-cd "$(dirname "$SCRIPT")/.."
 
-INSTALL=0
-UNIVERSAL=0
-for arg in "$@"; do
-  case "$arg" in
-    --install) INSTALL=1 ;;
-    --universal) UNIVERSAL=1 ;;
-    -h|--help) sed -n '2,8p' "$SCRIPT"; exit 0 ;;
-    *) echo "Unknown option: $arg"; exit 1 ;;
-  esac
-done
+cd "$(cd "$(dirname "$0")/.." && pwd)"
 
-if ! command -v swift >/dev/null 2>&1; then
-  echo "Swift not found. Install the Command Line Tools first:  xcode-select --install"
-  exit 1
-fi
+APP="build/LiveWall.app"
+PLIST="Resources/Info.plist"
+BIN="$(swift build -c release --show-bin-path)"
 
-OUT="build"
-STAGE="$OUT/bin"
-rm -rf "$STAGE"
-mkdir -p "$STAGE"
+echo "==> Building lwctl"
+swift build -c release --product lwctl
 
-# Finds the freshly built binary that contains the given architecture.
-find_binary() {
-  local arch="$1" path
-  path="$(swift build -c release --arch "$arch" --show-bin-path 2>/dev/null)/LiveWall"
-  if [[ -f "$path" ]] && lipo -archs "$path" 2>/dev/null | grep -qw "$arch"; then
-    echo "$path"; return
-  fi
-  while IFS= read -r candidate; do
-    if lipo -archs "$candidate" 2>/dev/null | grep -qw "$arch"; then
-      echo "$candidate"; return
-    fi
-  done < <(find .build -type f -name LiveWall -perm -u+x 2>/dev/null | grep -i release)
-}
+echo "==> Building LiveWall with embedded Info.plist"
+swift build -c release --product LiveWall \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$PWD/$PLIST"
 
-build_arch() {
-  local arch="$1" bin
-  echo "==> Building for $arch"
-  swift build -c release --arch "$arch"
-  bin="$(find_binary "$arch")"
-  if [[ -z "$bin" ]]; then
-    echo "Could not find the built LiveWall binary for $arch"
-    exit 1
-  fi
-  # copy right away: some build systems reuse one output folder for every architecture
-  cp "$bin" "$STAGE/LiveWall-$arch"
-}
-
-if [[ "$UNIVERSAL" == 1 ]]; then
-  build_arch arm64
-  build_arch x86_64
-  lipo -create "$STAGE/LiveWall-arm64" "$STAGE/LiveWall-x86_64" -output "$STAGE/LiveWall"
-else
-  ARCH="$(uname -m)"
-  build_arch "$ARCH"
-  cp "$STAGE/LiveWall-$ARCH" "$STAGE/LiveWall"
-fi
-
-APP="$OUT/LiveWall.app"
+echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$STAGE/LiveWall" "$APP/Contents/MacOS/LiveWall"
-cp Resources/Info.plist "$APP/Contents/Info.plist"
-for lproj in Resources/*.lproj; do
-  if [[ -d "$lproj" ]]; then
-    cp -R "$lproj" "$APP/Contents/Resources/"
-  fi
-done
-if [[ -n "${LIVEWALL_VERSION:-}" ]]; then
-  plutil -replace CFBundleShortVersionString -string "$LIVEWALL_VERSION" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/MacOS"
+cp "$BIN/LiveWall" "$APP/Contents/MacOS/LiveWall"
+cp "$BIN/lwctl" "$APP/Contents/MacOS/lwctl"
+cp "$PLIST" "$APP/Contents/Info.plist"
+
+echo "==> Validating Info.plist"
+plutil -lint "$APP/Contents/Info.plist"
+test "$(plutil -extract LSUIElement raw "$APP/Contents/Info.plist")" = "true"
+
+if ! otool -s __TEXT __info_plist "$APP/Contents/MacOS/LiveWall" | grep -q 'Contents of'; then
+    echo "error: Info.plist is not embedded in the LiveWall binary" >&2
+    exit 1
 fi
-if [[ -n "${LIVEWALL_BUILD:-}" ]]; then
-  BUILD="$LIVEWALL_BUILD"
-elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  BUILD="$(git rev-list --count HEAD)"
-else
-  BUILD=""
-fi
-if [[ -n "$BUILD" ]]; then
-  plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"
-fi
-if [[ -d Resources/AppIcon.iconset ]]; then
-  iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-fi
+
+echo "==> Signing ad-hoc"
 codesign --force -s - "$APP"
+codesign --verify --verbose=2 "$APP"
 
-echo "==> Built $APP ($(lipo -archs "$APP/Contents/MacOS/LiveWall"))"
-
-if [[ "$INSTALL" == 1 ]]; then
-  pkill -x -u "$USER" LiveWall 2>/dev/null || true
-  # wait until the running copy has really quit
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -x LiveWall >/dev/null 2>&1 || break
-    sleep 0.5
-  done
-  rm -rf /Applications/LiveWall.app
-  cp -R "$APP" /Applications/LiveWall.app
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/LiveWall.app >/dev/null 2>&1 || true
-  sleep 1
-  if open /Applications/LiveWall.app 2>/dev/null || { sleep 2; open /Applications/LiveWall.app; }; then
-    echo "==> Installed to /Applications and launched."
-  else
-    echo "==> Installed to /Applications. Launch LiveWall from Spotlight."
-  fi
+echo "==> Launch/kill smoke"
+"$APP/Contents/MacOS/LiveWall" >/dev/null 2>&1 &
+PID=$!
+sleep 1
+if ! kill -0 "$PID" 2>/dev/null; then
+    echo "error: LiveWall did not stay running during smoke test" >&2
+    exit 1
 fi
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+
+echo "==> OK: $APP"
