@@ -199,11 +199,10 @@ struct WallpapersPage: View {
     @ObservedObject var library: Library
 
     var body: some View {
+        let visible = library.visibleItems
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
-                if !library.linkDownloads.isEmpty {
-                    DownloadsList(library: library)
-                }
+                DownloadsSection()
 
                 if library.items.isEmpty {
                     EmptyDropZone(library: library)
@@ -217,17 +216,15 @@ struct WallpapersPage: View {
                         MessageBanner(text: msg) { library.message = nil }
                     }
 
-                    header
+                    header(visible)
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 380), spacing: 20)],
                               spacing: 22) {
-                        ForEach(library.visibleItems) { item in
-                            WallpaperCard(item: item,
-                                          index: library.items.firstIndex(where: { $0.id == item.id }) ?? 0,
-                                          library: library)
+                        ForEach(visible) { item in
+                            WallpaperCard(item: item, library: library)
                         }
                     }
-                    if library.visibleItems.isEmpty {
+                    if visible.isEmpty {
                         Text(L("This folder is empty. Drag wallpapers onto the folder or use “Move to Folder” in a wallpaper’s menu."))
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -247,13 +244,13 @@ struct WallpapersPage: View {
         }
     }
 
-    private var header: some View {
+    private func header(_ visible: [WallpaperItem]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             if let folder = library.selectedFolder {
                 Text(folder.name)
                     .font(.system(size: 22, weight: .bold))
                     .onTapGesture(count: 2) { library.renameFolder(folder.id) }
-                Text("\(library.visibleItems.count)")
+                Text("\(visible.count)")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Button {
@@ -336,6 +333,7 @@ struct NowSection: View {
 
 struct DesktopTile: View {
     @ObservedObject var library: Library
+    @ObservedObject var images = Library.shared.images
 
     private var isPrivate: Bool {
         library.current.map { library.isHidden($0) } ?? false
@@ -351,7 +349,7 @@ struct DesktopTile: View {
             ZStack {
                 Theme.accentGradient
                 if let item = library.current {
-                    if let thumb = library.thumbs[item.id] {
+                    if let thumb = images.thumbs[item.id] {
                         Image(nsImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
@@ -429,6 +427,7 @@ struct DesktopTile: View {
 
 struct LockTile: View {
     @ObservedObject var library: Library
+    @ObservedObject var images = Library.shared.images
 
     var body: some View {
         let item = library.lockItem
@@ -437,7 +436,7 @@ struct LockTile: View {
             ZStack {
                 LinearGradient(colors: [Color(white: 0.15), Color(white: 0.05)],
                                startPoint: .top, endPoint: .bottom)
-                if let item = item, let thumb = library.thumbs[item.id] {
+                if let item = item, let thumb = images.thumbs[item.id] {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -497,12 +496,14 @@ struct LockTile: View {
 
 struct WallpaperCard: View {
     let item: WallpaperItem
-    let index: Int
     @ObservedObject var library: Library
+    @ObservedObject var hover = Library.shared.hover
+    @ObservedObject var progress = Library.shared.progress
+    @ObservedObject var images = Library.shared.images
 
     private var isDesktop: Bool { library.currentID == item.id }
     private var isLock: Bool { library.lockItem?.id == item.id }
-    private var isHovered: Bool { library.hoveredID == item.id }
+    private var isHovered: Bool { hover.id == item.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -540,9 +541,9 @@ struct WallpaperCard: View {
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isHovered)
         .onHover { inside in
             if inside {
-                library.hoveredID = item.id
-            } else if library.hoveredID == item.id {
-                library.hoveredID = nil
+                hover.id = item.id
+            } else if hover.id == item.id {
+                hover.id = nil
             }
         }
         .contextMenu {
@@ -581,7 +582,7 @@ struct WallpaperCard: View {
                 }
             }
             if item.kind == .video {
-                if library.optimizing[item.id] != nil {
+                if progress.optimizing[item.id] != nil {
                     Button(L("Cancel Optimization")) { library.cancelOptimize(item.id) }
                 } else {
                     Button(L("Optimize for This Mac")) { library.optimize(item.id, manual: true) }
@@ -599,7 +600,7 @@ struct WallpaperCard: View {
     private var thumbnail: some View {
         ZStack {
             Rectangle().fill(Theme.accentGradient.opacity(0.35))
-            if let thumb = library.thumbs[item.id] {
+            if let thumb = images.thumbs[item.id] {
                 Image(nsImage: thumb)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -645,7 +646,7 @@ struct WallpaperCard: View {
                 .padding(8)
         }
         .overlay(alignment: .bottom) {
-            if let progress = library.optimizing[item.id] {
+            if let progress = progress.optimizing[item.id] {
                 OptimizeBadge(progress: progress)
                     .padding(8)
             }
@@ -661,6 +662,7 @@ struct WallpaperCard: View {
 struct WallpaperDetail: View {
     let item: WallpaperItem
     @ObservedObject var library: Library
+    @ObservedObject var images = Library.shared.images
 
     private let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -715,7 +717,10 @@ struct WallpaperDetail: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: item.id) { await library.loadThumbnail(for: item) }
+        .task(id: item.id) {
+            await library.loadThumbnail(for: item)
+            await library.loadPreviewImage(for: item)
+        }
     }
 
     private var stage: some View {
@@ -723,7 +728,7 @@ struct WallpaperDetail: View {
             Color.black
 
             if item.kind == .video {
-                if let thumb = library.thumbs[item.id] {
+                if let thumb = images.thumbs[item.id] {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -737,7 +742,7 @@ struct WallpaperDetail: View {
                 if library.previewPaused {
                     Color.black.opacity(0.2)
                 }
-            } else if let image = library.previewImage(for: item) {
+            } else if let image = images.previews[item.id] {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -1073,6 +1078,7 @@ struct FrameScrubber: View {
 struct PerformanceSection: View {
     let item: WallpaperItem
     @ObservedObject var library: Library
+    @ObservedObject var progress = Library.shared.progress
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1087,7 +1093,7 @@ struct PerformanceSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let progress = library.optimizing[item.id] {
+            if let progress = progress.optimizing[item.id] {
                 HStack(spacing: 10) {
                     ProgressView(value: progress)
                     Text("\(Int((progress * 100).rounded()))%")
@@ -1227,7 +1233,7 @@ struct EmptyDropZone: View {
             }
             Text(L("Drop videos, images, GIFs or links here"))
                 .font(.system(size: 20, weight: .semibold))
-            Text(L("mp4 · mov · m4v · png · jpg · heic · gif — folders work too"))
+            Text(L("mp4 · mov · m4v · webm · mkv · png · jpg · heic · webp · gif — folders work too"))
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
                 Button(L("Choose Files…")) { library.presentImportPanel() }
@@ -1309,7 +1315,7 @@ struct LinkPopover: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(isEmpty)
             }
-            Text(L("mp4 · mov · m4v · jpg · png · heic · webp · gif"))
+            Text(L("mp4 · mov · m4v · webm · mkv · png · jpg · heic · webp · gif"))
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
         }
@@ -1318,12 +1324,24 @@ struct LinkPopover: View {
     }
 }
 
+struct DownloadsSection: View {
+    @ObservedObject var library = Library.shared
+    @ObservedObject var progress = Library.shared.progress
+
+    var body: some View {
+        if !progress.linkDownloads.isEmpty {
+            DownloadsList(library: library, progress: progress)
+        }
+    }
+}
+
 struct DownloadsList: View {
     @ObservedObject var library: Library
+    @ObservedObject var progress: ProgressState
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(library.linkDownloads) { d in
+            ForEach(progress.linkDownloads) { d in
                 HStack(spacing: 12) {
                     Image(systemName: d.error == nil ? "arrow.down.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.system(size: 18))
@@ -1378,6 +1396,7 @@ struct FoldersStrip: View {
     @ObservedObject var library: Library
 
     var body: some View {
+        let counts = library.folderCounts()
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(L("Folders"))
@@ -1399,13 +1418,14 @@ struct FoldersStrip: View {
                         }
 
                     ForEach(library.folders) { folder in
+                        let locked = library.isLocked(folder.id)
                         FolderTile(title: folder.name,
-                                   count: library.count(in: folder.id),
+                                   count: locked ? 0 : (counts[folder.id] ?? 0),
                                    icon: folder.icon,
                                    selected: library.selectedFolderID == folder.id,
                                    dropTargeted: library.folderDropTarget == folder.id,
                                    isProtected: folder.isProtected,
-                                   isLocked: library.isLocked(folder.id))
+                                   isLocked: locked)
                             .onTapGesture { library.openFolder(folder.id) }
                             .onDrop(of: [.plainText], isTargeted: dropBinding(folder.id)) { providers in
                                 library.handleFolderDrop(providers, folderID: folder.id)
@@ -1606,7 +1626,7 @@ struct FolderIconPicker: View {
                     ScrollView {
                         LazyVGrid(columns: Array(repeating: GridItem(.fixed(50), spacing: 10), count: 9), spacing: 10) {
                             ForEach(library.userIcons, id: \.self) { name in
-                                UserIconThumb(name: name, size: 50, library: library)
+                                UserIconThumb(name: name, size: 50)
                                     .onTapGesture { library.setFolderUserIcon(name, for: folder.id) }
                                     .contextMenu {
                                         Button(L("Remove from My Icons"), role: .destructive) { library.removeUserIcon(name) }
@@ -1687,12 +1707,12 @@ struct WallpaperHotkeyRecorder: View {
 struct UserIconThumb: View {
     let name: String
     var size: CGFloat = 50
-    @ObservedObject var library: Library
+    @ObservedObject var images = Library.shared.images
 
     var body: some View {
         ZStack {
             Color.gray.opacity(0.2)
-            if let img = library.userIconImage(name) {
+            if let img = images.userIcons[name] {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -1701,5 +1721,6 @@ struct UserIconThumb: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
         .contentShape(Rectangle())
+        .task(id: name) { await Library.shared.loadUserIcon(name) }
     }
 }

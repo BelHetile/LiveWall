@@ -26,15 +26,16 @@ folder in Xcode.
 
 - Keep changes focused; one feature or fix per pull request.
 - Match the existing style (SwiftUI for the interface, AppKit where macOS needs it).
-- New interface text goes through `L("…")` / `LF("…", …)`; add the Russian translation to
-  `Sources/LiveWall/RussianStrings.swift`.
+- New interface text goes through `L("…")` / `LF("…", …)`, with the English text as the key. Add the
+  Russian translation to `Resources/ru.lproj/Localizable.strings`; strings with a count also need plural forms
+  in `Localizable.stringsdict` for every language whose forms differ.
 - Make sure `./scripts/build.sh` succeeds — every pull request is also built by GitHub Actions.
 - Mention user-visible changes in `CHANGELOG.md` under an *Unreleased* heading.
 
 ## Releasing (maintainers)
 
-1. Move the *Unreleased* notes in `CHANGELOG.md` under a new version heading, e.g. `## [1.1.0] - 2026-11-01`.
-2. Tag and push (`git tag v1.1.0 && git push origin v1.1.0`), or open **Actions → Release → Run workflow** and enter
+1. Move the *Unreleased* notes in `CHANGELOG.md` under a new version heading, e.g. `## [1.2.0] - 2026-11-01`.
+2. Tag and push (`git tag v1.2.0 && git push origin v1.2.0`), or open **Actions → Release → Run workflow** and enter
    the version — the tag is created for you.
 3. GitHub Actions builds the universal app and publishes the release with `LiveWall-macOS.zip`, `LiveWall.dmg`
    and checksums. The one-line installer always picks up the newest release.

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>%ld file(s) skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld file skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.</string>
+			<key>other</key>
+			<string>%ld files skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.</string>
+		</dict>
+	</dict>
+	<key>%ld icon(s) · right-click to remove</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld icon · right-click to remove</string>
+			<key>other</key>
+			<string>%ld icons · right-click to remove</string>
+		</dict>
+	</dict>
+	<key>%ld image(s) could not be added to My Icons.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld image could not be added to My Icons.</string>
+			<key>other</key>
+			<string>%ld images could not be added to My Icons.</string>
+		</dict>
+	</dict>
+	<key>%ld wallpaper(s) will move out of the folder and become visible to everyone.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld wallpaper will move out of the folder and become visible to everyone.</string>
+			<key>other</key>
+			<string>%ld wallpapers will move out of the folder and become visible to everyone.</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

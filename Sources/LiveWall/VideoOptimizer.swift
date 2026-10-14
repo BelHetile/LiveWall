@@ -16,6 +16,57 @@ struct VideoInfo: Equatable {
     }
 }
 
+struct VideoColorInfo {
+    var bitDepth = 8
+    var primaries = AVVideoColorPrimaries_ITU_R_709_2
+    var transfer = AVVideoTransferFunction_ITU_R_709_2
+    var matrix = AVVideoYCbCrMatrix_ITU_R_709_2
+
+    var isHDR: Bool {
+        transfer == AVVideoTransferFunction_SMPTE_ST_2084_PQ ||
+        transfer == AVVideoTransferFunction_ITU_R_2100_HLG
+    }
+
+    var pixelFormat: OSType {
+        bitDepth > 8 ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                     : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    }
+
+    var tag: [String: String] {
+        [AVVideoColorPrimariesKey: primaries,
+         AVVideoTransferFunctionKey: transfer,
+         AVVideoYCbCrMatrixKey: matrix]
+    }
+
+    static func read(_ format: CMFormatDescription?) -> VideoColorInfo {
+        var info = VideoColorInfo()
+        guard let format = format else { return info }
+        let ext = CMFormatDescriptionGetExtensions(format) as? [String: Any] ?? [:]
+        if let bits = (ext[kCMFormatDescriptionExtension_BitsPerComponent as String] as? NSNumber)?.intValue, bits > 0 {
+            info.bitDepth = bits
+        }
+        if let primaries = ext[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String {
+            if primaries == kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String { info.primaries = AVVideoColorPrimaries_ITU_R_2020 }
+            else if primaries == kCMFormatDescriptionColorPrimaries_SMPTE_C as String { info.primaries = AVVideoColorPrimaries_SMPTE_C }
+        }
+        if let transfer = ext[kCMFormatDescriptionExtension_TransferFunction as String] as? String {
+            if transfer == kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String {
+                info.transfer = AVVideoTransferFunction_SMPTE_ST_2084_PQ
+            } else if transfer == kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String {
+                info.transfer = AVVideoTransferFunction_ITU_R_2100_HLG
+            }
+        }
+        if let matrix = ext[kCMFormatDescriptionExtension_YCbCrMatrix as String] as? String {
+            if matrix == kCMFormatDescriptionYCbCrMatrix_ITU_R_2020 as String { info.matrix = AVVideoYCbCrMatrix_ITU_R_2020 }
+            else if matrix == kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4 as String { info.matrix = AVVideoYCbCrMatrix_ITU_R_601_4 }
+        }
+        if info.isHDR && info.bitDepth < 10 { info.bitDepth = 10 }
+        return info
+    }
+}
+
+private struct EncoderError: Error {}
+
 /// Cancels a conversion from any thread.
 final class CancelToken {
     private let lock = NSLock()
@@ -107,6 +158,26 @@ enum VideoOptimizer {
                           token: CancelToken, progress: @escaping (Double) -> Void) async throws {
         let asset = AVURLAsset(url: source)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw OptimizeError.noVideo }
+        let color = VideoColorInfo.read((try? await videoTrack.load(.formatDescriptions))?.first)
+        if color.bitDepth > 8 {
+            do {
+                try await encode(asset: asset, videoTrack: videoTrack, dest: dest, fpsLimit: fpsLimit,
+                                 target: target, token: token, color: color, progress: progress)
+                return
+            } catch is EncoderError {
+            }
+        }
+        do {
+            try await encode(asset: asset, videoTrack: videoTrack, dest: dest, fpsLimit: fpsLimit,
+                             target: target, token: token, color: VideoColorInfo(), progress: progress)
+        } catch is EncoderError {
+            throw OptimizeError.failed(L("The HEVC encoder is not available."))
+        }
+    }
+
+    private static func encode(asset: AVURLAsset, videoTrack: AVAssetTrack, dest: URL, fpsLimit: Double,
+                               target: CGSize, token: CancelToken, color: VideoColorInfo,
+                               progress: @escaping (Double) -> Void) async throws {
         let audioTrack = try? await asset.loadTracks(withMediaType: .audio).first
         let natural = try await videoTrack.load(.naturalSize)
         let transform = try await videoTrack.load(.preferredTransform)
@@ -124,34 +195,39 @@ enum VideoOptimizer {
         let outH = max(2, Int((abs(natural.height) * scale / 2).rounded()) * 2)
         let fps = sourceFps > 0 ? min(sourceFps, fpsLimit) : fpsLimit
         // ~0.07 bits per pixel per frame: visually lossless HEVC for wallpapers
-        let bitrate = max(2_000_000, Int(Double(outW * outH) * fps * 0.07))
+        let bitrate = max(2_000_000, Int(Double(outW * outH) * fps * (color.bitDepth > 8 ? 0.10 : 0.07)))
 
         try? FileManager.default.removeItem(at: dest)
         let reader = try AVAssetReader(asset: asset)
         let writer = try AVAssetWriter(outputURL: dest, fileType: .mov)
 
         let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: color.pixelFormat,
         ])
         videoOut.alwaysCopiesSampleData = false
         guard reader.canAdd(videoOut) else { throw OptimizeError.failed(L("This video can't be read.")) }
         reader.add(videoOut)
 
         let keyInterval = max(1, Int(fps.rounded())) * 2
+        var compression: [String: Any] = [
+            AVVideoAverageBitRateKey: bitrate,
+            AVVideoExpectedSourceFrameRateKey: max(1, Int(fps.rounded())),
+            AVVideoMaxKeyFrameIntervalKey: keyInterval,
+        ]
+        if color.bitDepth > 8 {
+            compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel
+        }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: outW,
             AVVideoHeightKey: outH,
             AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: bitrate,
-                AVVideoExpectedSourceFrameRateKey: max(1, Int(fps.rounded())),
-                AVVideoMaxKeyFrameIntervalKey: keyInterval,
-            ] as [String: Any],
+            AVVideoColorPropertiesKey: color.tag,
+            AVVideoCompressionPropertiesKey: compression,
         ])
         videoIn.transform = transform
         videoIn.expectsMediaDataInRealTime = false
-        guard writer.canAdd(videoIn) else { throw OptimizeError.failed(L("The HEVC encoder is not available.")) }
+        guard writer.canAdd(videoIn) else { throw EncoderError() }
         writer.add(videoIn)
 
         // copy the audio as is if the container accepts it
@@ -175,7 +251,7 @@ enum VideoOptimizer {
         }
         guard writer.startWriting() else {
             reader.cancelReading()
-            throw OptimizeError.failed(writer.error?.localizedDescription ?? L("Could not write the optimized video."))
+            throw EncoderError()
         }
         writer.startSession(atSourceTime: .zero)
 

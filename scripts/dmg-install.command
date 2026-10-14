@@ -1,7 +1,6 @@
 #!/bin/bash
 # LiveWall installer for the disk image.
 # Copies LiveWall.app to Applications, clears the macOS quarantine flag and launches it.
-# Copies LiveWall.app to Applications, clears the macOS quarantine flag and launches it.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -17,8 +16,16 @@ major="$(sw_vers -productVersion | cut -d. -f1)"
 
 if pgrep -x LiveWall >/dev/null 2>&1; then
   say "Quitting the running LiveWall…"
-  osascript -e 'tell application id "io.github.belhetile.livewall" to quit' >/dev/null 2>&1 || pkill -x LiveWall || true
-  sleep 1
+  osascript -e 'tell application id "io.github.belhetile.livewall" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x LiveWall >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  pkill -x -u "$USER" LiveWall 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x LiveWall >/dev/null 2>&1 || break
+    sleep 0.5
+  done
 fi
 
 say "Installing LiveWall to /Applications…"

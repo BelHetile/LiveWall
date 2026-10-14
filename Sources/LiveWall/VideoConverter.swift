@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import CoreMedia
 import VideoToolbox
 
@@ -7,6 +8,7 @@ enum ConvertError: LocalizedError {
     case decoder(String)
     case encoder
     case badFile
+    case audio
 
     var errorDescription: String? {
         switch self {
@@ -18,8 +20,13 @@ enum ConvertError: LocalizedError {
             return LF("This Mac can't decode %@ video.", name)
         case .encoder: return L("Could not write the converted video.")
         case .badFile: return L("The file is damaged or not a video.")
+        case .audio: return L("Could not add the sound track to the video.")
         }
     }
+}
+
+struct ConvertReport {
+    let audioDropped: Bool
 }
 
 /// A source of compressed frames (in decode order) for VideoToolbox.
@@ -28,6 +35,7 @@ private protocol PacketSource: AnyObject {
     var duration: Double { get }
     var transform: CGAffineTransform { get }
     var codecName: String { get }
+    var colorInfo: VideoColorInfo { get }
     func next() -> CMSampleBuffer?
 }
 
@@ -47,16 +55,17 @@ enum VideoConverter {
         return playable && decodable
     }
 
+    @discardableResult
     static func convert(source: URL, dest: URL, fpsLimit: Double, target: CGSize,
-                        token: CancelToken, progress: @escaping (Double) -> Void) async throws {
+                        token: CancelToken, progress: @escaping (Double) -> Void) async throws -> ConvertReport {
         VTRegisterSupplementalVideoDecoderIfAvailable(vp9)
         do {
-            try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
-                          codec: .hevc, token: token, progress: progress)
+            return try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
+                                 codec: .hevc, token: token, progress: progress)
         } catch ConvertError.encoder {
             // no HEVC encoder (rare): fall back to H.264
-            try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
-                          codec: .h264, token: token, progress: progress)
+            return try await run(source: source, dest: dest, fpsLimit: fpsLimit, target: target,
+                                 codec: .h264, token: token, progress: progress)
         }
     }
 
@@ -82,16 +91,20 @@ enum VideoConverter {
     }
 
     private static func run(source url: URL, dest: URL, fpsLimit: Double, target: CGSize, codec: AVVideoCodecType,
-                            token: CancelToken, progress: @escaping (Double) -> Void) async throws {
+                            token: CancelToken, progress: @escaping (Double) -> Void) async throws -> ConvertReport {
         let source = try await makeSource(url)
         let format = source.format
+        let color = source.colorInfo
         let dims = CMVideoFormatDescriptionGetDimensions(format)
         guard dims.width > 0, dims.height > 0 else { throw ConvertError.badFile }
+
+        let use10bit = codec == .hevc && color.bitDepth > 8
 
         // decoder
         var session: VTDecompressionSession?
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: use10bit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                                                                : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
         ]
         var status = VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: nil,
@@ -111,8 +124,16 @@ enum VideoConverter {
         let scale = min(1, max(target.width / max(abs(shown.width), 1), target.height / max(abs(shown.height), 1)))
         let outW = max(2, Int((natural.width * scale / 2).rounded()) * 2)
         let outH = max(2, Int((natural.height * scale / 2).rounded()) * 2)
-        let bitsPerPixel = codec == .hevc ? 0.07 : 0.12
+        let bitsPerPixel = use10bit ? 0.10 : (codec == .hevc ? 0.07 : 0.12)
         let bitrate = max(2_000_000, Int(Double(outW * outH) * fpsLimit * bitsPerPixel))
+
+        let outputColor: VideoColorInfo = codec == .h264 && color.isHDR ? VideoColorInfo() : color
+        var compression: [String: Any] = [
+            AVVideoAverageBitRateKey: bitrate,
+            AVVideoExpectedSourceFrameRateKey: Int(fpsLimit.rounded()),
+            AVVideoMaxKeyFrameIntervalKey: Int(fpsLimit.rounded()) * 2,
+        ]
+        if use10bit { compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel }
 
         try? FileManager.default.removeItem(at: dest)
         guard let writer = try? AVAssetWriter(outputURL: dest, fileType: .mov) else { throw ConvertError.encoder }
@@ -121,11 +142,8 @@ enum VideoConverter {
             AVVideoWidthKey: outW,
             AVVideoHeightKey: outH,
             AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: bitrate,
-                AVVideoExpectedSourceFrameRateKey: Int(fpsLimit.rounded()),
-                AVVideoMaxKeyFrameIntervalKey: Int(fpsLimit.rounded()) * 2,
-            ] as [String: Any],
+            AVVideoColorPropertiesKey: outputColor.tag,
+            AVVideoCompressionPropertiesKey: compression,
         ])
         input.transform = source.transform
         input.expectsMediaDataInRealTime = false
@@ -219,6 +237,15 @@ enum VideoConverter {
             throw ConvertError.encoder
         }
         progress(1)
+        let videoStart = firstPts.map { CMTimeGetSeconds($0) } ?? 0
+        let attach: AudioAttach
+        do {
+            attach = try await attachAudio(source: url, video: dest, videoStart: videoStart, token: token)
+        } catch {
+            try? FileManager.default.removeItem(at: dest)
+            throw error
+        }
+        return ConvertReport(audioDropped: attach == .dropped)
     }
 }
 
@@ -231,6 +258,7 @@ private final class AssetPacketSource: PacketSource {
     let duration: Double
     let transform: CGAffineTransform
     let codecName: String
+    let colorInfo: VideoColorInfo
 
     private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, format: CMVideoFormatDescription,
                  duration: Double, transform: CGAffineTransform) {
@@ -240,6 +268,7 @@ private final class AssetPacketSource: PacketSource {
         self.duration = duration
         self.transform = transform
         codecName = VideoOptimizer.codecName(CMFormatDescriptionGetMediaSubType(format))
+        colorInfo = VideoColorInfo.read(format)
     }
 
     static func make(url: URL) async throws -> AssetPacketSource {
@@ -273,6 +302,36 @@ private final class MatroskaSource: PacketSource {
         let key: Bool
     }
 
+    struct AudioPacket {
+        let offset: Int
+        let length: Int
+        let pts: Double
+    }
+
+    struct AudioTrack {
+        let codecID: String
+        let codecPrivate: Data
+        let sampleRate: Double
+        let channels: Int
+        let framesPerPacket: UInt32
+        let preSkip: Int
+
+        static let vorbisFormatID: AudioFormatID = 0x766F_7262
+
+        func streamDescription(rate: Double, channels: Int) -> AudioStreamBasicDescription {
+            var d = AudioStreamBasicDescription()
+            switch codecID {
+            case "A_OPUS": d.mFormatID = kAudioFormatOpus
+            case "A_VORBIS": d.mFormatID = AudioTrack.vorbisFormatID
+            default: d.mFormatID = kAudioFormatMPEG4AAC
+            }
+            d.mSampleRate = rate
+            d.mChannelsPerFrame = UInt32(max(1, channels))
+            d.mFramesPerPacket = framesPerPacket
+            return d
+        }
+    }
+
     private let data: Data
     private var packets: [Packet] = []
     private var index = 0
@@ -283,6 +342,77 @@ private final class MatroskaSource: PacketSource {
     private var codecPrivate = Data()
     private var width = 0
     private var height = 0
+    private var colourMatrix = 0
+    private var colourTransfer = 0
+    private var colourPrimaries = 0
+    private var colourBits = 0
+
+    private var audioTrackNumber: UInt64?
+    private var audioCodecID = ""
+    private var audioCodecPrivate = Data()
+    private var audioSampleRate = 48_000.0
+    private var audioChannels = 2
+    var audioPackets: [AudioPacket] = []
+
+    var byteCount: Int { data.count }
+    var hasAudio: Bool { audioTrackNumber != nil }
+
+    var audioTrack: AudioTrack? {
+        guard audioTrackNumber != nil else { return nil }
+        switch audioCodecID {
+        case "A_OPUS":
+            let priv = audioCodecPrivate
+            guard priv.count >= 19, Array(priv.prefix(8)) == Array("OpusHead".utf8) else { return nil }
+            let base = priv.startIndex
+            let channels = Int(priv[base + 9])
+            let preSkip = Int(priv[base + 10]) | Int(priv[base + 11]) << 8
+            return AudioTrack(codecID: audioCodecID, codecPrivate: priv, sampleRate: 48_000,
+                              channels: max(1, channels), framesPerPacket: 960, preSkip: preSkip)
+        case "A_AAC":
+            guard let config = MatroskaSource.aacConfig(audioCodecPrivate) else { return nil }
+            return AudioTrack(codecID: audioCodecID, codecPrivate: audioCodecPrivate, sampleRate: config.rate,
+                              channels: config.channels, framesPerPacket: 1024,
+                              preSkip: Int((1024 * 48_000 / config.rate).rounded()))
+        case "A_VORBIS":
+            guard let setup = MatroskaSource.vorbisSetup(audioCodecPrivate) else { return nil }
+            return AudioTrack(codecID: audioCodecID, codecPrivate: setup.cookie, sampleRate: setup.rate,
+                              channels: setup.channels, framesPerPacket: 0, preSkip: 0)
+        default:
+            return nil
+        }
+    }
+
+    private static func vorbisSetup(_ priv: Data) -> (cookie: Data, rate: Double, channels: Int)? {
+        let bytes = [UInt8](priv)
+        guard bytes.count > 3 else { return nil }
+        var pos = 1
+        var idLength = 0
+        while pos < bytes.count, bytes[pos] == 0xFF {
+            idLength += 255
+            pos += 1
+        }
+        guard pos < bytes.count else { return nil }
+        idLength += Int(bytes[pos])
+        pos += 1
+        while pos < bytes.count, bytes[pos] == 0xFF { pos += 1 }
+        pos += 1
+        guard idLength >= 16, pos + idLength <= bytes.count,
+              bytes[pos] == 1, Array(bytes[(pos + 1)..<(pos + 7)]) == Array("vorbis".utf8) else { return nil }
+        let channels = Int(bytes[pos + 11])
+        let rate = Double(UInt32(bytes[pos + 12]) | UInt32(bytes[pos + 13]) << 8
+                          | UInt32(bytes[pos + 14]) << 16 | UInt32(bytes[pos + 15]) << 24)
+        guard channels > 0, rate > 0 else { return nil }
+        var cookie = priv
+        cookie[cookie.startIndex] = 2
+        return (cookie, rate, channels)
+    }
+
+    func withAudioBytes<T>(_ body: (UnsafeRawPointer) throws -> T) rethrows -> T {
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { throw ConvertError.badFile }
+            return try body(base)
+        }
+    }
 
     private(set) var format: CMVideoFormatDescription
     private var storedDuration: Double = 0
@@ -291,6 +421,46 @@ private final class MatroskaSource: PacketSource {
     var duration: Double { storedDuration }
     var codecName: String { storedCodecName }
     let transform = CGAffineTransform.identity
+
+    var colorInfo: VideoColorInfo {
+        var info = VideoColorInfo()
+        switch colourPrimaries {
+        case 9: info.primaries = AVVideoColorPrimaries_ITU_R_2020
+        case 5, 6: info.primaries = AVVideoColorPrimaries_SMPTE_C
+        default: break
+        }
+        switch colourTransfer {
+        case 16: info.transfer = AVVideoTransferFunction_SMPTE_ST_2084_PQ
+        case 18: info.transfer = AVVideoTransferFunction_ITU_R_2100_HLG
+        default: break
+        }
+        switch colourMatrix {
+        case 9: info.matrix = AVVideoYCbCrMatrix_ITU_R_2020
+        case 5, 6: info.matrix = AVVideoYCbCrMatrix_ITU_R_601_4
+        default: break
+        }
+        let bits = colourBits > 0 ? colourBits : codecBitDepth()
+        if bits > 0 { info.bitDepth = bits }
+        if info.isHDR && info.bitDepth < 10 { info.bitDepth = 10 }
+        return info
+    }
+
+    private func codecBitDepth() -> Int {
+        switch codecID {
+        case "V_VP9": return vp9Info()?.bitDepth ?? 0
+        case "V_AV1": return MatroskaSource.av1BitDepth(codecPrivate)
+        default: return 0
+        }
+    }
+
+    private static func av1BitDepth(_ config: Data) -> Int {
+        guard config.count >= 3 else { return 0 }
+        let base = config.startIndex
+        let highBitDepth = (config[base + 2] >> 6) & 1
+        let twelveBit = (config[base + 2] >> 5) & 1
+        if highBitDepth == 0 { return 8 }
+        return twelveBit == 1 ? 12 : 10
+    }
 
     // segment top-level elements: a cluster of unknown size ends at one of them
     private static let topLevel: Set<UInt64> = [0x1F43_B675, 0x1C53_BB6B, 0x1254_C367, 0x1549_A966,
@@ -322,6 +492,7 @@ private final class MatroskaSource: PacketSource {
         guard trackNumber != nil else { throw ConvertError.badFile }
         guard !packets.isEmpty else { throw ConvertError.badFile }
         packets.sort { $0.offset < $1.offset }
+        audioPackets.sort { $0.pts < $1.pts }
     }
 
     private static func placeholderFormat() throws -> CMVideoFormatDescription {
@@ -484,11 +655,26 @@ private final class MatroskaSource: PacketSource {
         if timecodeScale <= 0 { timecodeScale = 1_000_000 }
     }
 
+    private func parseColour(_ start: Int, _ end: Int) {
+        var pos = start
+        while pos < end, let (id, size) = MatroskaSource.header(data, &pos), let s = size {
+            let e = min(end, pos + Int(s))
+            switch id {
+            case 0x55B1: colourMatrix = Int(uint(pos, e))
+            case 0x55B2: colourBits = Int(uint(pos, e))
+            case 0x55BA: colourTransfer = Int(uint(pos, e))
+            case 0x55BB: colourPrimaries = Int(uint(pos, e))
+            default: break
+            }
+            pos = e
+        }
+    }
+
     private func parseTracks(_ start: Int, _ end: Int) {
         var pos = start
         while pos < end, let (id, size) = MatroskaSource.header(data, &pos), let s = size {
             let e = min(end, pos + Int(s))
-            if id == 0xAE, trackNumber == nil { parseTrackEntry(pos, e) }
+            if id == 0xAE { parseTrackEntry(pos, e) }
             pos = e
         }
     }
@@ -501,6 +687,8 @@ private final class MatroskaSource: PacketSource {
         var priv = Data()
         var w = 0
         var h = 0
+        var rate: Double?
+        var channels: UInt64?
         while pos < end, let (id, size) = MatroskaSource.header(data, &pos), let s = size {
             let e = min(end, pos + Int(s))
             switch id {
@@ -508,24 +696,35 @@ private final class MatroskaSource: PacketSource {
             case 0x83: type = uint(pos, e)
             case 0x86: codec = string(pos, e)
             case 0x63A2: priv = data.subdata(in: pos..<e)
+            case 0xB5, 0x78B5: rate = float(pos, e)
+            case 0x9F: channels = uint(pos, e)
             case 0xE0:
                 var p = pos
                 while p < e, let (vid, vsize) = MatroskaSource.header(data, &p), let vs = vsize {
                     let ve = min(e, p + Int(vs))
                     if vid == 0xB0 { w = Int(uint(p, ve)) }
                     if vid == 0xBA { h = Int(uint(p, ve)) }
+                    if vid == 0x55B0 { parseColour(p, ve) }
                     p = ve
                 }
             default: break
             }
             pos = e
         }
-        guard type == 1, let n = number else { return }
-        trackNumber = n
-        codecID = codec
-        codecPrivate = priv
-        width = w
-        height = h
+        guard let n = number else { return }
+        if type == 1, trackNumber == nil {
+            trackNumber = n
+            codecID = codec
+            codecPrivate = priv
+            width = w
+            height = h
+        } else if type == 2, audioTrackNumber == nil {
+            audioTrackNumber = n
+            audioCodecID = codec
+            audioCodecPrivate = priv
+            if let rate = rate, rate > 0 { audioSampleRate = rate }
+            if let channels = channels { audioChannels = Int(channels) }
+        }
     }
 
     /// Returns the position where the cluster ended.
@@ -563,18 +762,111 @@ private final class MatroskaSource: PacketSource {
     }
 
     private func addBlock(_ start: Int, _ end: Int, clusterTime: UInt64, groupKey: Bool?) {
-        guard let track = trackNumber else { return }
         var pos = start
-        guard let (num, _) = MatroskaSource.vint(data, &pos, keepMarker: false), let n = num, n == track,
+        guard let (num, _) = MatroskaSource.vint(data, &pos, keepMarker: false), let n = num,
               pos + 3 <= end else { return }
         let rel = Int16(bitPattern: UInt16(data[pos]) << 8 | UInt16(data[pos + 1]))
         let flags = data[pos + 2]
         pos += 3
-        // video frames are almost never laced; such blocks are skipped
-        guard (flags >> 1) & 0x03 == 0 else { return }
+        let lacing = Int((flags >> 1) & 0x03)
         let key = groupKey ?? (flags & 0x80 != 0)
         let pts = (Double(clusterTime) + Double(rel)) * timecodeScale / 1e9
-        packets.append(Packet(offset: pos, length: end - pos, pts: pts, key: key))
+        if n == trackNumber {
+            // video frames are almost never laced; such blocks are skipped
+            guard lacing == 0 else { return }
+            packets.append(Packet(offset: pos, length: end - pos, pts: pts, key: key))
+        } else if n == audioTrackNumber {
+            appendAudioFrames(from: pos, to: end, lacing: lacing, basePts: pts)
+        }
+    }
+
+    private func appendAudioFrames(from start: Int, to end: Int, lacing: Int, basePts: Double) {
+        var frames: [(offset: Int, length: Int)] = []
+        if lacing == 0 {
+            frames = [(start, end - start)]
+        } else {
+            var pos = start
+            guard pos < end else { return }
+            let count = Int(data[pos]) + 1
+            pos += 1
+            var sizes: [Int] = []
+            switch lacing {
+            case 1:
+                for _ in 0..<(count - 1) {
+                    var size = 0
+                    while pos < end, data[pos] == 0xFF { size += 255; pos += 1 }
+                    if pos < end { size += Int(data[pos]); pos += 1 }
+                    sizes.append(size)
+                }
+            case 2:
+                var previous = 0
+                for _ in 0..<(count - 1) {
+                    guard let (value, length) = MatroskaSource.vint(data, &pos, keepMarker: false),
+                          let v = value, length > 0 else { return }
+                    let bias = (1 << (7 * length - 1)) - 1
+                    previous += Int(v) - bias
+                    sizes.append(previous)
+                }
+            default:
+                let each = count > 0 ? (end - pos) / count : 0
+                sizes = Array(repeating: each, count: max(0, count - 1))
+            }
+            var off = pos
+            for i in 0..<count {
+                let length = i < sizes.count ? sizes[i] : (end - off)
+                guard length >= 0, off + length <= end else { break }
+                frames.append((off, length))
+                off += length
+            }
+        }
+        var pts = basePts
+        for frame in frames {
+            guard frame.length > 0 else { continue }
+            audioPackets.append(AudioPacket(offset: frame.offset, length: frame.length, pts: pts))
+            pts += audioFrameDuration(offset: frame.offset, length: frame.length)
+        }
+    }
+
+    private func audioFrameDuration(offset: Int, length: Int) -> Double {
+        if audioCodecID == "A_OPUS" {
+            let more = length > 1 ? data[offset + 1] : nil
+            return MatroskaSource.opusDuration(data[offset], moreByte: more)
+        }
+        if audioSampleRate > 0 { return 1024.0 / audioSampleRate }
+        return 0.02
+    }
+
+    private static func opusDuration(_ toc: UInt8, moreByte: UInt8?) -> Double {
+        let config = Int(toc) >> 3
+        let code = Int(toc) & 3
+        let frames: Int
+        switch code {
+        case 0: frames = 1
+        case 1, 2: frames = 2
+        default: frames = moreByte.map { Int($0) & 0x3F } ?? 1
+        }
+        let perFrame: Double
+        if config < 12 { perFrame = [10.0, 20, 40, 60][config & 3] }
+        else if config < 16 { perFrame = [10.0, 20, 10, 20][config & 3] }
+        else { perFrame = [2.5, 5, 10, 20][config & 3] }
+        return perFrame * Double(max(1, frames)) / 1000.0
+    }
+
+    private static func aacConfig(_ asc: Data) -> (rate: Double, channels: Int)? {
+        let rates: [Double] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+        var reader = BitReader(bytes: [UInt8](asc))
+        var objectType = reader.read(5)
+        if objectType == 31 { objectType = 32 + reader.read(6) }
+        let index = reader.read(4)
+        let rate: Double
+        if index == 15 { rate = Double(reader.read(24)) }
+        else {
+            guard index < rates.count else { return nil }
+            rate = rates[index]
+        }
+        let channels = reader.read(4)
+        guard rate > 0 else { return nil }
+        return (rate, channels == 0 ? 2 : channels)
     }
 
     // MARK: Format description
@@ -625,7 +917,7 @@ private final class MatroskaSource: PacketSource {
     }
 
     /// VP9 profile, bit depth and size, from the header of the first key frame.
-    private func vp9Info() -> (vpcC: Data, width: Int, height: Int)? {
+    private func vp9Info() -> (vpcC: Data, width: Int, height: Int, bitDepth: Int)? {
         for p in packets.prefix(60) where p.key {
             let bytes = [UInt8](data[p.offset..<min(p.offset + 32, p.offset + p.length)])
             var r = BitReader(bytes: bytes)
@@ -675,7 +967,7 @@ private final class MatroskaSource: PacketSource {
                              UInt8(bitDepth << 4 | chroma << 1 | fullRange),
                              colors.0, colors.1, colors.2,
                              0, 0])
-            return (vpcC, w, h)
+            return (vpcC, w, h, bitDepth)
         }
         return nil
     }
@@ -694,6 +986,319 @@ private struct BitReader {
             pos += 1
         }
         return v
+    }
+}
+
+private enum AudioAttach {
+    case none
+    case attached
+    case dropped
+}
+
+private final class DecodeFeed {
+    let base: UnsafeRawPointer
+    let packets: [(offset: Int, length: Int)]
+    let framesHint: UInt32
+    var index = 0
+
+    init(base: UnsafeRawPointer, packets: [(offset: Int, length: Int)], framesHint: UInt32) {
+        self.base = base
+        self.packets = packets
+        self.framesHint = framesHint
+    }
+}
+
+private let audioInputProc: AudioConverterComplexInputDataProc = { _, ioNumberDataPackets, ioData, outDescription, inUserData in
+    let feed = Unmanaged<DecodeFeed>.fromOpaque(inUserData!).takeUnretainedValue()
+    guard feed.index < feed.packets.count else {
+        ioNumberDataPackets.pointee = 0
+        return noErr
+    }
+    let packet = feed.packets[feed.index]
+    feed.index += 1
+    ioNumberDataPackets.pointee = 1
+    let list = UnsafeMutableAudioBufferListPointer(ioData)
+    list[0].mData = UnsafeMutableRawPointer(mutating: feed.base + packet.offset)
+    list[0].mDataByteSize = UInt32(packet.length)
+    list[0].mNumberChannels = 1
+    outDescription?.pointee?.pointee = AudioStreamPacketDescription(mStartOffset: 0,
+                                                                    mVariableFramesInPacket: feed.framesHint,
+                                                                    mDataByteSize: UInt32(packet.length))
+    return noErr
+}
+
+extension VideoConverter {
+    private static let movAudioSubtypes: Set<FourCharCode> = {
+        let ids: [AudioFormatID] = [kAudioFormatMPEG4AAC, kAudioFormatAppleLossless, kAudioFormatAC3,
+                                    kAudioFormatEnhancedAC3, kAudioFormatLinearPCM, kAudioFormatMPEGLayer3]
+        var set = Set(ids)
+        set.insert(0x6D7034_61)
+        return set
+    }()
+
+    private static func attachAudio(source: URL, video: URL, videoStart: Double,
+                                    token: CancelToken) async throws -> AudioAttach {
+        var audioFile: URL?
+        do {
+            audioFile = try await makeAudioFile(source: source, videoStart: videoStart, token: token)
+        } catch let error as OptimizeError {
+            if case .cancelled = error { throw error }
+            return .dropped
+        } catch {
+            return .dropped
+        }
+        guard let audioFile = audioFile else { return .none }
+        defer { try? FileManager.default.removeItem(at: audioFile) }
+        if token.isCancelled { throw OptimizeError.cancelled }
+        let muxed = video.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).mov")
+        var result: AudioAttach = .dropped
+        do {
+            try await VideoMuxer.addAudio(video: video, audio: audioFile, dest: muxed)
+            result = .attached
+        } catch {
+            result = .dropped
+        }
+        if token.isCancelled {
+            try? FileManager.default.removeItem(at: muxed)
+            throw OptimizeError.cancelled
+        }
+        if result == .attached {
+            do { _ = try FileManager.default.replaceItemAt(video, withItemAt: muxed) }
+            catch { try? FileManager.default.removeItem(at: muxed); result = .dropped }
+        }
+        return result
+    }
+
+    private static func makeAudioFile(source: URL, videoStart: Double, token: CancelToken) async throws -> URL? {
+        let asset = AVURLAsset(url: source)
+        if let track = try? await asset.loadTracks(withMediaType: .audio).first {
+            return try await extractReadable(asset: asset, track: track, videoStart: videoStart, token: token)
+        }
+        if let matroska = try? MatroskaSource(url: source) {
+            if matroska.hasAudio {
+                return try await extractMatroska(matroska, videoStart: videoStart, token: token)
+            }
+            return nil
+        }
+        return nil
+    }
+
+    private static func extractReadable(asset: AVAsset, track: AVAssetTrack, videoStart: Double,
+                                        token: CancelToken) async throws -> URL {
+        guard let hint = (try? await track.load(.formatDescriptions))?.first else { throw ConvertError.audio }
+        let compatible = movAudioSubtypes.contains(CMFormatDescriptionGetMediaSubType(hint))
+        let reader = try AVAssetReader(asset: asset)
+        let output: AVAssetReaderTrackOutput
+        let input: AVAssetWriterInput
+        if compatible {
+            output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: hint)
+        } else {
+            output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 2,
+            ])
+            input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 176_000,
+            ])
+        }
+        output.alwaysCopiesSampleData = false
+        input.expectsMediaDataInRealTime = false
+        guard reader.canAdd(output) else { throw ConvertError.audio }
+        reader.add(output)
+        let writer = try AVAssetWriter(outputURL: audioURL(), fileType: .mov)
+        guard writer.canAdd(input) else { throw ConvertError.audio }
+        writer.add(input)
+        guard reader.startReading(), writer.startWriting() else { throw ConvertError.audio }
+        writer.startSession(atSourceTime: CMTime(seconds: videoStart, preferredTimescale: 90_000))
+        func cancelReading() {
+            reader.cancelReading()
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: writer.outputURL)
+        }
+        while true {
+            if token.isCancelled { cancelReading(); throw OptimizeError.cancelled }
+            guard let sample = output.copyNextSampleBuffer() else { break }
+            let end = CMTimeGetSeconds(CMTimeAdd(CMSampleBufferGetPresentationTimeStamp(sample),
+                                                 CMSampleBufferGetDuration(sample)))
+            if end.isFinite, end <= videoStart { continue }
+            while !input.isReadyForMoreMediaData {
+                if token.isCancelled { cancelReading(); throw OptimizeError.cancelled }
+                try? await Task.sleep(nanoseconds: 2_000_000)
+            }
+            guard input.append(sample) else { break }
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            try? FileManager.default.removeItem(at: writer.outputURL)
+            throw ConvertError.audio
+        }
+        return writer.outputURL
+    }
+
+    private static func extractMatroska(_ source: MatroskaSource, videoStart: Double,
+                                        token: CancelToken) async throws -> URL {
+        guard let track = source.audioTrack else { throw ConvertError.audio }
+        let dest = audioURL()
+        try? FileManager.default.removeItem(at: dest)
+        var asbd = lpcmDescription()
+        var format: CMAudioFormatDescription?
+        guard CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: 0, layout: nil,
+                                             magicCookieSize: 0, magicCookie: nil, extensions: nil,
+                                             formatDescriptionOut: &format) == noErr, format != nil else {
+            throw ConvertError.audio
+        }
+        let writer = try AVAssetWriter(outputURL: dest, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 176_000,
+        ], sourceFormatHint: format)
+        input.expectsMediaDataInRealTime = false
+        guard writer.canAdd(input) else { throw ConvertError.audio }
+        writer.add(input)
+        guard writer.startWriting() else { throw ConvertError.audio }
+        writer.startSession(atSourceTime: .zero)
+
+        var converter: AudioConverterRef?
+        var src = track.streamDescription(rate: track.sampleRate, channels: track.channels)
+        var dst = asbd
+        guard AudioConverterNew(&src, &dst, &converter) == noErr, let decoder = converter else {
+            writer.cancelWriting(); try? FileManager.default.removeItem(at: dest)
+            throw ConvertError.audio
+        }
+        defer { AudioConverterDispose(decoder) }
+        if !track.codecPrivate.isEmpty {
+            track.codecPrivate.withUnsafeBytes { raw in
+                _ = AudioConverterSetProperty(decoder, kAudioConverterDecompressionMagicCookie,
+                                              UInt32(track.codecPrivate.count), raw.baseAddress!)
+            }
+        }
+
+        let bytesPerFrame = 4
+        var pcm = [Int16](repeating: 0, count: 8192 * 2)
+        do {
+            _ = try source.withAudioBytes { base -> Int in
+                var feedPackets: [(offset: Int, length: Int)] = []
+                for packet in source.audioPackets {
+                    guard packet.offset + packet.length <= source.byteCount else { continue }
+                    feedPackets.append((packet.offset, packet.length))
+                }
+                let feed = DecodeFeed(base: base, packets: feedPackets, framesHint: track.framesPerPacket)
+                var discard = track.preSkip
+                var first = true
+                var written = 0
+                var basePts = 0.0
+                let list = AudioBufferList.allocate(maximumBuffers: 1)
+                defer { free(list.unsafeMutablePointer) }
+                while true {
+                    if token.isCancelled { throw OptimizeError.cancelled }
+                    list[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(pcm.count * 2),
+                                          mData: nil)
+                    var count = UInt32(8192)
+                    let status: OSStatus = pcm.withUnsafeMutableBytes { raw in
+                        list[0].mData = raw.baseAddress
+                        return AudioConverterFillComplexBuffer(decoder, audioInputProc,
+                                                               Unmanaged.passUnretained(feed).toOpaque(),
+                                                               &count, list.unsafeMutablePointer, nil)
+                    }
+                    if status != noErr { throw ConvertError.audio }
+                    var frames = Int(count)
+                    if frames == 0 { break }
+                    var offset = 0
+                    if first {
+                        first = false
+                        basePts = source.audioPackets.first.map { $0.pts - videoStart } ?? -videoStart
+                    }
+                    if discard > 0 {
+                        let drop = min(discard, frames)
+                        discard -= drop
+                        frames -= drop
+                        offset = drop
+                    }
+                    if frames <= 0 { continue }
+                    let time = basePts + Double(written) / 48_000
+                    if time + Double(frames) / 48_000 <= 0 { written += frames; continue }
+                    while !input.isReadyForMoreMediaData {
+                        if token.isCancelled { throw OptimizeError.cancelled }
+                        usleep(2000)
+                    }
+                    let byteLength = frames * bytesPerFrame
+                    guard let sample = makePCMSample(pcm: pcm, byteOffset: offset * bytesPerFrame, byteLength: byteLength,
+                                                     frames: frames, time: CMTime(seconds: max(0, time), preferredTimescale: 90_000),
+                                                     format: format!) else {
+                        throw ConvertError.audio
+                    }
+                    if !input.append(sample) { throw ConvertError.audio }
+                    written += frames
+                }
+                return written
+            }
+        } catch {
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: dest)
+            throw error
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            try? FileManager.default.removeItem(at: dest)
+            throw ConvertError.audio
+        }
+        return dest
+    }
+
+    private static func makePCMSample(pcm: [Int16], byteOffset: Int, byteLength: Int, frames: Int,
+                                      time: CMTime, format: CMAudioFormatDescription) -> CMSampleBuffer? {
+        var block: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
+                                                 blockLength: byteLength, blockAllocator: kCFAllocatorDefault,
+                                                 customBlockSource: nil, offsetToData: 0, dataLength: byteLength,
+                                                 flags: kCMBlockBufferAssureMemoryNowFlag,
+                                                 blockBufferOut: &block) == noErr, let buffer = block else { return nil }
+        let copied: OSStatus = pcm.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return -1 }
+            return CMBlockBufferReplaceDataBytes(with: base + byteOffset, blockBuffer: buffer,
+                                                 offsetIntoDestination: 0, dataLength: byteLength)
+        }
+        guard copied == noErr else { return nil }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000),
+                                        presentationTimeStamp: time, decodeTimeStamp: .invalid)
+        var size = 4
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: buffer,
+                                        formatDescription: format, sampleCount: frames,
+                                        sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                                        sampleSizeEntryCount: 1, sampleSizeArray: &size,
+                                        sampleBufferOut: &sample) == noErr else { return nil }
+        return sample
+    }
+
+    private static func lpcmDescription() -> AudioStreamBasicDescription {
+        var d = AudioStreamBasicDescription()
+        d.mSampleRate = 48_000
+        d.mFormatID = kAudioFormatLinearPCM
+        d.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian
+        d.mChannelsPerFrame = 2
+        d.mBitsPerChannel = 16
+        d.mFramesPerPacket = 1
+        d.mBytesPerFrame = 4
+        d.mBytesPerPacket = 4
+        return d
+    }
+
+    private static func audioURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mov")
     }
 }
 

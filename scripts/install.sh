@@ -17,23 +17,42 @@ major="$(sw_vers -productVersion | cut -d. -f1)"
 (( major >= 13 )) || fail "LiveWall needs macOS 13 Ventura or newer (you have $(sw_vers -productVersion))."
 
 say "Looking up the latest LiveWall release…"
-url="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+release="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")" || true
+url="$(printf '%s\n' "$release" \
   | grep -o "\"browser_download_url\": *\"[^\"]*/$ASSET\"" \
   | head -1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
+sums_url="$(printf '%s\n' "$release" \
+  | grep -o "\"browser_download_url\": *\"[^\"]*/SHA256SUMS.txt\"" \
+  | head -1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
 [[ -n "${url:-}" ]] || fail "Could not find a release to download. See https://github.com/$REPO/releases"
+[[ -n "${sums_url:-}" ]] || fail "The release has no SHA256SUMS.txt."
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 say "Downloading $(basename "$url")…"
 curl -fL --progress-bar "$url" -o "$tmp/$ASSET"
+
+say "Verifying the download…"
+curl -fsSL "$sums_url" -o "$tmp/SHA256SUMS.txt" || fail "Could not download SHA256SUMS.txt."
+grep -F " $ASSET" "$tmp/SHA256SUMS.txt" > "$tmp/$ASSET.sha256" || fail "SHA256SUMS.txt has no entry for $ASSET."
+(cd "$tmp" && shasum -a 256 -c "$ASSET.sha256") || fail "The download failed its integrity check."
+
 ditto -x -k "$tmp/$ASSET" "$tmp"
 [[ -d "$tmp/LiveWall.app" ]] || fail "The download does not contain LiveWall.app."
 
 if pgrep -x LiveWall >/dev/null 2>&1; then
   say "Quitting the running LiveWall…"
-  osascript -e 'tell application id "io.github.belhetile.livewall" to quit' >/dev/null 2>&1 || pkill -x LiveWall || true
-  sleep 1
+  osascript -e 'tell application id "io.github.belhetile.livewall" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x LiveWall >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  pkill -x -u "$USER" LiveWall 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x LiveWall >/dev/null 2>&1 || break
+    sleep 0.5
+  done
 fi
 
 say "Installing to /Applications…"

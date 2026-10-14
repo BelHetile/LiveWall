@@ -3,7 +3,6 @@ name: Release
 # Publish a release either by pushing a tag like v1.0.0, or from the Actions tab:
 # Release → Run workflow → enter a version (e.g. 1.0.0); the tag is created for you.
 # Running it by hand without a version only builds and uploads the files as an artifact.
-# Running it by hand for a version that already exists moves its tag to the current commit and replaces its files.
 on:
   push:
     tags: ['v*']
@@ -15,21 +14,31 @@ on:
         default: ''
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: macos-15
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
 
       - name: Version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             V="${GITHUB_REF_NAME#v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            V="${{ inputs.version }}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            V="$INPUT_VERSION"
             V="${V#v}"
           else
             V="0.0.0-dev"
@@ -65,9 +74,12 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          REPO: ${{ github.repository }}
         run: |
-          VERSION="${{ steps.version.outputs.value }}"
           awk -v v="$VERSION" '
+            BEGIN { gsub(/\./, "[.]", v) }
             $0 ~ "^## \\[?" v "\\]?" { on = 1; next }
             on && /^## / { exit }
             on { print }
@@ -78,7 +90,7 @@ jobs:
             echo "### Install"
             echo
             echo '```bash'
-            echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash"
             echo '```'
             echo
             echo "Or download **LiveWall.dmg**, open it and double-click **Install LiveWall.command** (or drag LiveWall to Applications; see the README for the first-launch steps)."
@@ -89,26 +101,27 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          TAG="v${{ steps.version.outputs.value }}"
+          TAG="v$VERSION"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # run again by hand for an existing version: move the tag to this commit and replace the files
-            if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-              git tag -f "$TAG" "$GITHUB_SHA"
-              git push -f origin "refs/tags/$TAG"
+            TAG_SHA="$(git ls-remote --tags origin | awk -v t="refs/tags/$TAG" '$2==t"^{}"{p=$1} $2==t{s=$1} END{if(p)print p; else print s}')"
+            if [[ -n "$TAG_SHA" && "$TAG_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Tag $TAG already points at $TAG_SHA, not $GITHUB_SHA; refusing to move an existing published tag." >&2
+              exit 1
             fi
             gh release upload "$TAG" build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt --clobber
-            gh release edit "$TAG" --title "LiveWall ${{ steps.version.outputs.value }}" --notes-file build/notes.md
+            gh release edit "$TAG" --title "LiveWall $VERSION" --notes-file build/notes.md
           else
             gh release create "$TAG" \
               build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
               --target "$GITHUB_SHA" \
-              --title "LiveWall ${{ steps.version.outputs.value }}" \
+              --title "LiveWall $VERSION" \
               --notes-file build/notes.md
           fi
 
       - name: Upload build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: LiveWall-${{ steps.version.outputs.value }}
           path: |

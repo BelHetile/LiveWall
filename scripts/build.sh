@@ -17,7 +17,7 @@ for arg in "$@"; do
   case "$arg" in
     --install) INSTALL=1 ;;
     --universal) UNIVERSAL=1 ;;
-    -h|--help) sed -n '2,9p' "$SCRIPT"; exit 0 ;;
+    -h|--help) sed -n '2,8p' "$SCRIPT"; exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
@@ -74,18 +74,33 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$STAGE/LiveWall" "$APP/Contents/MacOS/LiveWall"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+for lproj in Resources/*.lproj; do
+  if [[ -d "$lproj" ]]; then
+    cp -R "$lproj" "$APP/Contents/Resources/"
+  fi
+done
 if [[ -n "${LIVEWALL_VERSION:-}" ]]; then
   plutil -replace CFBundleShortVersionString -string "$LIVEWALL_VERSION" "$APP/Contents/Info.plist"
+fi
+if [[ -n "${LIVEWALL_BUILD:-}" ]]; then
+  BUILD="$LIVEWALL_BUILD"
+elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  BUILD="$(git rev-list --count HEAD)"
+else
+  BUILD=""
+fi
+if [[ -n "$BUILD" ]]; then
+  plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"
 fi
 if [[ -d Resources/AppIcon.iconset ]]; then
   iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 fi
-codesign --force --deep -s - "$APP"
+codesign --force -s - "$APP"
 
 echo "==> Built $APP ($(lipo -archs "$APP/Contents/MacOS/LiveWall"))"
 
 if [[ "$INSTALL" == 1 ]]; then
-  pkill -x LiveWall 2>/dev/null || true
+  pkill -x -u "$USER" LiveWall 2>/dev/null || true
   # wait until the running copy has really quit
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     pgrep -x LiveWall >/dev/null 2>&1 || break

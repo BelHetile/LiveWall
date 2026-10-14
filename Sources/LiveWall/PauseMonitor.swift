@@ -1,6 +1,35 @@
 import AppKit
 import IOKit.ps
 
+final class ScreenLockMonitor: NSObject {
+    static let shared = ScreenLockMonitor()
+
+    private var handlers: [(Bool) -> Void] = []
+    private var started = false
+
+    func observe(_ handler: @escaping (Bool) -> Void) {
+        handlers.append(handler)
+        guard !started else { return }
+        started = true
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(self, selector: #selector(locked), name: NSNotification.Name("com.apple.screenIsLocked"),
+                           object: nil, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(unlocked), name: NSNotification.Name("com.apple.screenIsUnlocked"),
+                           object: nil, suspensionBehavior: .deliverImmediately)
+    }
+
+    @objc private func locked() { notify(true) }
+    @objc private func unlocked() { notify(false) }
+
+    private func notify(_ isLocked: Bool) {
+        if Thread.isMainThread {
+            handlers.forEach { $0(isLocked) }
+        } else {
+            DispatchQueue.main.async { self.handlers.forEach { $0(isLocked) } }
+        }
+    }
+}
+
 /// Decides whether the wallpaper should pause right now (like Performance → Playback in Wallpaper Engine).
 /// Returns a human-readable reason, or nil when playing is fine.
 final class PauseMonitor: NSObject {
@@ -44,9 +73,10 @@ final class PauseMonitor: NSObject {
         ws.addObserver(self, selector: #selector(somethingChanged), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         ws.addObserver(self, selector: #selector(somethingChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
 
-        let dnc = DistributedNotificationCenter.default()
-        dnc.addObserver(self, selector: #selector(screenLocked), name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
-        dnc.addObserver(self, selector: #selector(screenUnlocked), name: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil)
+        ScreenLockMonitor.shared.observe { [weak self] isLocked in
+            self?.locked = isLocked
+            self?.evaluate()
+        }
 
         NotificationCenter.default.addObserver(self, selector: #selector(somethingChanged),
                                                name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
@@ -92,8 +122,6 @@ final class PauseMonitor: NSObject {
     @objc private func screenWoke() { screenOff = false; evaluate() }
     @objc private func sessionInactive() { screenOff = true; evaluate() }
     @objc private func sessionActive() { screenOff = false; evaluate() }
-    @objc private func screenLocked() { locked = true; evaluate() }
-    @objc private func screenUnlocked() { locked = false; evaluate() }
     @objc private func somethingChanged() {
         // notifications may arrive off the main thread
         DispatchQueue.main.async { self.evaluate() }

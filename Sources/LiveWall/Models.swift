@@ -49,6 +49,56 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
     var stillTime: Double?
 }
 
+extension WallpaperItem {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        file = try c.decode(String.self, forKey: .file)
+        name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? (file as NSString).deletingPathExtension
+        if let decoded = try? c.decodeIfPresent(MediaKind.self, forKey: .kind) {
+            kind = decoded
+        } else if let inferred = Library.kind(forExtension: (file as NSString).pathExtension) {
+            kind = inferred
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown media kind")
+        }
+        mode = (try? c.decodeIfPresent(FillMode.self, forKey: .mode)) ?? .fill
+        volume = try? c.decodeIfPresent(Double.self, forKey: .volume)
+        speed = try? c.decodeIfPresent(Double.self, forKey: .speed)
+        muted = try? c.decodeIfPresent(Bool.self, forKey: .muted)
+        folderID = try? c.decodeIfPresent(UUID.self, forKey: .folderID)
+        hotkey = try? c.decodeIfPresent(HotkeyBinding.self, forKey: .hotkey)
+        hotkeyScope = try? c.decodeIfPresent(HotkeyScope.self, forKey: .hotkeyScope)
+        optimized = try? c.decodeIfPresent(Bool.self, forKey: .optimized)
+        stillTime = try? c.decodeIfPresent(Double.self, forKey: .stillTime)
+    }
+}
+
+struct LossyArray<Element: Decodable>: Decodable {
+    var elements: [Element]
+    var dropped = 0
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        elements = []
+        while !container.isAtEnd {
+            if let element = try container.decode(Lossy.self).value {
+                elements.append(element)
+            } else {
+                dropped += 1
+            }
+        }
+    }
+
+    private struct Lossy: Decodable {
+        let value: Element?
+
+        init(from decoder: Decoder) throws {
+            value = try? Element(from: decoder)
+        }
+    }
+}
+
 /// How the library window opens.
 enum LibraryWindowMode: String, Codable, CaseIterable, Identifiable {
     case maximized, fullScreen, remember
@@ -106,8 +156,21 @@ struct WallpaperFolder: Codable, Identifiable, Equatable {
     // locked folder: salt and PBKDF2 hash of the password (base64)
     var passwordSalt: String?
     var passwordHash: String?
+    var passwordRounds: Int?
 
     var isProtected: Bool { passwordHash != nil && passwordSalt != nil }
+}
+
+extension WallpaperFolder {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+        icon = (try? c.decodeIfPresent(FolderIcon.self, forKey: .icon)) ?? .symbol(name: FolderIcon.basePack[0], palette: 0)
+        passwordSalt = try c.decodeIfPresent(String.self, forKey: .passwordSalt)
+        passwordHash = try c.decodeIfPresent(String.self, forKey: .passwordHash)
+        passwordRounds = try? c.decodeIfPresent(Int.self, forKey: .passwordRounds)
+    }
 }
 
 /// What the hotkey recorder is recording right now.

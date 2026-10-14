@@ -298,6 +298,7 @@ extension FillMode {
 struct FolderIconView: View {
     let icon: FolderIcon
     var size: CGFloat = 44
+    @ObservedObject var images = Library.shared.images
 
     var body: some View {
         Group {
@@ -314,13 +315,14 @@ struct FolderIconView: View {
             case .image(let file):
                 ZStack {
                     Color.gray.opacity(0.25)
-                    if let img = Library.shared.folderImage(file: file) {
+                    if let img = images.folderIcons[file] {
                         Image(nsImage: img)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
+                .task(id: file) { await Library.shared.loadFolderImage(file: file) }
             }
         }
         .frame(width: size, height: size)

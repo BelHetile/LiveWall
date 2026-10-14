@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import VideoToolbox
 
 /// yt-dlp and Deno: downloading videos from YouTube and similar sites.
@@ -18,18 +19,30 @@ enum MediaTools {
 
     static var ytdlp: URL? { find("yt-dlp") }
     static var deno: URL? { find("deno") }
-    static var installed: Bool { ytdlp != nil && deno != nil }
+    static var hasYtdlp: Bool { ytdlp != nil }
+    static var hasDeno: Bool { deno != nil }
+    static var installed: Bool { hasYtdlp && hasDeno }
     /// Downloaded by LiveWall itself (so they can be updated), not from Homebrew.
     static var ownCopy: Bool { FileManager.default.fileExists(atPath: dir.appendingPathComponent("yt-dlp").path) }
+
+    private static let videoSites = ["youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "tiktok.com",
+                                     "twitch.tv", "dailymotion.com", "bilibili.com", "b23.tv", "x.com", "twitter.com",
+                                     "instagram.com", "facebook.com", "fb.watch", "reddit.com", "redd.it", "streamable.com",
+                                     "vk.com", "vkvideo.ru", "rutube.ru", "pinterest.com", "pin.it"]
+
+    private static func matches(_ host: String, _ sites: [String]) -> Bool {
+        sites.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
 
     /// Sites that don't serve videos as files: go straight to yt-dlp.
     static func isVideoSite(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        let sites = ["youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "tiktok.com", "twitch.tv",
-                     "dailymotion.com", "bilibili.com", "b23.tv", "x.com", "twitter.com", "instagram.com",
-                     "facebook.com", "fb.watch", "reddit.com", "redd.it", "streamable.com", "vk.com",
-                     "vkvideo.ru", "rutube.ru", "pinterest.com", "pin.it"]
-        return sites.contains(where: { host == $0 || host.hasSuffix("." + $0) })
+        return matches(host, videoSites)
+    }
+
+    static func needsDeno(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return matches(host, ["youtube.com", "youtu.be", "youtube-nocookie.com"])
     }
 
     enum ToolError: LocalizedError {
@@ -41,6 +54,12 @@ enum MediaTools {
             case .download(let text): return LF("Could not download the tools: %@", text)
             case .failed(let text): return text
             }
+        }
+
+        var isFormatUnavailable: Bool {
+            guard case .failed(let text) = self else { return false }
+            return text.localizedCaseInsensitiveContains("format is not available")
+                || text.localizedCaseInsensitiveContains("no video formats found")
         }
     }
 
@@ -56,33 +75,92 @@ enum MediaTools {
     }
 
     /// Downloads (or updates) yt-dlp and Deno into LiveWall's folder.
-    static func install(progress: @escaping (Double) -> Void) async throws {
-        let ytURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
-        #if arch(arm64)
-        let denoName = "deno-aarch64-apple-darwin.zip"
-        #else
-        let denoName = "deno-x86_64-apple-darwin.zip"
-        #endif
-        let denoURL = URL(string: "https://github.com/denoland/deno/releases/latest/download/\(denoName)")!
+    static func install(deno wantsDeno: Bool, progress: @escaping (Double) -> Void) async throws {
+        let ytTag = try await resolveTag(owner: "yt-dlp", repo: "yt-dlp")
+        let ytBase = "https://github.com/yt-dlp/yt-dlp/releases/download/\(ytTag)"
+        let ytSums = try await fetchCheckSums(URL(string: "\(ytBase)/SHA2-256SUMS")!)
 
-        let yt = try await download(ytURL) { progress($0 * 0.4) }
+        let ytShare = wantsDeno ? 0.4 : 0.9
+        let yt = try await download(URL(string: "\(ytBase)/yt-dlp_macos")!) { progress($0 * ytShare) }
+        try verify(yt, sums: ytSums, name: "yt-dlp_macos")
         let ytDest = dir.appendingPathComponent("yt-dlp")
-        try? FileManager.default.removeItem(at: ytDest)
-        try FileManager.default.moveItem(at: yt, to: ytDest)
+        _ = try FileManager.default.replaceItemAt(ytDest, withItemAt: yt, backupItemName: nil, options: [])
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ytDest.path)
 
-        let zip = try await download(denoURL) { progress(0.4 + $0 * 0.55) }
-        defer { try? FileManager.default.removeItem(at: zip) }
-        let unpack = dir.appendingPathComponent("deno-unpack", isDirectory: true)
-        try? FileManager.default.removeItem(at: unpack)
-        let status = try runQuiet(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, unpack.path])
-        guard status == 0 else { throw ToolError.download("unzip") }
-        let denoDest = dir.appendingPathComponent("deno")
-        try? FileManager.default.removeItem(at: denoDest)
-        try FileManager.default.moveItem(at: unpack.appendingPathComponent("deno"), to: denoDest)
-        try? FileManager.default.removeItem(at: unpack)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: denoDest.path)
+        if wantsDeno {
+            #if arch(arm64)
+            let denoName = "deno-aarch64-apple-darwin.zip"
+            #else
+            let denoName = "deno-x86_64-apple-darwin.zip"
+            #endif
+            let denoTag = try await resolveTag(owner: "denoland", repo: "deno")
+            let denoBase = "https://github.com/denoland/deno/releases/download/\(denoTag)"
+            let denoSums = try await fetchCheckSums(URL(string: "\(denoBase)/\(denoName).sha256sum")!)
+
+            let zip = try await download(URL(string: "\(denoBase)/\(denoName)")!) { progress(0.4 + $0 * 0.55) }
+            defer { try? FileManager.default.removeItem(at: zip) }
+            try verify(zip, sums: denoSums, name: denoName)
+            let unpack = dir.appendingPathComponent("deno-unpack", isDirectory: true)
+            try? FileManager.default.removeItem(at: unpack)
+            let status = try runQuiet(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, unpack.path])
+            guard status == 0 else { throw ToolError.download("unzip") }
+            let denoDest = dir.appendingPathComponent("deno")
+            _ = try FileManager.default.replaceItemAt(denoDest, withItemAt: unpack.appendingPathComponent("deno"), backupItemName: nil, options: [])
+            try? FileManager.default.removeItem(at: unpack)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: denoDest.path)
+        }
         progress(1)
+    }
+
+    private static func resolveTag(owner: String, repo: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "https://github.com/\(owner)/\(repo)/releases/latest")!)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let parts = response.url?.pathComponents, parts.count >= 2, parts[parts.count - 2] == "tag",
+              let tag = parts.last, !tag.isEmpty else {
+            throw ToolError.failed(L("Could not determine the latest version."))
+        }
+        return tag
+    }
+
+    private static func fetchCheckSums(_ url: URL) async throws -> String {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let text = String(data: data, encoding: .utf8) else {
+            throw ToolError.failed(L("The download could not be verified: no checksum was published for it."))
+        }
+        return text
+    }
+
+    private static func checksumFor(_ name: String, in text: String) -> String? {
+        for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 2, fields.dropFirst().joined(separator: " ") == name else { continue }
+            return fields[0].lowercased()
+        }
+        return nil
+    }
+
+    private static func sha256(of file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func verify(_ file: URL, sums: String, name: String) throws {
+        guard let expected = checksumFor(name, in: sums) else {
+            try? FileManager.default.removeItem(at: file)
+            throw ToolError.failed(L("The download could not be verified: no checksum was published for it."))
+        }
+        guard let actual = try? sha256(of: file), actual == expected else {
+            try? FileManager.default.removeItem(at: file)
+            throw ToolError.failed(L("The downloaded file failed its integrity check."))
+        }
     }
 
     private static func runQuiet(_ exe: URL, _ args: [String]) throws -> Int32 {
@@ -148,8 +226,8 @@ enum MediaTools {
         fileprivate var buffer = ""
         fileprivate var title: String?
         fileprivate var files: [String] = []
-        fileprivate var part = 0          // which of the downloads is running (0-based)
-        fileprivate var lastPercent = 0.0
+        fileprivate var formats: [String] = []
+        fileprivate var reported = 0.0
         fileprivate var lastError: String?
 
         func cancel() {
@@ -174,29 +252,29 @@ enum MediaTools {
     static func fetchVideo(_ url: URL, into folder: URL, progress: @escaping (Double, String?) -> Void,
                            completion: @escaping (Result<([URL], String?), Error>) -> Void) -> Fetch {
         let fetch = Fetch()
-        func attempt(_ formats: String, parts: Int, fallback: String?) {
-            fetch.job = run(url, into: folder, formats: formats, parts: parts, progress: progress) { result in
+        func attempt(_ formats: String, fallback: String?) {
+            fetch.job = run(url, into: folder, formats: formats, progress: progress) { result in
                 if case .failure(let error) = result, !fetch.cancelled, let next = fallback,
-                   !(error is OptimizeError) {
+                   (error as? ToolError)?.isFormatUnavailable == true {
                     // no separate audio on this site: take the best single file
                     try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
                         .forEach { try? FileManager.default.removeItem(at: $0) }
-                    attempt(next, parts: 1, fallback: nil)
+                    attempt(next, fallback: nil)
                     return
                 }
                 completion(result)
             }
         }
-        attempt("bv*,ba[ext=m4a]", parts: 2, fallback: "bv*/b")
+        attempt("bv*,ba[ext=m4a]", fallback: "bv*/b")
         return fetch
     }
 
     /// Runs yt-dlp once. `progress` and `completion` are called on the main queue.
-    private static func run(_ url: URL, into folder: URL, formats: String, parts: Int,
+    private static func run(_ url: URL, into folder: URL, formats: String,
                             progress: @escaping (Double, String?) -> Void,
                             completion: @escaping (Result<([URL], String?), Error>) -> Void) -> Job? {
         guard let exe = ytdlp else {
-            completion(.failure(ToolError.failed(L("yt-dlp is not installed."))))
+            DispatchQueue.main.async { completion(.failure(ToolError.failed(L("yt-dlp is not installed.")))) }
             return nil
         }
         let job = Job()
@@ -206,6 +284,8 @@ enum MediaTools {
             "--no-playlist", "--newline", "--progress", "--no-part", "--no-mtime", "--no-colors",
             "-f", formats, "-S", formatSort(),
             "-o", folder.appendingPathComponent("%(id)s.f%(format_id)s.%(ext)s").path,
+            "--progress-template",
+            "download:LWPROG %(info.format_id)s %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
             "--print", "before_dl:LWTITLE %(title)s",
             "--print", "after_move:LWFILE %(filepath)s",
             "--", url.absoluteString,
@@ -217,7 +297,6 @@ enum MediaTools {
         p.standardOutput = pipe
         p.standardError = pipe
 
-        let regex = try? NSRegularExpression(pattern: "\\[download\\]\\s+([0-9.]+)%")
         // called only on the main queue
         let consume: (String, Bool) -> Void = { text, final in
             job.buffer += text
@@ -234,14 +313,16 @@ enum MediaTools {
                     job.files.append(String(line.dropFirst(7)))
                 } else if line.hasPrefix("ERROR:") {
                     job.lastError = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                } else if let re = regex,
-                          let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-                          let r = Range(m.range(at: 1), in: line), let v = Double(line[r]) {
-                    // the percentage starting over means the next file (the sound) is downloading
-                    if v + 30 < job.lastPercent { job.part += 1 }
-                    job.lastPercent = v
-                    let done = Double(min(job.part, parts - 1))
-                    progress(min(1, (done + v / 100) / Double(parts)), nil)
+                } else if line.hasPrefix("LWPROG ") {
+                    let fields = line.dropFirst(7).split(separator: " ").map(String.init)
+                    guard fields.count == 4, let done = Double(fields[1]),
+                          let size = Double(fields[2]) ?? Double(fields[3]), size > 0 else { continue }
+                    if !job.formats.contains(fields[0]) { job.formats.append(fields[0]) }
+                    let part = job.formats.firstIndex(of: fields[0]) ?? 0
+                    let v = min(1, done / size)
+                    let scaled = part == 0 ? 0.9 * v : 0.9 + 0.1 * v
+                    job.reported = min(1, max(job.reported, scaled))
+                    progress(min(0.99, job.reported), nil)
                 }
             }
         }
@@ -271,7 +352,7 @@ enum MediaTools {
         do {
             try p.run()
         } catch {
-            completion(.failure(ToolError.failed(error.localizedDescription)))
+            DispatchQueue.main.async { completion(.failure(ToolError.failed(error.localizedDescription))) }
             return nil
         }
         return job

@@ -5,7 +5,8 @@ import Security
 
 /// Locked-folder passwords: only a salt and a PBKDF2-SHA256 hash are stored.
 enum PasswordHasher {
-    static let rounds: UInt32 = 200_000
+    static let rounds: UInt32 = 600_000
+    static let legacyRounds: UInt32 = 200_000
 
     static func makeSalt() -> Data {
         var bytes = [UInt8](repeating: 0, count: 16)
@@ -17,26 +18,27 @@ enum PasswordHasher {
         return Data(bytes)
     }
 
-    static func hash(_ password: String, salt: Data) -> Data {
+    static func hash(_ password: String, salt: Data, rounds: UInt32 = rounds) -> Data? {
         var derived = [UInt8](repeating: 0, count: 32)
         let passwordBytes = Array(password.utf8)
         let saltBytes = [UInt8](salt)
-        passwordBytes.withUnsafeBufferPointer { pw in
+        let status = passwordBytes.withUnsafeBufferPointer { pw in
             pw.baseAddress!.withMemoryRebound(to: CChar.self, capacity: passwordBytes.count) { pwChars in
-                _ = CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2),
-                                         pwChars, passwordBytes.count,
-                                         saltBytes, saltBytes.count,
-                                         CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
-                                         rounds,
-                                         &derived, derived.count)
+                CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2),
+                                     pwChars, passwordBytes.count,
+                                     saltBytes, saltBytes.count,
+                                     CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                                     rounds,
+                                     &derived, derived.count)
             }
         }
+        guard status == Int32(kCCSuccess) else { return nil }
         return Data(derived)
     }
 
-    static func verify(_ password: String, saltB64: String, hashB64: String) -> Bool {
-        guard let salt = Data(base64Encoded: saltB64), let expected = Data(base64Encoded: hashB64) else { return false }
-        let actual = hash(password, salt: salt)
+    static func verify(_ password: String, saltB64: String, hashB64: String, rounds: UInt32) -> Bool {
+        guard let salt = Data(base64Encoded: saltB64), let expected = Data(base64Encoded: hashB64),
+              let actual = hash(password, salt: salt, rounds: rounds) else { return false }
         guard actual.count == expected.count else { return false }
         // constant-time comparison
         var diff: UInt8 = 0

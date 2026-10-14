@@ -15,6 +15,7 @@ struct SettingsPage: View {
 
 struct SettingsTab: View {
     @ObservedObject var library: Library
+    @ObservedObject var progress = Library.shared.progress
 
     private let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -127,17 +128,17 @@ struct SettingsTab: View {
                     Text("60 fps").tag(60)
                 }
                 HStack {
-                    if library.optimizing.isEmpty {
+                    if progress.optimizing.isEmpty {
                         Text(LF("Videos not optimized yet: %ld", library.pendingOptimizationCount))
                             .foregroundStyle(.secondary)
                     } else {
                         ProgressView().controlSize(.small)
-                        Text(LF("Optimizing videos: %ld left", library.optimizing.count))
+                        Text(LF("Optimizing videos: %ld left", progress.optimizing.count))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button(L("Optimize All Videos")) { library.optimizeAll() }
-                        .disabled(!library.optimizing.isEmpty || library.pendingOptimizationCount == 0)
+                        .disabled(!progress.optimizing.isEmpty || library.pendingOptimizationCount == 0)
                 }
             } header: {
                 Text(L("Performance"))
@@ -208,6 +209,15 @@ struct SettingsTab: View {
 
             Section {
                 Toggle(L("Launch at login"), isOn: $library.settings.launchAtLogin)
+                if library.loginItemNeedsApproval {
+                    HStack {
+                        Text(L("macOS hasn't allowed LiveWall to open at login yet."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L("Open Login Items")) { LoginItem.openSettings() }
+                    }
+                }
                 Toggle(L("Open the library when LiveWall starts"), isOn: $library.settings.openLibraryAtLaunch)
                 Picker(L("Library window"), selection: $library.settings.libraryWindowMode) {
                     ForEach(LibraryWindowMode.allCases) { mode in
@@ -394,7 +404,7 @@ struct AppearanceSection: View {
                 } else {
                     FlowLayout(spacing: 10) {
                         ForEach(library.userIcons, id: \.self) { name in
-                            UserIconThumb(name: name, size: 46, library: library)
+                            UserIconThumb(name: name, size: 46)
                                 .contextMenu {
                                     Button(L("Remove"), role: .destructive) { library.removeUserIcon(name) }
                                 }

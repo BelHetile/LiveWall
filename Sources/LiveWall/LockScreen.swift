@@ -100,9 +100,9 @@ enum LockScreenSync {
     /// Remembers the wallpaper set before LiveWall (once, until it is restored).
     static func saveOriginalIfNeeded() {
         let defaults = UserDefaults.standard
-        guard defaults.dictionary(forKey: originalKey) == nil else { return }
-        var saved: [String: [String: Any]] = [:]
-        for screen in NSScreen.screens {
+        var saved = defaults.dictionary(forKey: originalKey) as? [String: [String: Any]] ?? [:]
+        let before = saved.count
+        for screen in NSScreen.screens where saved[key(for: screen)] == nil {
             guard let url = NSWorkspace.shared.desktopImageURL(for: screen),
                   !url.path.hasPrefix(ownRoot) else { continue }
             var entry: [String: Any] = ["url": url.absoluteString]
@@ -114,28 +114,46 @@ enum LockScreenSync {
             }
             saved[key(for: screen)] = entry
         }
-        if !saved.isEmpty { defaults.set(saved, forKey: originalKey) }
+        if saved.count != before { defaults.set(saved, forKey: originalKey) }
+    }
+
+    static var hasPendingRestore: Bool {
+        !(UserDefaults.standard.dictionary(forKey: originalKey) ?? [:]).isEmpty
     }
 
     /// Restores the wallpaper set before LiveWall. false if it wasn't remembered (set before this version).
     @discardableResult
     static func restoreOriginal() -> Bool {
-        guard let saved = UserDefaults.standard.dictionary(forKey: originalKey) as? [String: [String: Any]],
+        guard var saved = UserDefaults.standard.dictionary(forKey: originalKey) as? [String: [String: Any]],
               !saved.isEmpty else { return false }
         var restored = false
         for screen in NSScreen.screens {
-            guard let entry = saved[key(for: screen)] ?? saved.values.first,
-                  let text = entry["url"] as? String, let url = URL(string: text),
-                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            let screenKey = key(for: screen)
+            guard let entry = saved[screenKey] else { continue }
+            guard let text = entry["url"] as? String, let url = URL(string: text),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                saved[screenKey] = nil
+                continue
+            }
             var opts: [NSWorkspace.DesktopImageOptionKey: Any] = [:]
             if let scaling = entry["scaling"] as? Int { opts[.imageScaling] = scaling }
             if let clipping = entry["clipping"] as? Bool { opts[.allowClipping] = clipping }
             if let c = entry["color"] as? [Double], c.count == 3 {
                 opts[.fillColor] = NSColor(srgbRed: c[0], green: c[1], blue: c[2], alpha: 1)
             }
-            if (try? NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: opts)) != nil { restored = true }
+            do {
+                try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: opts)
+                saved[screenKey] = nil
+                restored = true
+            } catch {
+                NSLog("LiveWall: restoring the wallpaper failed: \(error)")
+            }
         }
-        UserDefaults.standard.removeObject(forKey: originalKey)
+        if saved.isEmpty {
+            UserDefaults.standard.removeObject(forKey: originalKey)
+        } else {
+            UserDefaults.standard.set(saved, forKey: originalKey)
+        }
         return restored
     }
 

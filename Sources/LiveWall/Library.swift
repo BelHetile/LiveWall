@@ -6,16 +6,24 @@ import ServiceManagement
 import Carbon.HIToolbox
 
 enum LoginItem {
+    static var status: SMAppService.Status { SMAppService.mainApp.status }
+
     static func set(_ on: Bool) {
         do {
             if on {
+                guard status != .enabled else { return }
                 try SMAppService.mainApp.register()
             } else {
+                guard status != .notRegistered else { return }
                 try SMAppService.mainApp.unregister()
             }
         } catch {
             NSLog("LiveWall: login item error: \(error)")
         }
+    }
+
+    static func openSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }
 
@@ -23,6 +31,44 @@ enum LoginItem {
 final class PreviewClock: ObservableObject {
     @Published var time: Double = 0
     @Published var duration: Double = 0
+}
+
+final class HoverState: ObservableObject {
+    @Published var id: UUID?
+}
+
+final class ProgressState: ObservableObject {
+    @Published var optimizing: [UUID: Double] = [:]
+    @Published var linkDownloads: [LinkDownload] = []
+}
+
+final class ThumbnailStore: ObservableObject {
+    @Published var thumbs: [UUID: NSImage] = [:]
+    @Published var previews: [UUID: NSImage] = [:]
+    @Published var folderIcons: [String: NSImage] = [:]
+    @Published var userIcons: [String: NSImage] = [:]
+}
+
+enum ImageLoader {
+    static func downsample(url: URL, maxPixelSize: CGFloat) async -> NSImage? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: downsampleSync(url: url, maxPixelSize: maxPixelSize))
+            }
+        }
+    }
+
+    static func downsampleSync(url: URL, maxPixelSize: CGFloat) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
 }
 
 /// The wallpaper library, settings and all switching logic.
@@ -34,12 +80,21 @@ final class Library: ObservableObject {
     @Published private(set) var paused = false
     @Published var message: String?
     @Published var dropTargeted = false
-    @Published private(set) var thumbs: [UUID: NSImage] = [:]
     @Published private(set) var recordingTarget: HotkeyTarget?
     /// Why the last key press while recording a hotkey was rejected.
     @Published private(set) var hotkeyWarning: String?
     /// The previous macOS wallpaper couldn't be restored (LiveWall didn't remember it).
     @Published private(set) var restoreFailed = false
+    @Published private(set) var loginItemNeedsApproval = false
+
+    func syncLoginItem() {
+        if settings.launchAtLogin, LoginItem.status == .notRegistered { LoginItem.set(true) }
+        let status = LoginItem.status
+        let needsApproval = status == .requiresApproval
+        if loginItemNeedsApproval != needsApproval { loginItemNeedsApproval = needsApproval }
+        let effective = status == .enabled || needsApproval
+        if settings.launchAtLogin != effective { settings.launchAtLogin = effective }
+    }
     @Published private(set) var folders: [WallpaperFolder] = []
     @Published var selectedFolderID: UUID?
     @Published var iconPickerFolderID: UUID?
@@ -50,7 +105,6 @@ final class Library: ObservableObject {
     @Published private(set) var busyCount = 0
     @Published private(set) var pauseReason: String?
     @Published var section: LibrarySection = .wallpapers
-    @Published var hoveredID: UUID?
     @Published private(set) var lockScreenID: UUID?
     @Published private(set) var detailID: UUID?
     @Published private(set) var previewPlayer: AVQueuePlayer?
@@ -59,13 +113,13 @@ final class Library: ObservableObject {
     /// Position and length of the panel preview video live in their own object: they change many times a second,
     /// and only the timeline slider should redraw for that.
     let clock = PreviewClock()
+    let hover = HoverState()
+    let progress = ProgressState()
+    let images = ThumbnailStore()
     /// A separate muted preview for the Desktop tile: the wallpaper under the library window is paused.
     @Published private(set) var tilePlayer: AVQueuePlayer?
-    @Published private(set) var linkDownloads: [LinkDownload] = []
     @Published var showLinkPopover = false
     @Published var linkText = ""
-    /// Video optimization progress (0…1); queued videos have 0.
-    @Published private(set) var optimizing: [UUID: Double] = [:]
     @Published private(set) var videoInfo: [UUID: VideoInfo] = [:]
     /// Videos macOS can't play (they need converting).
     @Published private(set) var unplayable: Set<UUID> = []
@@ -84,7 +138,6 @@ final class Library: ObservableObject {
     private var previousID: UUID?
     /// Lock screen before the last hotkey press (.some(nil) = "followed the desktop").
     private var previousLockState: UUID??
-    private var folderImageCache: [String: NSImage] = [:]
     private var loading = true
     private var rotateTimer: Timer?
     private var recordMonitor: Any?
@@ -96,7 +149,6 @@ final class Library: ObservableObject {
     private var previewScrubbing = false
     private var tileFile: String?
     private var tileVisible = false
-    private var imageCache: [UUID: NSImage] = [:]
     private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
     private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
     private var conversionTokens: [UUID: CancelToken] = [:]
@@ -113,6 +165,33 @@ final class Library: ObservableObject {
         var lockScreenID: UUID?
         var folders: [WallpaperFolder]?
         var previousID: UUID?
+        var droppedEntries = 0
+        var droppedFolders = 0
+
+        private enum CodingKeys: String, CodingKey {
+            case items, currentID, lockScreenID, folders, previousID
+        }
+
+        init(items: [WallpaperItem], currentID: UUID?, lockScreenID: UUID?, folders: [WallpaperFolder]?, previousID: UUID?) {
+            self.items = items
+            self.currentID = currentID
+            self.lockScreenID = lockScreenID
+            self.folders = folders
+            self.previousID = previousID
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let lossyItems = try c.decode(LossyArray<WallpaperItem>.self, forKey: .items)
+            items = lossyItems.elements
+            let lossyFolders = try c.decodeIfPresent(LossyArray<WallpaperFolder>.self, forKey: .folders)
+            folders = lossyFolders?.elements
+            droppedEntries = lossyItems.dropped
+            droppedFolders = lossyFolders?.dropped ?? 0
+            currentID = try? c.decodeIfPresent(UUID.self, forKey: .currentID)
+            lockScreenID = try? c.decodeIfPresent(UUID.self, forKey: .lockScreenID)
+            previousID = try? c.decodeIfPresent(UUID.self, forKey: .previousID)
+        }
     }
 
     var current: WallpaperItem? {
@@ -131,12 +210,17 @@ final class Library: ObservableObject {
         userIconsDir = root.appendingPathComponent("MyIcons", isDirectory: true)
         try? FileManager.default.createDirectory(at: userIconsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: iconsDir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: incomingDir)
         try? FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: stillsDir, withIntermediateDirectories: true)
         load()
-        Lang.current = settings.language
+        if let chosen = Lang.appleLanguagesChoice, chosen != settings.language {
+            settings.language = chosen
+            saveSettings()
+        }
+        Lang.setCurrent(settings.language)
         reloadUserIcons()
         loading = false
     }
@@ -148,20 +232,7 @@ final class Library: ObservableObject {
     }
 
     private func load() {
-        if let data = try? Data(contentsOf: indexURL),
-           let idx = try? JSONDecoder().decode(Index.self, from: data) {
-            // drop entries whose file is gone
-            items = idx.items.filter { FileManager.default.fileExists(atPath: filesDir.appendingPathComponent($0.file).path) }
-            currentID = items.contains(where: { $0.id == idx.currentID }) ? idx.currentID : items.first?.id
-            lockScreenID = items.contains(where: { $0.id == idx.lockScreenID }) ? idx.lockScreenID : nil
-            folders = idx.folders ?? []
-            previousID = items.contains(where: { $0.id == idx.previousID }) ? idx.previousID : nil
-            // wallpapers from deleted folders go back to All
-            let folderIDs = Set(folders.map { $0.id })
-            for i in items.indices where items[i].folderID != nil && !folderIDs.contains(items[i].folderID!) {
-                items[i].folderID = nil
-            }
-        }
+        loadIndex()
         var settingsData = UserDefaults.standard.data(forKey: "settings")
         if settingsData == nil,
            let old = UserDefaults(suiteName: "com.local.livewall")?.data(forKey: "settings") {
@@ -172,6 +243,70 @@ final class Library: ObservableObject {
         if let data = settingsData,
            let s = try? JSONDecoder().decode(Settings.self, from: data) {
             settings = s
+        }
+    }
+
+    private var indexWriteBlocked = false
+
+    private func loadIndex() {
+        guard FileManager.default.fileExists(atPath: indexURL.path) else { return }
+        let data: Data
+        do {
+            data = try Data(contentsOf: indexURL)
+        } catch {
+            indexWriteBlocked = true
+            message = L("The library file could not be read. Changes will not be saved until LiveWall can read it again.")
+            return
+        }
+        let idx: Index
+        do {
+            idx = try JSONDecoder().decode(Index.self, from: data)
+        } catch {
+            guard let backup = backUpIndex(data) else {
+                indexWriteBlocked = true
+                message = L("The library file could not be read. Changes will not be saved until LiveWall can read it again.")
+                return
+            }
+            message = LF("The library file was damaged. A copy was saved as “%@”.", backup)
+            return
+        }
+        if idx.droppedEntries > 0 || idx.droppedFolders > 0 {
+            guard let backup = backUpIndex(data) else {
+                indexWriteBlocked = true
+                message = L("The library file could not be read. Changes will not be saved until LiveWall can read it again.")
+                return
+            }
+            message = LF("Some library entries were damaged and skipped. A copy of the library file was saved as “%@”.", backup)
+        }
+        if let stored = try? FileManager.default.contentsOfDirectory(atPath: filesDir.path) {
+            let present = Set(stored)
+            items = idx.items.filter { present.contains($0.file) }
+        } else {
+            items = idx.items
+        }
+        currentID = items.contains(where: { $0.id == idx.currentID }) ? idx.currentID : items.first?.id
+        lockScreenID = items.contains(where: { $0.id == idx.lockScreenID }) ? idx.lockScreenID : nil
+        folders = idx.folders ?? []
+        previousID = items.contains(where: { $0.id == idx.previousID }) ? idx.previousID : nil
+        guard idx.droppedFolders == 0 else { return }
+        let folderIDs = Set(folders.map { $0.id })
+        for i in items.indices {
+            if let folderID = items[i].folderID, !folderIDs.contains(folderID) {
+                items[i].folderID = nil
+            }
+        }
+    }
+
+    private func backUpIndex(_ data: Data) -> String? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let name = "library-damaged-\(formatter.string(from: Date())).json"
+        do {
+            try data.write(to: root.appendingPathComponent(name), options: .withoutOverwriting)
+            return name
+        } catch {
+            return nil
         }
     }
 
@@ -195,6 +330,7 @@ final class Library: ObservableObject {
 
     private func writeIndex() {
         saveWork = nil
+        guard !indexWriteBlocked else { return }
         let idx = Index(items: items, currentID: currentID, lockScreenID: lockScreenID,
                         folders: folders, previousID: previousID)
         if let data = try? JSONEncoder().encode(idx) {
@@ -206,10 +342,11 @@ final class Library: ObservableObject {
     func releaseUICaches() {
         closeDetail()
         tileDisappeared()
-        thumbs.removeAll()
-        imageCache.removeAll()
-        folderImageCache.removeAll()
-        hoveredID = nil
+        images.thumbs.removeAll()
+        images.previews.removeAll()
+        images.folderIcons.removeAll()
+        images.userIcons.removeAll()
+        hover.id = nil
     }
 
     private func saveSettings() {
@@ -221,8 +358,12 @@ final class Library: ObservableObject {
     // MARK: Start
 
     func start() {
-        // the login item is tied to the app identifier, so refresh the registration
-        if settings.launchAtLogin { LoginItem.set(true) }
+        syncLoginItem()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.syncLoginItem()
+        }
         applyControllerSettings()
         WallpaperController.shared.start()
 
@@ -249,25 +390,26 @@ final class Library: ObservableObject {
         syncLockScreen()
 
         // locked folders lock when the screen locks or the Mac sleeps
-        DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.screenLocked = true
-            self?.spaceSyncWork?.cancel()
-            self?.lockAll()
-        }
-        // don't touch the macOS wallpaper while the screen is locked or right after unlocking:
-        // the system is restoring the Spaces at that moment
-        DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.screenLocked = false
-            self?.scheduleSpaceSync(after: 4.0)
+        ScreenLockMonitor.shared.observe { [weak self] isLocked in
+            guard let self = self else { return }
+            self.screenLocked = isLocked
+            if isLocked {
+                self.spaceSyncWork?.cancel()
+                self.lockAll()
+            } else {
+                self.scheduleSpaceSync(after: 4.0)
+            }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.lockAll()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self, !self.settings.syncSystemWallpaper, LockScreenSync.hasPendingRestore else { return }
+            if LockScreenSync.restoreOriginal() { self.restoreFailed = false }
         }
     }
 
@@ -360,7 +502,7 @@ final class Library: ObservableObject {
         guard !loading else { return }
         if old.language != settings.language {
             // switch the language first, so later texts (pause reasons, menus) use the new one
-            Lang.current = settings.language
+            Lang.setCurrent(settings.language)
             (NSApp.delegate as? AppDelegate)?.setupMainMenu()
         }
         saveSettings()
@@ -373,6 +515,7 @@ final class Library: ObservableObject {
         }
         if old.launchAtLogin != settings.launchAtLogin {
             LoginItem.set(settings.launchAtLogin)
+            syncLoginItem()
         }
         if old.showInMenuBar != settings.showInMenuBar {
             (NSApp.delegate as? AppDelegate)?.updateStatusItem()
@@ -452,7 +595,7 @@ final class Library: ObservableObject {
         let supported = files.filter { Library.kind(for: $0) != nil }
         let skipped = files.count - supported.count
         if skipped > 0 {
-            message = LF("%ld file(s) skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic or gif.", skipped)
+            message = LF("%ld file(s) skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.", skipped)
         } else {
             message = nil
         }
@@ -511,10 +654,19 @@ final class Library: ObservableObject {
             if native, let audio = audio {
                 // join the separate sound track to the video
                 let joined = incoming.appendingPathComponent("\(UUID().uuidString).mov")
-                if (try? await VideoMuxer.addAudio(video: src, audio: audio, dest: joined)) != nil {
+                do {
+                    try await VideoMuxer.addAudio(video: src, audio: audio, dest: joined)
                     if move { try? FileManager.default.removeItem(at: src) }
                     source = joined
                     moveSource = true
+                } catch {
+                    try? FileManager.default.removeItem(at: joined)
+                    if move { try? FileManager.default.removeItem(at: src) }
+                    guard let self = self else { return }
+                    self.busyCount -= 1
+                    let text = L("Could not add the sound track to the video.")
+                    if let row = row { self.failDownload(row, text) } else { self.message = text }
+                    return
                 }
             }
             guard let self = self else { return }
@@ -553,12 +705,12 @@ final class Library: ObservableObject {
     private func convertVideo(_ src: URL, name: String, move: Bool, row: UUID?, audio: URL? = nil) {
         let rowID = row ?? UUID()
         let title = LF("Converting %@", name)
-        if let i = linkDownloads.firstIndex(where: { $0.id == rowID }) {
-            linkDownloads[i].title = title
-            linkDownloads[i].progress = 0
-            linkDownloads[i].error = nil
+        if let i = progress.linkDownloads.firstIndex(where: { $0.id == rowID }) {
+            progress.linkDownloads[i].title = title
+            progress.linkDownloads[i].progress = 0
+            progress.linkDownloads[i].error = nil
         } else {
-            linkDownloads.append(LinkDownload(id: rowID, title: title, progress: 0, error: nil))
+            progress.linkDownloads.append(LinkDownload(id: rowID, title: title, progress: 0, error: nil))
         }
         let token = CancelToken()
         conversionTokens[rowID] = token
@@ -569,26 +721,32 @@ final class Library: ObservableObject {
 
         Task.detached(priority: .utility) {
             var failure: Error?
+            var silent = false
             var last = 0.0
             do {
-                try await VideoConverter.convert(source: src, dest: dest, fpsLimit: fps, target: target, token: token) { v in
+                let report = try await VideoConverter.convert(source: src, dest: dest, fpsLimit: fps, target: target,
+                                                              token: token) { v in
                     guard v - last >= 0.01 || v >= 1 else { return }
                     last = v
                     DispatchQueue.main.async { self.setDownloadProgress(rowID, v) }
                 }
+                silent = audio == nil && report.audioDropped
                 if let audio = audio {
-                    // the converter writes video only: add the separate sound back
                     let joined = dest.deletingLastPathComponent().appendingPathComponent("\(UUID().uuidString).mov")
-                    if (try? await VideoMuxer.addAudio(video: dest, audio: audio, dest: joined)) != nil {
-                        _ = try? FileManager.default.replaceItemAt(dest, withItemAt: joined)
+                    defer { try? FileManager.default.removeItem(at: joined) }
+                    do {
+                        try await VideoMuxer.addAudio(video: dest, audio: audio, dest: joined)
+                        _ = try FileManager.default.replaceItemAt(dest, withItemAt: joined)
+                    } catch {
+                        throw ConvertError.audio
                     }
-                    try? FileManager.default.removeItem(at: joined)
                 }
             } catch {
                 failure = error
             }
             if move { try? FileManager.default.removeItem(at: src) }
             let error = failure
+            let addedWithoutSound = silent
             await MainActor.run {
                 self.conversionTokens[rowID] = nil
                 if let error = error {
@@ -601,7 +759,7 @@ final class Library: ObservableObject {
                     return
                 }
                 // the row was closed: the user changed their mind
-                guard self.linkDownloads.contains(where: { $0.id == rowID }) else {
+                guard self.progress.linkDownloads.contains(where: { $0.id == rowID }) else {
                     try? FileManager.default.removeItem(at: dest)
                     return
                 }
@@ -611,6 +769,9 @@ final class Library: ObservableObject {
                 self.items.append(item)
                 self.save()
                 if self.currentID == nil { self.select(id) }
+                if addedWithoutSound {
+                    self.message = LF("“%@” was added without sound: macOS can't convert its sound track.", name)
+                }
             }
         }
     }
@@ -618,33 +779,36 @@ final class Library: ObservableObject {
     // MARK: Videos from YouTube and other sites (yt-dlp)
 
     private func startToolDownload(id: UUID, page: URL) {
-        guard linkDownloads.contains(where: { $0.id == id }) else { return }
-        if !MediaTools.installed {
-            guard MediaTools.askToInstall() else {
-                failDownload(id, L("Videos from this site need yt-dlp and Deno. Allow the download to add them."))
+        guard progress.linkDownloads.contains(where: { $0.id == id }) else { return }
+        let needsDeno = MediaTools.needsDeno(page)
+        if !MediaTools.hasYtdlp || (needsDeno && !MediaTools.hasDeno) {
+            guard installingTools || MediaTools.askToInstall() else {
+                failDownload(id, needsDeno
+                    ? L("Videos from this site need yt-dlp and Deno. Allow the download to add them.")
+                    : L("Videos from this site need yt-dlp. Allow the download to add it."))
                 return
             }
-            installTools(row: id) { [weak self] ok in
+            installTools(row: id, includeDeno: needsDeno) { [weak self] ok in
                 if ok { self?.startToolDownload(id: id, page: page) }
             }
             return
         }
-        if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
-            linkDownloads[i].progress = 0
-            linkDownloads[i].error = nil
+        if let i = progress.linkDownloads.firstIndex(where: { $0.id == id }) {
+            progress.linkDownloads[i].progress = 0
+            progress.linkDownloads[i].error = nil
         }
         let folder = incomingDir.appendingPathComponent(id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let job = MediaTools.fetchVideo(page, into: folder, progress: { [weak self] value, title in
-            guard let self = self, let i = self.linkDownloads.firstIndex(where: { $0.id == id }) else { return }
-            if let t = title { self.linkDownloads[i].title = t }
+            guard let self = self, let i = self.progress.linkDownloads.firstIndex(where: { $0.id == id }) else { return }
+            if let t = title { self.progress.linkDownloads[i].title = t }
             self.setDownloadProgress(id, value)
         }, completion: { [weak self] result in
             guard let self = self else { return }
             self.toolJobs[id] = nil
             switch result {
             case .success(let (files, title)):
-                guard self.linkDownloads.contains(where: { $0.id == id }),
+                guard self.progress.linkDownloads.contains(where: { $0.id == id }),
                       let file = files.first(where: { Library.kind(for: $0) != nil }) else {
                     try? FileManager.default.removeItem(at: folder)
                     self.failDownload(id, L("The site returned a file LiveWall can't use."))
@@ -676,40 +840,75 @@ final class Library: ObservableObject {
         toolJobs[id] = job
     }
 
+    private struct ToolInstall {
+        let rowID: UUID
+        let oldTitle: String?
+        let isLink: Bool
+        let downloadsDeno: Bool
+        let completion: ((Bool) -> Void)?
+    }
+
+    private var pendingToolInstalls: [ToolInstall] = []
+
     /// Downloads or updates yt-dlp and Deno. `row` is the download row for progress (if any).
-    func installTools(row: UUID? = nil, completion: ((Bool) -> Void)? = nil) {
-        guard !installingTools else { return }
-        installingTools = true
+    func installTools(row: UUID? = nil, includeDeno: Bool = true, completion: ((Bool) -> Void)? = nil) {
         let rowID = row ?? UUID()
-        let oldTitle = linkDownloads.first(where: { $0.id == rowID })?.title
-        if let i = linkDownloads.firstIndex(where: { $0.id == rowID }) {
-            linkDownloads[i].title = L("Downloading yt-dlp and Deno…")
-            linkDownloads[i].progress = 0
+        let oldTitle = progress.linkDownloads.first(where: { $0.id == rowID })?.title
+        let downloadsDeno = row == nil || (includeDeno && !MediaTools.hasDeno)
+        let title = downloadsDeno ? L("Downloading yt-dlp and Deno…") : L("Downloading yt-dlp…")
+        if let i = progress.linkDownloads.firstIndex(where: { $0.id == rowID }) {
+            progress.linkDownloads[i].title = title
+            progress.linkDownloads[i].progress = 0
+            progress.linkDownloads[i].error = nil
         } else {
-            linkDownloads.append(LinkDownload(id: rowID, title: L("Downloading yt-dlp and Deno…"), progress: 0, error: nil))
+            progress.linkDownloads.append(LinkDownload(id: rowID, title: title, progress: 0, error: nil))
         }
-        objectWillChange.send()
+        pendingToolInstalls.append(ToolInstall(rowID: rowID, oldTitle: oldTitle, isLink: row != nil,
+                                               downloadsDeno: downloadsDeno, completion: completion))
+        progress.objectWillChange.send()
+        if !installingTools { runNextToolInstall() }
+    }
+
+    private func runNextToolInstall() {
+        guard let request = pendingToolInstalls.first else {
+            installingTools = false
+            return
+        }
+        installingTools = true
+        if request.isLink, MediaTools.hasYtdlp, !request.downloadsDeno || MediaTools.hasDeno {
+            completeToolInstall(request, error: nil)
+            pendingToolInstalls.removeFirst()
+            runNextToolInstall()
+            return
+        }
         Task { @MainActor [weak self] in
+            guard let self = self else { return }
             do {
-                try await MediaTools.install { v in
-                    DispatchQueue.main.async { self?.setDownloadProgress(rowID, v) }
+                try await MediaTools.install(deno: request.downloadsDeno) { v in
+                    DispatchQueue.main.async { self.setDownloadProgress(request.rowID, v) }
                 }
-                guard let self = self else { return }
-                self.installingTools = false
-                if row != nil, let i = self.linkDownloads.firstIndex(where: { $0.id == rowID }) {
-                    self.linkDownloads[i].title = oldTitle ?? ""
-                } else {
-                    self.removeDownload(rowID)
-                    self.message = L("Video tools are ready.")
-                }
-                completion?(true)
+                self.completeToolInstall(request, error: nil)
             } catch {
-                guard let self = self else { return }
-                self.installingTools = false
-                self.failDownload(rowID, error.localizedDescription)
-                completion?(false)
+                self.completeToolInstall(request, error: error.localizedDescription)
             }
+            self.pendingToolInstalls.removeFirst()
+            self.runNextToolInstall()
         }
+    }
+
+    private func completeToolInstall(_ request: ToolInstall, error: String?) {
+        if let error = error {
+            failDownload(request.rowID, error)
+            request.completion?(false)
+            return
+        }
+        if request.isLink, let i = progress.linkDownloads.firstIndex(where: { $0.id == request.rowID }) {
+            progress.linkDownloads[i].title = request.oldTitle ?? ""
+        } else {
+            removeDownload(request.rowID)
+            message = L("Video tools are ready.")
+        }
+        request.completion?(true)
     }
 
     var toolsInstalling: Bool { installingTools }
@@ -780,10 +979,10 @@ final class Library: ObservableObject {
         }
         message = nil
         let id = UUID()
-        linkDownloads.append(LinkDownload(id: id, title: Library.displayName(for: url), progress: 0, error: nil))
+        progress.linkDownloads.append(LinkDownload(id: id, title: Library.displayName(for: url), progress: 0, error: nil))
         downloadPages[id] = url
         if MediaTools.isVideoSite(url) {
-            linkDownloads[linkDownloads.count - 1].title = url.host ?? url.absoluteString
+            progress.linkDownloads[progress.linkDownloads.count - 1].title = url.host ?? url.absoluteString
             startToolDownload(id: id, page: url)
         } else {
             startDownload(id: id, url: url, depth: 0)
@@ -803,27 +1002,34 @@ final class Library: ObservableObject {
         removeDownload(id)
     }
 
+    func cancelBackgroundWork() {
+        downloadTasks.values.forEach { $0.cancel() }
+        toolJobs.values.forEach { $0.cancel() }
+        conversionTokens.values.forEach { $0.cancel() }
+    }
+
     private func removeDownload(_ id: UUID) {
         downloadTasks[id] = nil
         downloadObservations[id] = nil
         downloadPages[id] = nil
         toolJobs[id] = nil
         try? FileManager.default.removeItem(at: incomingDir.appendingPathComponent(id.uuidString, isDirectory: true))
-        linkDownloads.removeAll { $0.id == id }
+        progress.linkDownloads.removeAll { $0.id == id }
     }
 
     private func failDownload(_ id: UUID, _ text: String) {
         downloadTasks[id] = nil
         downloadObservations[id] = nil
-        if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
-            linkDownloads[i].error = text
+        try? FileManager.default.removeItem(at: incomingDir.appendingPathComponent(id.uuidString, isDirectory: true))
+        if let i = progress.linkDownloads.firstIndex(where: { $0.id == id }) {
+            progress.linkDownloads[i].error = text
         }
     }
 
     private func setDownloadProgress(_ id: UUID, _ value: Double) {
-        guard let i = linkDownloads.firstIndex(where: { $0.id == id }) else { return }
-        if abs(linkDownloads[i].progress - value) >= 0.01 || value >= 1 {
-            linkDownloads[i].progress = value
+        guard let i = progress.linkDownloads.firstIndex(where: { $0.id == id }) else { return }
+        if abs(progress.linkDownloads[i].progress - value) >= 0.01 || value >= 1 {
+            progress.linkDownloads[i].progress = value
         }
     }
 
@@ -854,7 +1060,7 @@ final class Library: ObservableObject {
 
     private func finishDownload(id: UUID, source: URL, file: URL?, response: URLResponse?, error: Error?, depth: Int) {
         // the download was already cancelled
-        guard linkDownloads.contains(where: { $0.id == id }) else {
+        guard progress.linkDownloads.contains(where: { $0.id == id }) else {
             if let file = file { try? FileManager.default.removeItem(at: file) }
             return
         }
@@ -887,9 +1093,9 @@ final class Library: ObservableObject {
                 startToolDownload(id: id, page: downloadPages[id] ?? source)
                 return
             }
-            if let i = linkDownloads.firstIndex(where: { $0.id == id }) {
-                linkDownloads[i].title = Library.displayName(for: mediaURL)
-                linkDownloads[i].progress = 0
+            if let i = progress.linkDownloads.firstIndex(where: { $0.id == id }) {
+                progress.linkDownloads[i].title = Library.displayName(for: mediaURL)
+                progress.linkDownloads[i].progress = 0
             }
             startDownload(id: id, url: mediaURL, depth: depth + 1)
             return
@@ -911,7 +1117,7 @@ final class Library: ObservableObject {
             // the temporary file needs an extension so macOS knows what kind of video it is
             let named = incomingDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
             if (try? FileManager.default.moveItem(at: file, to: named)) != nil {
-                if let i = linkDownloads.firstIndex(where: { $0.id == id }) { linkDownloads[i].progress = 1 }
+                if let i = progress.linkDownloads.firstIndex(where: { $0.id == id }) { progress.linkDownloads[i].progress = 1 }
                 ingestVideo(named, name: name, move: true, row: id)
                 return
             }
@@ -1036,8 +1242,8 @@ final class Library: ObservableObject {
                 try? FileManager.default.removeItem(at: stillsDir.appendingPathComponent(f))
             }
         }
-        thumbs[id] = nil
-        imageCache[id] = nil
+        images.thumbs[id] = nil
+        images.previews[id] = nil
         videoInfo[id] = nil
         cancelOptimize(id)
         if detailID == id { closeDetail() }
@@ -1089,8 +1295,8 @@ final class Library: ObservableObject {
     /// Queues a video. `manual` means the user pressed the button (report the result).
     func optimize(_ id: UUID, manual: Bool) {
         guard let item = items.first(where: { $0.id == id }), item.kind == .video else { return }
-        guard optimizing[id] == nil else { return }
-        optimizing[id] = 0
+        guard progress.optimizing[id] == nil else { return }
+        progress.optimizing[id] = 0
         optimizeQueue.append((id, manual))
         runNextOptimization()
     }
@@ -1114,7 +1320,7 @@ final class Library: ObservableObject {
             optimizeToken?.cancel()
         } else {
             optimizeQueue.removeAll { $0.id == id }
-            optimizing[id] = nil
+            progress.optimizing[id] = nil
         }
     }
 
@@ -1122,11 +1328,12 @@ final class Library: ObservableObject {
         guard optimizeActive == nil, !optimizeQueue.isEmpty else { return }
         let job = optimizeQueue.removeFirst()
         guard let item = items.first(where: { $0.id == job.id }) else {
-            optimizing[job.id] = nil
+            progress.optimizing[job.id] = nil
             runNextOptimization()
             return
         }
         let id = item.id
+        let name = item.name
         let src = url(for: item)
         let fpsLimit = optimizeFpsLimit
         let target = VideoOptimizer.targetScreenPixels()
@@ -1141,11 +1348,14 @@ final class Library: ObservableObject {
                 // a format macOS can't play: convert it with VideoToolbox
                 var last = 0.0
                 do {
-                    try await VideoConverter.convert(source: src, dest: temp, fpsLimit: fpsLimit, target: target,
-                                                     token: token) { value in
+                    let report = try await VideoConverter.convert(source: src, dest: temp, fpsLimit: fpsLimit,
+                                                                  target: target, token: token) { value in
                         guard value - last >= 0.01 || value >= 1 else { return }
                         last = value
-                        DispatchQueue.main.async { self.optimizing[id] = value }
+                        DispatchQueue.main.async { self.progress.optimizing[id] = value }
+                    }
+                    if report.audioDropped {
+                        await MainActor.run { self.message = LF("“%@” was converted without sound: macOS can't convert its sound track.", name) }
                     }
                     outcome = .success(true)
                 } catch {
@@ -1161,7 +1371,7 @@ final class Library: ObservableObject {
                                                        token: token) { value in
                         guard value - last >= 0.01 || value >= 1 else { return }
                         last = value
-                        DispatchQueue.main.async { self.optimizing[id] = value }
+                        DispatchQueue.main.async { self.progress.optimizing[id] = value }
                     }
                     outcome = .success(true)
                 } catch {
@@ -1178,7 +1388,7 @@ final class Library: ObservableObject {
     private func finishOptimization(id: UUID, temp: URL, manual: Bool, result: Result<Bool, Error>) {
         optimizeActive = nil
         optimizeToken = nil
-        optimizing[id] = nil
+        progress.optimizing[id] = nil
         defer { runNextOptimization() }
         guard let idx = items.firstIndex(where: { $0.id == id }) else {
             try? FileManager.default.removeItem(at: temp)
@@ -1477,12 +1687,13 @@ final class Library: ObservableObject {
         openDetail(pool[((i + delta) % n + n) % n].id)
     }
 
-    /// A full-size image for the panel (images and the first GIF frame), cached.
-    func previewImage(for item: WallpaperItem) -> NSImage? {
-        if let img = imageCache[item.id] { return img }
-        guard item.kind != .video, let img = NSImage(contentsOf: url(for: item)) else { return nil }
-        imageCache[item.id] = img
-        return img
+    func loadPreviewImage(for item: WallpaperItem) async {
+        guard item.kind == .image, images.previews[item.id] == nil else { return }
+        let id = item.id
+        let img = await ImageLoader.downsample(url: url(for: item), maxPixelSize: 2048)
+        await MainActor.run {
+            if let img = img, self.images.previews[id] == nil { self.images.previews[id] = img }
+        }
     }
 
     private func releasePreview() {
@@ -1816,6 +2027,7 @@ final class Library: ObservableObject {
     /// The wallpaper is in a locked (not unlocked) folder.
     func isHidden(_ item: WallpaperItem) -> Bool {
         guard let fid = item.folderID else { return false }
+        guard folder(fid) != nil else { return true }
         return isLocked(fid)
     }
 
@@ -1827,13 +2039,15 @@ final class Library: ObservableObject {
         guard let password = PasswordPrompt.ask(title: LF("“%@” is locked", f.name),
                                                 message: L("Enter the folder password."),
                                                 button: L("Unlock"), confirm: false) else { return false }
+        let rounds = f.passwordRounds.flatMap { UInt32(exactly: $0) } ?? PasswordHasher.legacyRounds
         guard let salt = f.passwordSalt, let hash = f.passwordHash,
-              PasswordHasher.verify(password, saltB64: salt, hashB64: hash) else {
+              PasswordHasher.verify(password, saltB64: salt, hashB64: hash, rounds: rounds) else {
             message = LF("Wrong password for “%@”.", f.name)
             return false
         }
         unlockedFolderIDs.insert(folderID)
         message = nil
+        if rounds < PasswordHasher.rounds { storePassword(password, in: folderID) }
         return true
     }
 
@@ -1849,11 +2063,23 @@ final class Library: ObservableObject {
             title: title,
             message: L("Wallpapers in this folder will be hidden until you enter the password. Their hotkeys keep working. There is no way to recover a forgotten password."),
             button: L("Set Password"), confirm: true) else { return }
-        let salt = PasswordHasher.makeSalt()
-        folders[i].passwordSalt = salt.base64EncodedString()
-        folders[i].passwordHash = PasswordHasher.hash(password, salt: salt).base64EncodedString()
+        guard storePassword(password, in: folderID) else {
+            message = L("Could not set the password.")
+            return
+        }
         unlockedFolderIDs.insert(folderID)
+    }
+
+    @discardableResult
+    private func storePassword(_ password: String, in folderID: UUID) -> Bool {
+        guard let i = folders.firstIndex(where: { $0.id == folderID }) else { return false }
+        let salt = PasswordHasher.makeSalt()
+        guard let hash = PasswordHasher.hash(password, salt: salt) else { return false }
+        folders[i].passwordSalt = salt.base64EncodedString()
+        folders[i].passwordHash = hash.base64EncodedString()
+        folders[i].passwordRounds = Int(PasswordHasher.rounds)
         save()
+        return true
     }
 
     func removePassword(_ folderID: UUID) {
@@ -1861,6 +2087,7 @@ final class Library: ObservableObject {
         guard requestUnlock(folderID) else { return }
         folders[i].passwordSalt = nil
         folders[i].passwordHash = nil
+        folders[i].passwordRounds = nil
         unlockedFolderIDs.remove(folderID)
         save()
     }
@@ -1886,9 +2113,13 @@ final class Library: ObservableObject {
         folders.first(where: { $0.id == selectedFolderID })
     }
 
-    func count(in folderID: UUID) -> Int {
-        if isLocked(folderID) { return 0 }
-        return items.filter { $0.folderID == folderID }.count
+    func folderCounts() -> [UUID: Int] {
+        var counts: [UUID: Int] = [:]
+        for item in items {
+            guard let folderID = item.folderID else { continue }
+            counts[folderID, default: 0] += 1
+        }
+        return counts
     }
 
     private func rawCount(in folderID: UUID) -> Int {
@@ -2005,17 +2236,17 @@ final class Library: ObservableObject {
     }
 
     func removeUserIcon(_ name: String) {
-        folderImageCache["my:" + name] = nil
+        images.userIcons[name] = nil
         try? FileManager.default.removeItem(at: userIconsDir.appendingPathComponent(name))
         reloadUserIcons()
     }
 
-    func userIconImage(_ name: String) -> NSImage? {
-        let key = "my:" + name
-        if let img = folderImageCache[key] { return img }
-        guard let img = NSImage(contentsOf: userIconsDir.appendingPathComponent(name)) else { return nil }
-        folderImageCache[key] = img
-        return img
+    func loadUserIcon(_ name: String) async {
+        guard images.userIcons[name] == nil else { return }
+        let img = await ImageLoader.downsample(url: userIconsDir.appendingPathComponent(name), maxPixelSize: 256)
+        await MainActor.run {
+            if let img = img, self.images.userIcons[name] == nil { self.images.userIcons[name] = img }
+        }
     }
 
     /// Puts an icon from My Icons on a folder (a copy, so the folder doesn't depend on the icon library).
@@ -2178,15 +2409,16 @@ final class Library: ObservableObject {
         save()
     }
 
-    func folderImage(file: String) -> NSImage? {
-        if let img = folderImageCache[file] { return img }
-        guard let img = NSImage(contentsOf: iconsDir.appendingPathComponent(file)) else { return nil }
-        folderImageCache[file] = img
-        return img
+    func loadFolderImage(file: String) async {
+        guard images.folderIcons[file] == nil else { return }
+        let img = await ImageLoader.downsample(url: iconsDir.appendingPathComponent(file), maxPixelSize: 512)
+        await MainActor.run {
+            if let img = img, self.images.folderIcons[file] == nil { self.images.folderIcons[file] = img }
+        }
     }
 
     private func removeIconFile(_ file: String) {
-        folderImageCache[file] = nil
+        images.folderIcons[file] = nil
         try? FileManager.default.removeItem(at: iconsDir.appendingPathComponent(file))
     }
 
@@ -2219,13 +2451,13 @@ final class Library: ObservableObject {
     // MARK: Thumbnails
 
     func loadThumbnail(for item: WallpaperItem) async {
-        if thumbs[item.id] != nil { return }
+        if images.thumbs[item.id] != nil { return }
         // at most three thumbnails at a time, so opening a large library doesn't stutter
         await ThumbnailGate.shared.enter()
         let img = await thumbnail(for: item)
         await ThumbnailGate.shared.leave()
         await MainActor.run {
-            if let img = img { self.thumbs[item.id] = img }
+            if let img = img { self.images.thumbs[item.id] = img }
         }
     }
 

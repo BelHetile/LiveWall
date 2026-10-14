@@ -45,19 +45,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         // If LiveWall is in front when the screen locks, macOS brings it back after unlocking and may switch to
         // another Space on the way. Hide it for the lock instead, and show the window again without activating.
-        let dnc = DistributedNotificationCenter.default()
-        dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+        ScreenLockMonitor.shared.observe { [weak self] isLocked in
             guard let self = self else { return }
-            self.screenLocked = true
-            let wasActive = NSApp.isActive || Date().timeIntervalSince(self.resignedActiveAt) < 2
-            if wasActive, self.libraryWindow?.isVisible == true, !NSApp.isHidden {
-                self.hiddenForLock = true
-                NSApp.hide(nil)
+            self.screenLocked = isLocked
+            if isLocked {
+                let wasActive = NSApp.isActive || Date().timeIntervalSince(self.resignedActiveAt) < 2
+                if wasActive, self.libraryWindow?.isVisible == true, !NSApp.isHidden {
+                    self.hiddenForLock = true
+                    NSApp.hide(nil)
+                }
+                return
             }
-        }
-        dnc.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-            guard let self = self else { return }
-            self.screenLocked = false
             self.unlockedAt = Date()
             guard self.hiddenForLock else { return }
             self.hiddenForLock = false
@@ -225,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Library.shared.cancelBackgroundWork()
         Library.shared.flushSave()
     }
 
@@ -245,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// The library window was closed: locked folders lock again.
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === libraryWindow {
+            Library.shared.endRecording()
             Library.shared.lockAll()
             // release the interface, thumbnails and preview player while the window is closed
             DispatchQueue.main.async { [weak self] in
@@ -364,7 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func wallpaperMenuItem(_ it: WallpaperItem, lib: Library) -> NSMenuItem {
         let m = menuItem(it.name, #selector(pickWallpaper(_:)), state: it.id == lib.currentID ? .on : .off)
         m.representedObject = it.id
-        if let thumb = lib.thumbs[it.id] {
+        if let thumb = lib.images.thumbs[it.id] {
             m.image = AppDelegate.roundedThumb(thumb, size: NSSize(width: 40, height: 25))
         } else {
             m.image = AppDelegate.symbol(it.kind.symbol)
@@ -433,12 +433,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
 struct MenuHeaderView: View {
     @ObservedObject var library: Library
+    @ObservedObject var images = Library.shared.images
 
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.accentGradient)
-                if let item = library.current, let thumb = library.thumbs[item.id] {
+                if let item = library.current, let thumb = images.thumbs[item.id] {
                     Image(nsImage: thumb)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
