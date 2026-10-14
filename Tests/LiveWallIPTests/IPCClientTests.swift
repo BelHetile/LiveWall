@@ -76,3 +76,71 @@ import Testing
         }
     }
 }
+
+@Suite struct DownloadCLITests {
+    @Test func parsesURLOnly() throws {
+        let invocation = try DownloadCLI.parse(arguments: ["https://example.com/v"])
+        #expect(invocation.url == "https://example.com/v")
+        #expect(invocation.noWait == false)
+        #expect(invocation.consentTools == false)
+    }
+
+    @Test func parsesFlagsInAnyOrder() throws {
+        let first = try DownloadCLI.parse(arguments: ["--consent-tools", "https://example.com/v", "--no-wait"])
+        #expect(first.url == "https://example.com/v")
+        #expect(first.noWait)
+        #expect(first.consentTools)
+
+        let second = try DownloadCLI.parse(arguments: ["--no-wait", "--consent-tools", "https://example.com/a"])
+        #expect(second == DownloadInvocation(url: "https://example.com/a", noWait: true, consentTools: true))
+    }
+
+    @Test func rejectsMissingURL() {
+        #expect(throws: DownloadCLIError.missingURL) {
+            _ = try DownloadCLI.parse(arguments: ["--no-wait"])
+        }
+    }
+
+    @Test func rejectsUnknownFlag() {
+        #expect(throws: DownloadCLIError.unknownFlag("--bogus")) {
+            _ = try DownloadCLI.parse(arguments: ["--bogus", "https://example.com/v"])
+        }
+    }
+
+    @Test func rejectsMultipleURLs() {
+        #expect(throws: DownloadCLIError.multipleURLs) {
+            _ = try DownloadCLI.parse(arguments: ["https://example.com/a", "https://example.com/b"])
+        }
+    }
+
+    @Test func validatesSupportedSchemes() {
+        #expect(DownloadCLI.isSupportedURL("https://example.com/v"))
+        #expect(DownloadCLI.isSupportedURL("http://example.com/v"))
+        #expect(!DownloadCLI.isSupportedURL("ftp://example.com/v"))
+        #expect(!DownloadCLI.isSupportedURL("not a url"))
+        #expect(!DownloadCLI.isSupportedURL("https://"))
+    }
+
+    @Test func buildsDownloadRequests() {
+        let request = DownloadCLI.makeRequest(
+            DownloadInvocation(url: "https://example.com/v", noWait: true, consentTools: true)
+        )
+        #expect(request.cmd == .download)
+        #expect(request.url == "https://example.com/v")
+        #expect(request.consentTools == true)
+
+        let status = DownloadCLI.statusRequest(jobID: "J1")
+        #expect(status.cmd == .downloadStatus)
+        #expect(status.jobID == "J1")
+
+        let cancel = DownloadCLI.cancelRequest(jobID: "J2")
+        #expect(cancel.cmd == .downloadCancel)
+        #expect(cancel.jobID == "J2")
+    }
+
+    @Test func mapsTerminalStateToExitCode() {
+        #expect(DownloadCLI.exitCode(forState: "done") == 0)
+        #expect(DownloadCLI.exitCode(forState: "failed") == 1)
+        #expect(DownloadCLI.exitCode(forState: "canceled") == 1)
+    }
+}

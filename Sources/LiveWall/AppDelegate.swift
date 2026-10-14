@@ -3,11 +3,14 @@ import Foundation
 import LiveWallCore
 import LiveWallEngine
 import LiveWallIPC
+import LiveWallMedia
+import LiveWallTools
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: EngineController?
     private var server: IPCServer?
+    private var mediaHost: MediaHost?
     private var isShuttingDown = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -24,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         isShuttingDown = true
         Task { @MainActor in
+            await self.mediaHost?.cancelAll()
             await self.controller?.shutdown()
             self.server?.stop()
             NSApp.reply(toApplicationShouldTerminate: true)
@@ -78,8 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.controller = controller
 
+        let mediaHost = await Self.makeMediaHost()
+        self.mediaHost = mediaHost
+
         let server = IPCServer(socketURL: socketURL) { request in
-            await controller.handle(request)
+            if mediaHost.handles(request.cmd) {
+                return await mediaHost.handle(request)
+            }
+            return await controller.handle(request)
         }
         do {
             try server.start()
@@ -89,6 +99,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.server = server
 
         await controller.start()
+    }
+
+    private static func makeMediaHost() async -> MediaHost {
+        let toolManager = ToolManager()
+        let downloads = DownloadService(installer: toolManager)
+        let optimization = OptimizationCoordinator()
+        let targetHeight = targetScreenHeight()
+        let host = MediaHost(
+            downloads: downloads,
+            optimization: optimization,
+            maxHeight: { targetHeight }
+        )
+        try? await host.prepareForLaunch()
+        return host
+    }
+
+    private static func targetScreenHeight() -> Int {
+        guard let screen = NSScreen.main else {
+            return DownloadFormatSelector.maximumHeight
+        }
+        let backing = screen.convertRectToBacking(screen.frame)
+        return Int(backing.height.rounded())
     }
 
     private static func makeSource(environment: [String: String]) -> WallpaperSource {

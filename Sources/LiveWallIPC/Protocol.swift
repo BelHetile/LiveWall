@@ -11,17 +11,33 @@ public enum Verb: String, Codable, Sendable, CaseIterable {
     case open
     case getCurrent = "get-current"
     case getStatus = "get-status"
+    case download
+    case downloadStatus = "download-status"
+    case downloadCancel = "download-cancel"
 }
 
 public struct Request: Codable, Sendable, Equatable {
     public var v: Int
     public var cmd: Verb
     public var path: String?
+    public var url: String?
+    public var jobID: String?
+    public var consentTools: Bool?
 
-    public init(v: Int = IPCProtocol.version, cmd: Verb, path: String? = nil) {
+    public init(
+        v: Int = IPCProtocol.version,
+        cmd: Verb,
+        path: String? = nil,
+        url: String? = nil,
+        jobID: String? = nil,
+        consentTools: Bool? = nil
+    ) {
         self.v = v
         self.cmd = cmd
         self.path = path
+        self.url = url
+        self.jobID = jobID
+        self.consentTools = consentTools
     }
 }
 

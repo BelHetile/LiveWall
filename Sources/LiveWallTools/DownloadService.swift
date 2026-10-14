@@ -46,6 +46,7 @@ public actor DownloadService {
         let id: UUID
         let url: URL
         let maxHeight: Int
+        let consentTools: Bool
         let directory: URL
         var state: DownloadState
         var progress: Double
@@ -53,6 +54,7 @@ public actor DownloadService {
         var path: URL?
         var error: String?
         var cancelRequested: Bool
+        var didAttemptInstall: Bool
         var accumulator: DownloadProgressAccumulator
         var process: ProcessSession?
     }
@@ -65,21 +67,27 @@ public actor DownloadService {
     private let resolver: any ToolExecutableResolving
     private let incomingDirectory: URL
     private let hardwareAV1: @Sendable () -> Bool
+    private let installer: (any ToolInstalling)?
+    private let consent: any ToolConsentProviding
     private var jobs: [UUID: Job] = [:]
     private var listeners: [UUID: AsyncStream<DownloadEvent>.Continuation] = [:]
 
     public init(
         resolver: any ToolExecutableResolving = ToolLocator.system,
         incomingDirectory: URL = LiveWallPaths.incomingDirectory(),
-        hardwareAV1: @escaping @Sendable () -> Bool = AV1HardwareSupport.isSupported
+        hardwareAV1: @escaping @Sendable () -> Bool = AV1HardwareSupport.isSupported,
+        installer: (any ToolInstalling)? = nil,
+        consent: any ToolConsentProviding = UserDefaultsToolConsent()
     ) {
         self.resolver = resolver
         self.incomingDirectory = incomingDirectory
         self.hardwareAV1 = hardwareAV1
+        self.installer = installer
+        self.consent = consent
     }
 
     @discardableResult
-    public func start(url: URL, maxHeight: Int) async throws -> UUID {
+    public func start(url: URL, maxHeight: Int, consentTools: Bool = false) async throws -> UUID {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host, !host.isEmpty else {
             throw LiveWallError.ipc(code: "invalidURL", message: "unsupported download url")
@@ -91,6 +99,7 @@ public actor DownloadService {
             id: jobID,
             url: url,
             maxHeight: maxHeight,
+            consentTools: consentTools,
             directory: directory,
             state: .running,
             progress: 0,
@@ -98,6 +107,7 @@ public actor DownloadService {
             path: nil,
             error: nil,
             cancelRequested: false,
+            didAttemptInstall: false,
             accumulator: DownloadProgressAccumulator(),
             process: nil
         )
@@ -124,6 +134,12 @@ public actor DownloadService {
         job.process?.terminate()
     }
 
+    public func cancelAll() {
+        for jobID in jobs.keys {
+            cancel(jobID)
+        }
+    }
+
     public func events() -> AsyncStream<DownloadEvent> {
         let (stream, continuation) = AsyncStream<DownloadEvent>.makeStream()
         let identifier = UUID()
@@ -148,7 +164,7 @@ public actor DownloadService {
 
     private func run(_ jobID: UUID) async {
         do {
-            let downloaded = try await performDownload(jobID)
+            let downloaded = try await downloadWithInstallRetry(jobID)
             try finalize(jobID, downloaded: downloaded)
         } catch is CancellationError {
             wipe(jobID, state: .canceled, error: nil)
@@ -158,6 +174,24 @@ public actor DownloadService {
             } else {
                 wipe(jobID, state: .failed, error: describe(error))
             }
+        }
+    }
+
+    private func downloadWithInstallRetry(_ jobID: UUID) async throws -> URL {
+        do {
+            return try await performDownload(jobID)
+        } catch let error as LiveWallError {
+            guard case .toolMissing = error, let installer, var job = jobs[jobID],
+                  !job.didAttemptInstall else {
+                throw error
+            }
+            job.didAttemptInstall = true
+            jobs[jobID] = job
+            guard job.consentTools || consent.isInstallConsented() else {
+                throw LiveWallError.consentRequired
+            }
+            try await installer.installMissing(consented: true)
+            return try await performDownload(jobID)
         }
     }
 
@@ -452,7 +486,7 @@ public actor DownloadService {
             case let .mediaRejected(reason):
                 return "media rejected: \(reason)"
             case .consentRequired:
-                return "tool install consent required"
+                return "install consent required"
             case let .libraryCorrupt(path):
                 return "corrupt library: \(path)"
             case let .swapStateCorrupt(path):

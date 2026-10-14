@@ -8,7 +8,12 @@ public enum ToolStatus: Sendable, Equatable {
     case probeFailed(reason: String)
 }
 
-public actor ToolManager {
+public protocol ToolInstalling: Sendable {
+    @discardableResult
+    func installMissing(consented: Bool) async throws -> [MediaTool]
+}
+
+public actor ToolManager: ToolInstalling {
     public static let installEnvironment: [String: String] = [
         "HOMEBREW_NO_AUTO_UPDATE": "1",
         "HOMEBREW_NO_INSTALL_CLEANUP": "1",
@@ -83,11 +88,16 @@ public actor ToolManager {
 
     @discardableResult
     public func installMissing() async throws -> [MediaTool] {
+        return try await installMissing(consented: consent.isInstallConsented())
+    }
+
+    @discardableResult
+    public func installMissing(consented: Bool) async throws -> [MediaTool] {
         let missing = missingTools()
         guard !missing.isEmpty else {
             return []
         }
-        guard consent.isInstallConsented() else {
+        guard consented else {
             throw LiveWallError.consentRequired
         }
         guard let brew = resolver.brewExecutableURL() else {

@@ -45,3 +45,79 @@ public enum IPCCLI {
         return Request(cmd: verb, path: path)
     }
 }
+
+public struct DownloadInvocation: Sendable, Equatable {
+    public let url: String
+    public let noWait: Bool
+    public let consentTools: Bool
+
+    public init(url: String, noWait: Bool, consentTools: Bool) {
+        self.url = url
+        self.noWait = noWait
+        self.consentTools = consentTools
+    }
+}
+
+public enum DownloadCLIError: Error, Equatable {
+    case missingURL
+    case multipleURLs
+    case unknownFlag(String)
+}
+
+public enum DownloadCLI {
+    public static let noWaitFlag = "--no-wait"
+    public static let consentToolsFlag = "--consent-tools"
+
+    public static func parse(arguments: [String]) throws -> DownloadInvocation {
+        var noWait = false
+        var consentTools = false
+        var url: String?
+        for argument in arguments {
+            switch argument {
+            case noWaitFlag:
+                noWait = true
+            case consentToolsFlag:
+                consentTools = true
+            default:
+                if argument.hasPrefix("--") {
+                    throw DownloadCLIError.unknownFlag(argument)
+                }
+                if url != nil {
+                    throw DownloadCLIError.multipleURLs
+                }
+                url = argument
+            }
+        }
+        guard let url else {
+            throw DownloadCLIError.missingURL
+        }
+        return DownloadInvocation(url: url, noWait: noWait, consentTools: consentTools)
+    }
+
+    public static func isSupportedURL(_ raw: String) -> Bool {
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host,
+              !host.isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    public static func makeRequest(_ invocation: DownloadInvocation) -> Request {
+        return Request(cmd: .download, url: invocation.url, consentTools: invocation.consentTools)
+    }
+
+    public static func statusRequest(jobID: String) -> Request {
+        return Request(cmd: .downloadStatus, jobID: jobID)
+    }
+
+    public static func cancelRequest(jobID: String) -> Request {
+        return Request(cmd: .downloadCancel, jobID: jobID)
+    }
+
+    public static func exitCode(forState state: String) -> Int32 {
+        return state == "done" ? 0 : 1
+    }
+}

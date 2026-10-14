@@ -29,6 +29,40 @@ import Testing
         #expect(object["path"] == nil)
     }
 
+    @Test func downloadCarriesURLAndConsent() throws {
+        let request = Request(cmd: .download, url: "https://example.com/v", consentTools: true)
+        let decoded = try IPCCodec.decodeRequest(from: try IPCCodec.encode(request))
+        #expect(decoded == request)
+        #expect(decoded.cmd == .download)
+        #expect(decoded.url == "https://example.com/v")
+        #expect(decoded.consentTools == true)
+    }
+
+    @Test func downloadStatusCarriesJobID() throws {
+        let request = Request(cmd: .downloadStatus, jobID: "A1B2")
+        let decoded = try IPCCodec.decodeRequest(from: try IPCCodec.encode(request))
+        #expect(decoded == request)
+        #expect(decoded.cmd == .downloadStatus)
+        #expect(decoded.jobID == "A1B2")
+    }
+
+    @Test func downloadCancelCarriesJobID() throws {
+        let request = Request(cmd: .downloadCancel, jobID: "C3D4")
+        let decoded = try IPCCodec.decodeRequest(from: try IPCCodec.encode(request))
+        #expect(decoded == request)
+        #expect(decoded.cmd == .downloadCancel)
+        #expect(decoded.jobID == "C3D4")
+    }
+
+    @Test func downloadVerbWireShape() throws {
+        let data = try IPCCodec.encode(Request(cmd: .download, url: "https://example.com/v"))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["cmd"] as? String == "download")
+        #expect(object["url"] as? String == "https://example.com/v")
+        #expect(object["consentTools"] == nil)
+        #expect(object["path"] == nil)
+    }
+
     @Test func newlineDelimitedLineEncodes() throws {
         let data = try IPCCodec.line(Request(cmd: .getStatus))
         #expect(data.last == 0x0A)

@@ -262,6 +262,8 @@ public final class EngineController {
             }
         case .getCurrent, .getStatus:
             break
+        case .download, .downloadStatus, .downloadCancel:
+            return .failure(code: "EUNSUPPORTED", message: "verb is handled by the media host")
         }
         return .success(statusValue())
     }
