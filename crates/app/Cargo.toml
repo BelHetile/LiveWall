@@ -28,8 +28,75 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-oslog.workspace = true
 objc2.workspace = true
-objc2-foundation = { workspace = true, features = ["std", "NSObject", "NSNotification", "NSString"] }
-objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-foundation = { workspace = true, features = [
+    "std",
+    "NSObject",
+    "NSNotification",
+    "NSString",
+    "NSArray",
+    "NSDictionary",
+    "NSData",
+    "NSURL",
+    "NSValue",
+    "NSGeometry",
+    "NSOperation",
+    "NSTimer",
+    "NSDate",
+    "NSRunLoop",
+    "block2",
+] }
+objc2-app-kit = { workspace = true, features = [
+    "std",
+    "NSApplication",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSWindow",
+    "NSView",
+    "NSScreen",
+    "NSColor",
+    "NSWorkspace",
+    "NSGraphics",
+    "objc2-quartz-core",
+    "objc2-core-foundation",
+] }
+objc2-core-foundation = { workspace = true, features = [
+    "std",
+    "CFArray",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+    "CFURL",
+    "CFUUID",
+] }
+objc2-core-graphics = { workspace = true, features = [
+    "std",
+    "CGWindow",
+    "CGWindowLevel",
+    "CGGeometry",
+    "CGDirectDisplay",
+    "CGImage",
+] }
+objc2-core-media = { workspace = true, features = ["std", "CMTime"] }
+objc2-quartz-core = { workspace = true, features = ["std", "CALayer", "objc2-core-foundation"] }
+objc2-av-foundation = { workspace = true, features = [
+    "std",
+    "AVAsset",
+    "AVAssetTrack",
+    "AVMediaFormat",
+    "AVAsynchronousKeyValueLoading",
+    "AVPlayer",
+    "AVPlayerItem",
+    "AVPlayerLayer",
+    "AVPlayerLooper",
+    "AVAnimation",
+    "block2",
+    "objc2-core-media",
+    "objc2-core-foundation",
+    "objc2-quartz-core",
+] }
+objc2-image-io = { workspace = true, features = ["std", "CGImageSource", "CGImageProperties", "objc2-core-graphics"] }
+objc2-color-sync = { workspace = true, features = ["std", "ColorSyncDevice"] }
 block2.workspace = true
 dispatch2.workspace = true
+libc.workspace = true
 proto.workspace = true

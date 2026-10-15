@@ -59,6 +59,12 @@ pub struct Folder {
     pub icon: Option<String>,
 }
 
+impl Item {
+    pub fn geometry(&self) -> Geometry {
+        return self.modes.get(&self.mode).copied().unwrap_or_default();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Assignment {
     #[serde(default)]

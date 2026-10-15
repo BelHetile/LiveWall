@@ -85,7 +85,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let (app, warnings) = App::new(&paths);
+    let (app, warnings) = App::new(&paths, mtm);
     install(app);
     for warning in warnings {
         tracing::warn!(%warning, "store");

@@ -41,6 +41,7 @@ enum Command {
     Quit,
     Displays,
     Spaces,
+    Windows,
     #[command(subcommand)]
     Library(LibraryCommand),
     #[command(subcommand)]
@@ -227,6 +228,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Quit => Request::Quit,
         Command::Displays => Request::Displays,
         Command::Spaces => Request::Spaces,
+        Command::Windows => Request::Windows,
         Command::Library(command) => match command {
             LibraryCommand::List => Request::LibraryList,
             LibraryCommand::Add { paths } => Request::LibraryAdd { paths },
