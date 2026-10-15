@@ -4,7 +4,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use proto::{ApplyTarget, FillMode, Geometry, Hotkeys, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody};
+use proto::{
+    ApplyTarget, FillMode, Geometry, HotkeyAction, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
+};
 use serde_json::Value;
 
 const EXIT_OK: u8 = 0;
@@ -80,6 +82,9 @@ enum Command {
     Settings(SettingsCommand),
     #[command(subcommand)]
     Hotkeys(HotkeysCommand),
+    #[command(subcommand)]
+    LoginItem(LoginItemCommand),
+    Menu,
     Download {
         url: String,
         #[arg(long)]
@@ -130,7 +135,7 @@ enum FolderCommand {
 enum SettingsCommand {
     Get,
     Set {
-        #[arg(long, help = "JSON object of settings fields to patch")]
+        #[arg(help = "JSON object of settings fields to patch")]
         patch: String,
     },
 }
@@ -139,9 +144,29 @@ enum SettingsCommand {
 enum HotkeysCommand {
     Get,
     Set {
-        #[arg(long, help = "JSON object matching the hotkeys schema")]
-        json: String,
+        #[arg(value_enum)]
+        action: HotkeyActionArg,
+        #[arg(help = "Combo such as ctrl+opt+cmd+right; omit to clear the binding")]
+        combo: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum LoginItemCommand {
+    Get,
+    Set {
+        #[arg(action = clap::ArgAction::Set)]
+        enabled: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum HotkeyActionArg {
+    Next,
+    Previous,
+    TogglePause,
+    ToggleMute,
+    Random,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -278,11 +303,13 @@ fn build_request(command: Command) -> Result<Request, String> {
         },
         Command::Hotkeys(command) => match command {
             HotkeysCommand::Get => Request::HotkeysGet,
-            HotkeysCommand::Set { json } => {
-                let hotkeys: Hotkeys = serde_json::from_str(&json).map_err(|error| error.to_string())?;
-                Request::HotkeysSet { hotkeys }
-            }
+            HotkeysCommand::Set { action, combo } => Request::HotkeysSet { action: action.into(), combo },
         },
+        Command::LoginItem(command) => match command {
+            LoginItemCommand::Get => Request::LoginItemGet,
+            LoginItemCommand::Set { enabled } => Request::LoginItemSet { enabled },
+        },
+        Command::Menu => Request::Menu,
         Command::DownloadStatus { id } => Request::DownloadStatus { id },
         Command::DownloadCancel { id } => Request::DownloadCancel { id },
         Command::Optimize { id } => Request::Optimize { id },
@@ -419,6 +446,18 @@ impl From<FillModeArg> for FillMode {
             FillModeArg::Stretch => Self::Stretch,
             FillModeArg::Center => Self::Center,
             FillModeArg::Custom => Self::Custom,
+        };
+    }
+}
+
+impl From<HotkeyActionArg> for HotkeyAction {
+    fn from(value: HotkeyActionArg) -> Self {
+        return match value {
+            HotkeyActionArg::Next => Self::Next,
+            HotkeyActionArg::Previous => Self::Previous,
+            HotkeyActionArg::TogglePause => Self::TogglePause,
+            HotkeyActionArg::ToggleMute => Self::ToggleMute,
+            HotkeyActionArg::Random => Self::Random,
         };
     }
 }

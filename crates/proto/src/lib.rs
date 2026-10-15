@@ -83,24 +83,71 @@ impl KeyCombo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HotkeyAction {
+    Next,
+    Previous,
+    TogglePause,
+    ToggleMute,
+    Random,
+}
+
+impl HotkeyAction {
+    pub const ALL: [HotkeyAction; 5] = [
+        HotkeyAction::Next,
+        HotkeyAction::Previous,
+        HotkeyAction::TogglePause,
+        HotkeyAction::ToggleMute,
+        HotkeyAction::Random,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {
-    pub next: KeyCombo,
-    pub previous: KeyCombo,
-    pub pause: KeyCombo,
-    pub mute: KeyCombo,
-    pub random: KeyCombo,
+    #[serde(default)]
+    pub next: Option<KeyCombo>,
+    #[serde(default)]
+    pub previous: Option<KeyCombo>,
+    #[serde(default)]
+    pub pause: Option<KeyCombo>,
+    #[serde(default)]
+    pub mute: Option<KeyCombo>,
+    #[serde(default)]
+    pub random: Option<KeyCombo>,
+}
+
+impl Hotkeys {
+    pub fn get(&self, action: HotkeyAction) -> Option<&KeyCombo> {
+        return match action {
+            HotkeyAction::Next => self.next.as_ref(),
+            HotkeyAction::Previous => self.previous.as_ref(),
+            HotkeyAction::TogglePause => self.pause.as_ref(),
+            HotkeyAction::ToggleMute => self.mute.as_ref(),
+            HotkeyAction::Random => self.random.as_ref(),
+        };
+    }
+
+    pub fn set(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) {
+        match action {
+            HotkeyAction::Next => self.next = combo,
+            HotkeyAction::Previous => self.previous = combo,
+            HotkeyAction::TogglePause => self.pause = combo,
+            HotkeyAction::ToggleMute => self.mute = combo,
+            HotkeyAction::Random => self.random = combo,
+        }
+    }
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        return Self {
-            next: KeyCombo::default_combo("ArrowRight"),
-            previous: KeyCombo::default_combo("ArrowLeft"),
-            pause: KeyCombo::default_combo("P"),
-            mute: KeyCombo::default_combo("M"),
-            random: KeyCombo::default_combo("R"),
-        };
+        let mut hotkeys = Self { next: None, previous: None, pause: None, mute: None, random: None };
+        hotkeys.set(HotkeyAction::Next, Some(KeyCombo::default_combo("right")));
+        hotkeys.set(HotkeyAction::Previous, Some(KeyCombo::default_combo("left")));
+        hotkeys.set(HotkeyAction::TogglePause, Some(KeyCombo::default_combo("p")));
+        hotkeys.set(HotkeyAction::ToggleMute, Some(KeyCombo::default_combo("m")));
+        hotkeys.set(HotkeyAction::Random, Some(KeyCombo::default_combo("r")));
+        return hotkeys;
     }
 }
 
@@ -145,7 +192,10 @@ pub enum Request {
     SettingsGet,
     SettingsSet { patch: Value },
     HotkeysGet,
-    HotkeysSet { hotkeys: Hotkeys },
+    HotkeysSet { action: HotkeyAction, combo: Option<String> },
+    LoginItemGet,
+    LoginItemSet { enabled: bool },
+    Menu,
     Download { url: String, consent: bool },
     DownloadStatus { id: String },
     DownloadCancel { id: String },
@@ -278,7 +328,11 @@ mod tests {
             Request::SettingsGet,
             Request::SettingsSet { patch: json!({ "muted": false }) },
             Request::HotkeysGet,
-            Request::HotkeysSet { hotkeys: Hotkeys::default() },
+            Request::HotkeysSet { action: HotkeyAction::TogglePause, combo: Some("ctrl+opt+cmd+p".into()) },
+            Request::HotkeysSet { action: HotkeyAction::Random, combo: None },
+            Request::LoginItemGet,
+            Request::LoginItemSet { enabled: true },
+            Request::Menu,
             Request::Download { url: "https://example.com/v".into(), consent: true },
             Request::DownloadStatus { id: "job".into() },
             Request::DownloadCancel { id: "job".into() },
@@ -354,8 +408,30 @@ mod tests {
     #[test]
     fn hotkey_defaults_are_control_option_command() {
         let hotkeys = Hotkeys::default();
-        assert_eq!(hotkeys.pause.modifiers, vec![Modifier::Control, Modifier::Option, Modifier::Command]);
-        assert_eq!(hotkeys.next.key, "ArrowRight");
-        assert_eq!(hotkeys.previous.key, "ArrowLeft");
+        assert_eq!(
+            hotkeys.pause.as_ref().unwrap().modifiers,
+            vec![Modifier::Control, Modifier::Option, Modifier::Command]
+        );
+        assert_eq!(hotkeys.next.as_ref().unwrap().key, "right");
+        assert_eq!(hotkeys.previous.as_ref().unwrap().key, "left");
+    }
+
+    #[test]
+    fn hotkeys_get_set_round_trip_by_action() {
+        let mut hotkeys = Hotkeys::default();
+        assert_eq!(hotkeys.get(HotkeyAction::Random).unwrap().key, "r");
+        hotkeys.set(HotkeyAction::Random, None);
+        assert!(hotkeys.get(HotkeyAction::Random).is_none());
+        hotkeys.set(HotkeyAction::ToggleMute, Some(KeyCombo::new("M", vec![Modifier::Control])));
+        assert_eq!(hotkeys.mute.as_ref().unwrap().modifiers, vec![Modifier::Control]);
+    }
+
+    #[test]
+    fn hotkeys_partial_object_leaves_missing_actions_unbound() {
+        let hotkeys: Hotkeys =
+            serde_json::from_str(r#"{"pause":{"key":"P","modifiers":["control"]}}"#).expect("partial");
+        assert!(hotkeys.pause.is_some());
+        assert!(hotkeys.next.is_none());
+        assert!(hotkeys.random.is_none());
     }
 }

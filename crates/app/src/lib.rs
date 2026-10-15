@@ -1,8 +1,11 @@
 mod app;
 mod engine;
 mod geometry;
+pub mod hotkey;
+mod i18n;
 mod import;
 mod ipc;
+mod menu;
 mod model;
 mod paths;
 mod platform;
@@ -10,7 +13,10 @@ mod rules;
 mod store;
 
 pub use app::{App, Event, install, post};
+pub use i18n::{Arg, Strings};
 pub use ipc::{BindOutcome, cleanup, prepare, serve};
+pub use model::Language;
 pub use paths::Paths;
+pub use platform::hotkeys::synthesize_press;
 pub use proto;
 pub use store::{Warning, load, save};

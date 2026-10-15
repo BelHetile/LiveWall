@@ -6,18 +6,23 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::NSApplication;
 use objc2_foundation::NSTimer;
-use proto::{ApplyTarget, ErrorCode, FillMode, Request, Response};
+use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::engine::{Engine, Playback};
+use crate::hotkey;
+use crate::i18n::{self, Strings};
 use crate::import;
+use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{Item, ItemId, ItemKind, Library, Settings};
 use crate::paths::Paths;
+use crate::platform::detect;
+use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
-use crate::platform::{detect, system};
+use crate::platform::system::{self, LoginItemStatus};
 use crate::rules;
 use crate::store;
 
@@ -41,6 +46,8 @@ pub enum Event {
     ScreenLocked,
     ScreenUnlocked,
     VideoUnloadTick { item: ItemId },
+    Hotkey(HotkeyAction),
+    Menu(MenuAction),
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -59,6 +66,10 @@ pub struct App {
     engine: Engine,
     nap: system::AppNap,
     observers: Observers,
+    hotkeys: Hotkeys,
+    hotkey_failures: std::collections::BTreeMap<HotkeyAction, String>,
+    strings: Strings,
+    menu: Menu,
 }
 
 impl App {
@@ -66,9 +77,25 @@ impl App {
         let (library, library_warning) = store::load::<Library>(&paths.library_file());
         let (mut settings, settings_warning) = store::load::<Settings>(&paths.settings_file());
         settings.normalize();
+        settings.launch_at_login = matches!(system::login_item_status(), LoginItemStatus::Enabled);
         let warnings = library_warning.into_iter().chain(settings_warning).collect();
+
+        let strings = Strings::new(i18n::select_language(settings.language, &system::preferred_languages()));
+        let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
+        let muted = settings.muted;
+        let menu = Menu::install(
+            mtm,
+            &MenuState {
+                title: current_title(&library),
+                paused: false,
+                muted,
+                launch_at_login: settings.launch_at_login,
+            },
+            &strings,
+        );
+
         let mut app = Self {
-            muted: settings.muted,
+            muted,
             paused: false,
             display_asleep: false,
             screen_locked: false,
@@ -81,6 +108,10 @@ impl App {
             engine: Engine::new(mtm, paths),
             nap: system::AppNap::new(),
             observers: Observers::install(mtm),
+            hotkeys,
+            hotkey_failures,
+            strings,
+            menu,
             paths: paths.clone(),
         };
         app.sync(false);
@@ -139,11 +170,78 @@ impl App {
                 let playback = self.playback();
                 self.engine.on_unload_tick(item, &self.library, &playback);
             }
+            Event::Hotkey(action) => self.run_hotkey(action),
+            Event::Menu(action) => self.run_menu(action),
             Event::Request(request, reply) => {
                 let response = self.dispatch(&request);
                 let _ = reply.send(response);
             }
         }
+        self.sync_menu();
+    }
+
+    fn run_hotkey(&mut self, action: HotkeyAction) {
+        match action {
+            HotkeyAction::Next => {
+                let _ = self.select(Selection::Next);
+            }
+            HotkeyAction::Previous => {
+                let _ = self.select(Selection::Previous);
+            }
+            HotkeyAction::Random => {
+                let _ = self.select(Selection::Random);
+            }
+            HotkeyAction::TogglePause => {
+                let paused = self.paused;
+                let _ = self.set_paused(!paused);
+            }
+            HotkeyAction::ToggleMute => {
+                let muted = self.muted;
+                let _ = self.set_muted(!muted);
+            }
+        }
+    }
+
+    fn run_menu(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::TogglePause => {
+                let paused = self.paused;
+                let _ = self.set_paused(!paused);
+            }
+            MenuAction::Next => {
+                let _ = self.select(Selection::Next);
+            }
+            MenuAction::Previous => {
+                let _ = self.select(Selection::Previous);
+            }
+            MenuAction::Random => {
+                let _ = self.select(Selection::Random);
+            }
+            MenuAction::ToggleMute => {
+                let muted = self.muted;
+                let _ = self.set_muted(!muted);
+            }
+            MenuAction::ToggleLaunchAtLogin => {
+                let enabled = !self.settings.launch_at_login;
+                let _ = self.set_login_item(enabled);
+            }
+            MenuAction::Quit => {
+                self.engine.restore_desktop();
+                quit();
+            }
+        }
+    }
+
+    fn sync_menu(&self) {
+        self.menu.update(
+            &MenuState {
+                title: current_title(&self.library),
+                paused: self.paused,
+                muted: self.muted,
+                launch_at_login: self.settings.launch_at_login,
+            },
+            &self.strings,
+        );
     }
 
     fn playback(&self) -> Playback {
@@ -368,13 +466,23 @@ impl App {
             Request::Rules => return ok(&self.rules_report()),
             Request::SettingsGet => return ok(&self.settings),
             Request::SettingsSet { patch } => {
+                let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Response::err(ErrorCode::Invalid, message);
                 }
                 self.persist_settings();
+                let language = i18n::select_language(self.settings.language, &system::preferred_languages());
+                if language != previous {
+                    self.strings = Strings::new(language);
+                }
                 self.refresh_rules();
                 return ok(&self.settings);
             }
+            Request::HotkeysGet => return ok(&self.hotkeys_report()),
+            Request::HotkeysSet { action, combo } => return self.set_hotkey(*action, combo.clone()),
+            Request::LoginItemGet => return ok(&serde_json::json!({ "status": system::login_item_status() })),
+            Request::LoginItemSet { enabled } => return self.set_login_item(*enabled),
+            Request::Menu => return ok(&self.menu.report()),
             Request::Quit => return Response::ok(serde_json::json!({})),
             _ => return Response::err(ErrorCode::NotImplemented, "command not implemented yet"),
         }
@@ -409,6 +517,69 @@ impl App {
         self.persist_library();
         self.reapply();
         return ok(&serde_json::json!({ "item": id.to_string() }));
+    }
+
+    fn set_hotkey(&mut self, action: HotkeyAction, combo: Option<String>) -> Response {
+        let Some(text) = combo else {
+            self.hotkeys.unregister(action);
+            self.settings.hotkeys.set(action, None);
+            self.hotkey_failures.remove(&action);
+            self.persist_settings();
+            return ok(&self.hotkeys_report());
+        };
+        let combo = match hotkey::parse(&text) {
+            Ok(combo) => combo,
+            Err(error) => return Response::err(ErrorCode::Invalid, error.to_string()),
+        };
+        if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
+            return Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo));
+        }
+        match self.hotkeys.register(action, &combo) {
+            Ok(()) => {
+                self.settings.hotkeys.set(action, Some(combo));
+                self.hotkey_failures.remove(&action);
+                self.persist_settings();
+                return ok(&self.hotkeys_report());
+            }
+            Err(RegisterError::TakenByOtherApp) => {
+                let display = hotkey::display(&combo);
+                let message = self.strings.format(
+                    "%@ is already used by another app. Press another combination.",
+                    &[crate::i18n::Arg::Text(display)],
+                );
+                return Response::err(ErrorCode::Invalid, message);
+            }
+            Err(error) => return Response::err(ErrorCode::Invalid, register_message(error)),
+        }
+    }
+
+    fn hotkeys_report(&self) -> Vec<HotkeyEntry> {
+        return HotkeyAction::ALL
+            .into_iter()
+            .map(|action| {
+                let combo = self.settings.hotkeys.get(action);
+                return HotkeyEntry {
+                    action,
+                    combo: combo.cloned(),
+                    display: combo.map(hotkey::display),
+                    registered: self.hotkeys.is_registered(action),
+                    conflict: self.hotkey_failures.get(&action).cloned(),
+                };
+            })
+            .collect();
+    }
+
+    fn set_login_item(&mut self, enabled: bool) -> Response {
+        let status = match system::set_login_item(enabled) {
+            Ok(status) => status,
+            Err(message) => return Response::err(ErrorCode::Internal, message),
+        };
+        if matches!(status, LoginItemStatus::RequiresApproval) {
+            system::open_login_items_settings();
+        }
+        self.settings.launch_at_login = matches!(status, LoginItemStatus::Enabled);
+        self.persist_settings();
+        return ok(&serde_json::json!({ "status": status }));
     }
 
     fn paused_by(&self) -> Vec<DisplayPause> {
@@ -528,6 +699,40 @@ fn clear_if_removed(item: Option<ItemId>, removed: &[Uuid]) -> Option<ItemId> {
     return item.filter(|id| !removed.contains(id));
 }
 
+fn register_all(hotkeys: &proto::Hotkeys) -> (Hotkeys, std::collections::BTreeMap<HotkeyAction, String>) {
+    let mut registry = Hotkeys::install();
+    let mut failures = std::collections::BTreeMap::new();
+    for action in HotkeyAction::ALL {
+        let Some(combo) = hotkeys.get(action) else { continue };
+        if let Err(error) = registry.register(action, combo) {
+            failures.insert(action, register_message(error));
+        }
+    }
+    return (registry, failures);
+}
+
+fn register_message(error: RegisterError) -> String {
+    return match error {
+        RegisterError::TakenByOtherApp => "taken by another app".to_string(),
+        RegisterError::Failed(code) => format!("registration failed ({code})"),
+    };
+}
+
+fn validation_message(strings: &Strings, error: &hotkey::ValidationError, combo: &KeyCombo) -> String {
+    return match error {
+        hotkey::ValidationError::Reserved(owner) => strings.format(
+            "%@ is already used by %@. Press another combination.",
+            &[crate::i18n::Arg::Text(hotkey::display(combo)), crate::i18n::Arg::Text(strings.get(owner))],
+        ),
+        _ => error.to_string(),
+    };
+}
+
+fn current_title(library: &Library) -> Option<String> {
+    let id = library.placement.default.item?;
+    return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
+}
+
 fn random_index(len: usize, current: Option<usize>) -> usize {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -581,6 +786,15 @@ struct RulesReport<'a> {
 struct StateReport {
     paused: bool,
     muted: bool,
+}
+
+#[derive(Serialize)]
+struct HotkeyEntry {
+    action: HotkeyAction,
+    combo: Option<KeyCombo>,
+    display: Option<String>,
+    registered: bool,
+    conflict: Option<String>,
 }
 
 #[derive(Serialize)]
