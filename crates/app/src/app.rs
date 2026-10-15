@@ -16,6 +16,7 @@ use crate::engine::{Engine, Playback};
 use crate::hotkey;
 use crate::i18n::{self, Strings};
 use crate::import;
+use crate::media::probe;
 use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{Item, ItemId, ItemKind, Library, Settings};
 use crate::paths::Paths;
@@ -23,8 +24,10 @@ use crate::platform::detect;
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
 use crate::platform::system::{self, LoginItemStatus};
+use crate::process;
 use crate::rules;
 use crate::store;
+use crate::tools;
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 
@@ -48,6 +51,7 @@ pub enum Event {
     VideoUnloadTick { item: ItemId },
     Hotkey(HotkeyAction),
     Menu(MenuAction),
+    ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -70,6 +74,7 @@ pub struct App {
     hotkey_failures: std::collections::BTreeMap<HotkeyAction, String>,
     strings: Strings,
     menu: Menu,
+    handle: tokio::runtime::Handle,
 }
 
 impl App {
@@ -112,6 +117,7 @@ impl App {
             hotkey_failures,
             strings,
             menu,
+            handle: tokio::runtime::Handle::current(),
             paths: paths.clone(),
         };
         app.sync(false);
@@ -123,6 +129,7 @@ impl App {
         match event {
             Event::Quit => {
                 self.engine.restore_desktop();
+                process::kill_all();
                 quit();
             }
             Event::ScreensChanged => {
@@ -172,12 +179,123 @@ impl App {
             }
             Event::Hotkey(action) => self.run_hotkey(action),
             Event::Menu(action) => self.run_menu(action),
-            Event::Request(request, reply) => {
-                let response = self.dispatch(&request);
+            Event::Request(request, reply) => self.request(request, reply),
+            Event::ImportDone { report, reply } => {
+                let response = self.finish_import(&report);
                 let _ = reply.send(response);
             }
         }
         self.sync_menu();
+    }
+
+    fn request(&mut self, request: Request, reply: oneshot::Sender<Response>) {
+        match request {
+            Request::LibraryAdd { paths } => self.start_import(paths, reply),
+            Request::Probe { path } => self.start_probe(path, reply),
+            Request::Tools => self.start_tools(reply),
+            Request::ToolsInstall { tool, consent } => self.start_tools_install(&tool, consent, reply),
+            other => {
+                let response = self.dispatch(&other);
+                let _ = reply.send(response);
+            }
+        }
+    }
+
+    fn start_import(&mut self, paths: Vec<String>, reply: oneshot::Sender<Response>) {
+        let dest = self.paths.wallpapers_dir();
+        let thumbs = self.paths.thumbs_dir();
+        let policy = self.probe_policy();
+        self.handle.spawn(async move {
+            let report = import::run(&paths, &dest, &thumbs, policy, import::Transfer::Copy).await;
+            post(Event::ImportDone { report, reply });
+        });
+    }
+
+    fn finish_import(&mut self, report: &import::Report) -> Response {
+        let added = report.imported.len();
+        let mut queue = Vec::new();
+        for imported in &report.imported {
+            if imported.needs_optimize && self.settings.optimize_on_import {
+                queue.push(imported.item.id);
+            }
+        }
+        self.library.items.extend(report.imported.iter().map(|imported| imported.item.clone()));
+        self.persist_library();
+        self.reapply();
+        for item in queue {
+            self.on_optimize_requested(item);
+        }
+        return ok(&AddReport { added, skipped: report.skipped, results: &report.results });
+    }
+
+    fn start_probe(&mut self, path: String, reply: oneshot::Sender<Response>) {
+        let Some(kind) =
+            std::path::Path::new(&path).extension().and_then(|value| value.to_str()).and_then(import::kind_for)
+        else {
+            let _ = reply.send(Response::err(ErrorCode::Media, "unsupported format"));
+            return;
+        };
+        let policy = self.probe_policy();
+        self.handle.spawn(async move {
+            let task = tokio::task::spawn_blocking(move || {
+                let found = probe::inspect(&path, kind);
+                let verdict = probe::verdict(&found, policy);
+                return (found, verdict);
+            });
+            let response = match task.await {
+                Ok((found, verdict)) => Response::ok(serde_json::json!({ "probe": found, "verdict": verdict })),
+                Err(_) => Response::err(ErrorCode::Internal, "probe failed"),
+            };
+            let _ = reply.send(response);
+        });
+    }
+
+    fn start_tools(&mut self, reply: oneshot::Sender<Response>) {
+        let tools_dir = self.paths.tools_dir();
+        self.handle.spawn(async move {
+            let report = tools::report(&tools_dir).await;
+            let response = serde_json::to_value(&report)
+                .map_or_else(|_| Response::err(ErrorCode::Internal, "serialization failed"), Response::ok);
+            let _ = reply.send(response);
+        });
+    }
+
+    fn start_tools_install(&mut self, tool: &str, consent: bool, reply: oneshot::Sender<Response>) {
+        let Some(kind) = tools::ToolKind::from_id(tool) else {
+            let _ = reply.send(Response::err(ErrorCode::Invalid, "unknown tool"));
+            return;
+        };
+        if !consent && !self.settings.tools.install_consent {
+            let _ = reply.send(Response::err(ErrorCode::ConsentRequired, "tool installation requires consent"));
+            return;
+        }
+        let tools_dir = self.paths.tools_dir();
+        self.handle.spawn(async move {
+            let response = match tools::install(kind, &tools_dir).await {
+                Ok(path) => Response::ok(serde_json::json!({ "tool": kind, "path": path.to_string_lossy() })),
+                Err(message) => Response::err(ErrorCode::ToolMissing, message),
+            };
+            let _ = reply.send(response);
+        });
+    }
+
+    #[allow(clippy::unused_self)]
+    fn on_optimize_requested(&mut self, item: ItemId) {
+        tracing::info!(%item, "optimize requested");
+    }
+
+    fn probe_policy(&self) -> probe::Policy {
+        return probe::Policy { fps_limit: self.settings.optimize_fps_limit, max_pixels: self.max_display_px() };
+    }
+
+    fn max_display_px(&self) -> u32 {
+        let mut max = 0u32;
+        for display in self.engine.displays() {
+            let width = to_px(display.frame.size.width * display.scale);
+            let height = to_px(display.frame.size.height * display.scale);
+            max = max.max(width.max(height));
+        }
+        return max;
     }
 
     fn run_hotkey(&mut self, action: HotkeyAction) {
@@ -227,6 +345,7 @@ impl App {
             }
             MenuAction::Quit => {
                 self.engine.restore_desktop();
+                process::kill_all();
                 quit();
             }
         }
@@ -384,12 +503,6 @@ impl App {
             Request::Current => return ok(&self.current_report()),
             Request::LibraryList => {
                 return ok(&LibraryView { items: &self.library.items, folders: &self.library.folders });
-            }
-            Request::LibraryAdd { paths } => {
-                let report = import::add(&self.paths, &mut self.library, paths);
-                self.persist_library();
-                self.reapply();
-                return ok(&AddReport { added: report.added.len(), skipped: report.skipped });
             }
             Request::LibraryRemove { ids } => {
                 let removed = self.remove_items(ids);
@@ -733,6 +846,14 @@ fn current_title(library: &Library) -> Option<String> {
     return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn to_px(points: f64) -> u32 {
+    if !points.is_finite() || points <= 0.0 {
+        return 0;
+    }
+    return points.min(f64::from(u32::MAX)) as u32;
+}
+
 fn random_index(len: usize, current: Option<usize>) -> usize {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -798,9 +919,10 @@ struct HotkeyEntry {
 }
 
 #[derive(Serialize)]
-struct AddReport {
+struct AddReport<'a> {
     added: usize,
     skipped: usize,
+    results: &'a [import::PathResult],
 }
 
 #[derive(Serialize)]

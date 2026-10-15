@@ -85,6 +85,15 @@ enum Command {
     #[command(subcommand)]
     LoginItem(LoginItemCommand),
     Menu,
+    Tools,
+    ToolsInstall {
+        tool: String,
+        #[arg(long)]
+        consent: bool,
+    },
+    Probe {
+        path: String,
+    },
     Download {
         url: String,
         #[arg(long)]
@@ -310,6 +319,9 @@ fn build_request(command: Command) -> Result<Request, String> {
             LoginItemCommand::Set { enabled } => Request::LoginItemSet { enabled },
         },
         Command::Menu => Request::Menu,
+        Command::Tools => Request::Tools,
+        Command::ToolsInstall { tool, consent } => Request::ToolsInstall { tool, consent },
+        Command::Probe { path } => Request::Probe { path },
         Command::DownloadStatus { id } => Request::DownloadStatus { id },
         Command::DownloadCancel { id } => Request::DownloadCancel { id },
         Command::Optimize { id } => Request::Optimize { id },

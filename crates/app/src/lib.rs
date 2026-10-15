@@ -5,12 +5,15 @@ pub mod hotkey;
 mod i18n;
 mod import;
 mod ipc;
+mod media;
 mod menu;
 mod model;
 mod paths;
 mod platform;
+mod process;
 mod rules;
 mod store;
+mod tools;
 
 pub use app::{App, Event, install, post};
 pub use i18n::{Arg, Strings};

@@ -809,6 +809,13 @@ mod tests {
             muted: true,
             still_time: 0.0,
             optimized: false,
+            width: 0,
+            height: 0,
+            duration: 0.0,
+            fps: 0.0,
+            codec: None,
+            hdr: false,
+            needs_optimize: false,
         };
         assert_eq!(item.geometry(), proto::Geometry::default());
         item.modes.insert(proto::FillMode::Custom, proto::Geometry { x: 0.5, y: 0.0, zoom: 2.0 });

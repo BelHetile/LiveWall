@@ -27,6 +27,7 @@ pub enum ItemKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Item {
     pub id: ItemId,
     pub kind: ItemKind,
@@ -49,6 +50,20 @@ pub struct Item {
     pub still_time: f32,
     #[serde(default)]
     pub optimized: bool,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub duration: f64,
+    #[serde(default)]
+    pub fps: f64,
+    #[serde(default)]
+    pub codec: Option<String>,
+    #[serde(default)]
+    pub hdr: bool,
+    #[serde(default)]
+    pub needs_optimize: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,6 +268,13 @@ mod tests {
             muted: false,
             still_time: 4.0,
             optimized: true,
+            width: 3840,
+            height: 2160,
+            duration: 12.5,
+            fps: 30.0,
+            codec: Some("hvc1".into()),
+            hdr: true,
+            needs_optimize: false,
         };
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");

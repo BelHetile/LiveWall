@@ -1,30 +1,65 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use proto::FillMode;
+use serde::Serialize;
 use uuid::Uuid;
 
-use crate::model::{Item, ItemKind, Library};
-use crate::paths::Paths;
+use crate::media::{probe, thumb};
+use crate::model::{Item, ItemKind};
 
-pub struct AddReport {
-    pub added: Vec<Uuid>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Transfer {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PathStatus {
+    Imported,
+    Skipped,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PathResult {
+    pub path: String,
+    pub status: PathStatus,
+    pub id: Option<String>,
+    pub title: Option<String>,
+    pub thumbnail: Option<String>,
+    pub verdict: Option<probe::Verdict>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportedItem {
+    pub item: Item,
+    pub needs_optimize: bool,
+    pub result: PathResult,
+}
+
+#[derive(Debug, Default)]
+pub struct Report {
+    pub imported: Vec<ImportedItem>,
+    pub results: Vec<PathResult>,
     pub skipped: usize,
 }
 
-pub fn add(paths: &Paths, library: &mut Library, inputs: &[String]) -> AddReport {
-    let directory = paths.wallpapers_dir();
-    let mut report = AddReport { added: Vec::new(), skipped: 0 };
-    for input in inputs {
-        match import_one(Path::new(input), &directory) {
-            Some(item) => {
-                report.added.push(item.id);
-                library.items.push(item);
-            }
-            None => report.skipped += 1,
-        }
+impl Report {
+    pub fn added(&self) -> usize {
+        return self.imported.len();
     }
-    return report;
+}
+
+struct Prepared {
+    id: Uuid,
+    path: String,
+    probe: probe::Probe,
+    verdict: probe::Verdict,
+    needs_optimize: bool,
 }
 
 pub fn kind_for(extension: &str) -> Option<ItemKind> {
@@ -36,18 +71,86 @@ pub fn kind_for(extension: &str) -> Option<ItemKind> {
     };
 }
 
-fn import_one(source: &Path, directory: &Path) -> Option<Item> {
-    let extension = source.extension()?.to_str()?.to_ascii_lowercase();
-    let kind = kind_for(&extension)?;
-    let id = Uuid::new_v4();
-    let target = directory.join(format!("{id}.{extension}"));
-    std::fs::copy(source, &target).ok()?;
-    let title = source.file_stem().and_then(|stem| stem.to_str()).unwrap_or("untitled").to_string();
-    return Some(Item {
-        id,
-        kind,
-        path: target.to_string_lossy().into_owned(),
-        title,
+pub async fn run(
+    inputs: &[String],
+    dest_dir: &Path,
+    thumbs_dir: &Path,
+    policy: probe::Policy,
+    transfer: Transfer,
+) -> Report {
+    let mut set = tokio::task::JoinSet::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let input = input.clone();
+        let dest_dir = dest_dir.to_path_buf();
+        let thumbs_dir = thumbs_dir.to_path_buf();
+        set.spawn(async move {
+            let outcome = import_one(input, dest_dir, thumbs_dir, policy, transfer).await;
+            return (index, outcome);
+        });
+    }
+    let mut ordered: Vec<(usize, Result<ImportedItem, PathResult>)> = Vec::with_capacity(inputs.len());
+    while let Some(joined) = set.join_next().await {
+        if let Ok(entry) = joined {
+            ordered.push(entry);
+        }
+    }
+    ordered.sort_by_key(|(index, _)| *index);
+
+    let mut report = Report::default();
+    for (_, outcome) in ordered {
+        match outcome {
+            Ok(imported) => {
+                report.results.push(imported.result.clone());
+                report.imported.push(imported);
+            }
+            Err(failed) => {
+                report.skipped += 1;
+                report.results.push(failed);
+            }
+        }
+    }
+    return report;
+}
+
+#[allow(clippy::result_large_err)]
+async fn import_one(
+    input: String,
+    dest_dir: PathBuf,
+    thumbs_dir: PathBuf,
+    policy: probe::Policy,
+    transfer: Transfer,
+) -> Result<ImportedItem, PathResult> {
+    let Some(extension) = extension_of(&input) else {
+        return Err(skipped(&input, "unsupported format"));
+    };
+    let Some(kind) = kind_for(&extension) else {
+        return Err(skipped(&input, "unsupported format"));
+    };
+    let task_input = input.clone();
+    let task = tokio::task::spawn_blocking(move || prepare(&task_input, &extension, kind, &dest_dir, policy, transfer));
+    let prepared = match task.await {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(rejected)) => return Err(rejected),
+        Err(_) => return Err(skipped(&input, "import task failed")),
+    };
+    let thumbnail =
+        thumb::ensure(prepared.id, prepared.probe.kind, prepared.path.clone(), prepared.probe.duration, thumbs_dir)
+            .await
+            .map(|path| path.to_string_lossy().into_owned());
+    let result = PathResult {
+        path: input.clone(),
+        status: PathStatus::Imported,
+        id: Some(prepared.id.to_string()),
+        title: Some(title_of(&input)),
+        thumbnail: thumbnail.clone(),
+        verdict: Some(prepared.verdict.clone()),
+        reason: None,
+    };
+    let item = Item {
+        id: prepared.id,
+        kind: prepared.probe.kind,
+        path: prepared.path,
+        title: title_of(&input),
         added_at: jiff::Timestamp::now(),
         folder: None,
         mode: FillMode::Fill,
@@ -57,12 +160,110 @@ fn import_one(source: &Path, directory: &Path) -> Option<Item> {
         muted: true,
         still_time: 0.0,
         optimized: false,
-    });
+        width: prepared.probe.width,
+        height: prepared.probe.height,
+        duration: prepared.probe.duration,
+        fps: prepared.probe.fps,
+        codec: prepared.probe.codec.clone(),
+        hdr: prepared.probe.hdr,
+        needs_optimize: prepared.needs_optimize,
+    };
+    return Ok(ImportedItem { item, needs_optimize: prepared.needs_optimize, result });
+}
+
+#[allow(clippy::result_large_err)]
+fn prepare(
+    input: &str,
+    extension: &str,
+    kind: ItemKind,
+    dest_dir: &Path,
+    policy: probe::Policy,
+    transfer: Transfer,
+) -> Result<Prepared, PathResult> {
+    let id = Uuid::new_v4();
+    let target = dest_dir.join(format!("{id}.{extension}"));
+    if let Err(error) = place(input, &target, transfer) {
+        return Err(skipped(input, &format!("cannot import file: {error}")));
+    }
+    let path = target.to_string_lossy().into_owned();
+    let found = probe::inspect(&path, kind);
+    let verdict = probe::verdict(&found, policy);
+    if let probe::Verdict::Unsupported { reason } = &verdict {
+        let reason = reason.clone();
+        let _ = std::fs::remove_file(&target);
+        return Err(PathResult {
+            path: input.to_string(),
+            status: PathStatus::Rejected,
+            id: None,
+            title: None,
+            thumbnail: None,
+            verdict: Some(verdict),
+            reason: Some(reason),
+        });
+    }
+    let needs_optimize = matches!(verdict, probe::Verdict::NeedsOptimize { .. });
+    return Ok(Prepared { id, path, probe: found, verdict, needs_optimize });
+}
+
+fn place(input: &str, target: &Path, transfer: Transfer) -> std::io::Result<()> {
+    return match transfer {
+        Transfer::Copy => {
+            std::fs::copy(input, target)?;
+            Ok(())
+        }
+        Transfer::Move => {
+            if std::fs::rename(input, target).is_ok() {
+                Ok(())
+            } else {
+                std::fs::copy(input, target)?;
+                std::fs::remove_file(input)
+            }
+        }
+    };
+}
+
+fn extension_of(input: &str) -> Option<String> {
+    return Path::new(input).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+}
+
+fn title_of(input: &str) -> String {
+    return Path::new(input).file_stem().and_then(|stem| stem.to_str()).unwrap_or("untitled").to_string();
+}
+
+fn skipped(path: &str, reason: &str) -> PathResult {
+    return PathResult {
+        path: path.to_string(),
+        status: PathStatus::Skipped,
+        id: None,
+        title: None,
+        thumbnail: None,
+        verdict: None,
+        reason: Some(reason.to_string()),
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn policy() -> probe::Policy {
+        return probe::Policy { fps_limit: 30, max_pixels: 2560 };
+    }
+
+    #[test]
+    fn place_copies_or_moves_the_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("a.bin");
+        std::fs::write(&source, b"data").expect("write");
+        let copy = dir.path().join("copy.bin");
+        place(&source.to_string_lossy(), &copy, Transfer::Copy).expect("copy");
+        assert!(source.exists(), "copy must keep the original");
+        assert!(copy.exists());
+        let moved = dir.path().join("moved.bin");
+        place(&copy.to_string_lossy(), &moved, Transfer::Move).expect("move");
+        assert!(!copy.exists(), "move must remove the original");
+        assert!(moved.exists());
+    }
 
     #[test]
     fn kinds_by_extension() {
@@ -73,24 +274,46 @@ mod tests {
         assert_eq!(kind_for("png"), Some(ItemKind::Image));
         assert_eq!(kind_for("jpeg"), Some(ItemKind::Image));
         assert_eq!(kind_for("avi"), None);
+        assert_eq!(kind_for("txt"), None);
         assert_eq!(kind_for("mp3"), None);
     }
 
-    #[test]
-    fn copies_into_storage_and_skips_unknown() {
+    #[tokio::test]
+    async fn unsupported_extension_is_skipped_without_touching_storage() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let paths = Paths::for_test(dir.path().to_path_buf());
-        paths.ensure().expect("dirs");
-        let source = dir.path().join("clip.mp4");
-        std::fs::write(&source, b"fake").expect("write");
+        let dest = dir.path().join("Wallpapers");
+        let thumbs = dir.path().join("Thumbs");
+        std::fs::create_dir_all(&dest).expect("dest");
+        std::fs::create_dir_all(&thumbs).expect("thumbs");
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"not media").expect("write");
 
-        let mut library = Library::default();
-        let report = add(&paths, &mut library, &[source.to_string_lossy().into_owned(), "/does/not/exist.xyz".into()]);
-        assert_eq!(report.added.len(), 1);
+        let report = run(&[txt.to_string_lossy().into_owned()], &dest, &thumbs, policy(), Transfer::Copy).await;
+        assert_eq!(report.added(), 0);
         assert_eq!(report.skipped, 1);
-        assert_eq!(library.items.len(), 1);
-        assert_eq!(library.items[0].kind, ItemKind::Video);
-        assert_eq!(library.items[0].title, "clip");
-        assert!(Path::new(&library.items[0].path).exists());
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].status, PathStatus::Skipped);
+        assert!(std::fs::read_dir(&dest).expect("read").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_file_is_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("Wallpapers");
+        let thumbs = dir.path().join("Thumbs");
+        std::fs::create_dir_all(&dest).expect("dest");
+        std::fs::create_dir_all(&thumbs).expect("thumbs");
+
+        let report = run(
+            &[dir.path().join("gone.mp4").to_string_lossy().into_owned()],
+            &dest,
+            &thumbs,
+            policy(),
+            Transfer::Copy,
+        )
+        .await;
+        assert_eq!(report.added(), 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.results[0].status, PathStatus::Skipped);
     }
 }

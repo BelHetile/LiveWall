@@ -23,6 +23,11 @@ name = "e2e_hotkeys"
 path = "tests/e2e_hotkeys.rs"
 harness = false
 
+[[test]]
+name = "e2e_media"
+path = "tests/e2e_media.rs"
+harness = false
+
 [lints]
 workspace = true
 
@@ -36,6 +41,7 @@ uuid.workspace = true
 jiff.workspace = true
 sha2.workspace = true
 base64.workspace = true
+semver.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-oslog.workspace = true
@@ -95,6 +101,7 @@ objc2-core-foundation = { workspace = true, features = [
     "CFData",
     "CFError",
     "CFPropertyList",
+    "CFCGTypes",
 ] }
 objc2-core-graphics = { workspace = true, features = [
     "std",
@@ -104,13 +111,22 @@ objc2-core-graphics = { workspace = true, features = [
     "CGDirectDisplay",
     "CGImage",
 ] }
-objc2-core-media = { workspace = true, features = ["std", "CMTime"] }
+objc2-core-media = { workspace = true, features = [
+    "std",
+    "CMBase",
+    "CMTime",
+    "CMFormatDescription",
+    "CMSampleBuffer",
+    "objc2",
+] }
 objc2-core-audio = { workspace = true, features = ["std", "AudioHardware", "objc2", "block2", "dispatch2"] }
 objc2-quartz-core = { workspace = true, features = ["std", "CALayer", "objc2-core-foundation"] }
 objc2-av-foundation = { workspace = true, features = [
     "std",
     "AVAsset",
     "AVAssetTrack",
+    "AVAssetReader",
+    "AVAssetReaderOutput",
     "AVAssetImageGenerator",
     "AVMediaFormat",
     "AVAsynchronousKeyValueLoading",
@@ -128,6 +144,7 @@ objc2-av-foundation = { workspace = true, features = [
 objc2-image-io = { workspace = true, features = ["std", "CGImageSource", "CGImageDestination", "CGImageProperties", "objc2-core-graphics"] }
 objc2-color-sync = { workspace = true, features = ["std", "ColorSyncDevice"] }
 objc2-service-management = { workspace = true, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+objc2-video-toolbox = { workspace = true, features = ["std", "objc2", "objc2-core-media", "VTDecompressionSession"] }
 plist.workspace = true
 block2.workspace = true
 dispatch2.workspace = true

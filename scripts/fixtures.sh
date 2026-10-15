@@ -50,5 +50,38 @@ ffmpeg -y -loglevel error -f concat -safe 0 -i "$list" -vf "scale=320:240:flags=
 
 ffmpeg -y -loglevel error -f lavfi -i testsrc2=size=1920x1200:rate=1 -frames:v 1 "$out/still.png"
 
+ffmpeg -y -loglevel error \
+    -f lavfi -i testsrc2=size=3840x2160:rate=60 \
+    -t 1 -c:v "$hevc" -b:v 4000k -pix_fmt yuv420p -tag:v hvc1 "$out/clip-4k-hevc-60.mp4"
+
+if grep -q libvpx-vp9 <<<"$encoders"; then
+    ffmpeg -y -loglevel error \
+        -f lavfi -i testsrc2=size=1280x720:rate=30 \
+        -t 2 -c:v libvpx-vp9 -b:v 1000k "$out/clip-vp9.webm"
+else
+    echo "fixtures.sh: libvpx-vp9 unavailable; skipping the VP9 webm fixture" >&2
+fi
+
+av1=""
+if grep -q libsvtav1 <<<"$encoders"; then
+    av1="libsvtav1"
+elif grep -q libaom-av1 <<<"$encoders"; then
+    av1="libaom-av1"
+fi
+if [[ "$av1" == "libaom-av1" ]]; then
+    ffmpeg -y -loglevel error \
+        -f lavfi -i testsrc2=size=1920x1080:rate=30 \
+        -t 2 -c:v libaom-av1 -cpu-used 8 -crf 45 -b:v 0 -pix_fmt yuv420p -tag:v av01 "$out/clip-av1-1080p.mp4"
+elif [[ -n "$av1" ]]; then
+    ffmpeg -y -loglevel error \
+        -f lavfi -i testsrc2=size=1920x1080:rate=30 \
+        -t 2 -c:v "$av1" -b:v 1500k -pix_fmt yuv420p -tag:v av01 "$out/clip-av1-1080p.mp4"
+else
+    echo "fixtures.sh: no AV1 encoder (libsvtav1/libaom-av1); skipping the AV1 fixture" >&2
+fi
+
+printf 'not a wallpaper\n' >"$out/notes.txt"
+head -c 4096 "$out/clip-h264-720p60.mp4" >"$out/corrupt.mp4"
+
 ls -l "$out"
 echo "fixtures.sh: wrote fixtures to $out"

@@ -28,7 +28,7 @@ clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 jiff = { version = "0.2", features = ["serde"] }
-tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-oslog = "0.3"
@@ -44,6 +44,8 @@ objc2-av-foundation = { version = "0.3.2", default-features = false }
 objc2-image-io = { version = "0.3.2", default-features = false }
 objc2-color-sync = { version = "0.3.2", default-features = false }
 objc2-service-management = { version = "0.3.2", default-features = false }
+objc2-video-toolbox = { version = "0.3.2", default-features = false }
+semver = "1"
 plist = "1"
 block2 = "0.6"
 dispatch2 = "0.3"
