@@ -16,6 +16,7 @@ mod process;
 mod rules;
 mod store;
 mod tools;
+pub mod ui;
 
 pub use app::{App, Event, install, post};
 pub use i18n::{Arg, Strings};
