@@ -57,6 +57,26 @@ Exit codes: 0 ok, 1 error, 2 app not running, 64 usage.
     download URL [--consent] [--no-wait]  download-status ID  download-cancel ID  downloads
     optimize ID  optimize-status ID  optimize-cancel ID
 
+## Transitions
+
+Every wallpaper change animates on the GPU (awww-style). `apply`, `next`,
+`previous` and `random` accept:
+
+    -t, --transition KIND   none simple fade left right top bottom wipe wave
+                            grow center any outer random        (default fade)
+    --duration SECONDS      default 1.0
+    --bezier A,B,C,D        default 0.54,0,0.34,0.99
+    --angle DEG             wipe/wave direction; 0 = right-to-left, 90 = top-to-bottom; default 45
+    --pos X,Y | ALIAS       circle origin: fractions, pixels or center/top-right/...
+    --invert-y              flip the y axis of --pos
+    --wave PERIOD,AMPLITUDE default 20,20
+
+    lwctl next -t wipe --angle 90 --duration 0.8
+    lwctl settings set '{"transition":{"kind":"grow","pos":"bottom-left"}}'
+
+The global default lives in `settings.json` under `transition`; per-request flags
+override it. Topology changes, startup and crash recovery switch instantly.
+
 ## Data
 
 `~/Library/Application Support/LiveWall/`:
