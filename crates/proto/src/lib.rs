@@ -141,13 +141,7 @@ pub enum Request {
     FolderDelete { id: String },
     Apply { item: Option<String>, target: ApplyTarget },
     SetGeometry { item: String, mode: FillMode, geometry: Geometry },
-    SetItem {
-        item: String,
-        volume: Option<f32>,
-        speed: Option<f32>,
-        muted: Option<bool>,
-        still_time: Option<f32>,
-    },
+    SetItem { item: String, volume: Option<f32>, speed: Option<f32>, muted: Option<bool>, still_time: Option<f32> },
     SettingsGet,
     SettingsSet { patch: Value },
     HotkeysGet,
@@ -184,10 +178,7 @@ impl Response {
     }
 
     pub fn err(code: ErrorCode, message: impl Into<String>) -> Self {
-        return Self {
-            v: PROTOCOL_VERSION,
-            body: ResponseBody::Err(ErrorBody { code, message: message.into() }),
-        };
+        return Self { v: PROTOCOL_VERSION, body: ResponseBody::Err(ErrorBody { code, message: message.into() }) };
     }
 }
 
@@ -363,10 +354,7 @@ mod tests {
     #[test]
     fn hotkey_defaults_are_control_option_command() {
         let hotkeys = Hotkeys::default();
-        assert_eq!(
-            hotkeys.pause.modifiers,
-            vec![Modifier::Control, Modifier::Option, Modifier::Command]
-        );
+        assert_eq!(hotkeys.pause.modifiers, vec![Modifier::Control, Modifier::Option, Modifier::Command]);
         assert_eq!(hotkeys.next.key, "ArrowRight");
         assert_eq!(hotkeys.previous.key, "ArrowLeft");
     }

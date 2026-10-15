@@ -11,7 +11,7 @@ use objc2_core_audio::{
 };
 use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
 use objc2_core_graphics::{
-    CGWindowListCopyWindowInfo, CGWindowListOption, CGRectMakeWithDictionaryRepresentation, kCGNullWindowID,
+    CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
     kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
@@ -83,9 +83,8 @@ fn on_screen_windows(screens: &[Screen]) -> Vec<Window> {
         let dictionary: &CFDictionary<CFString, CFType> = unsafe { dictionary.cast_unchecked() };
         let Some(bounds) = cf_rect(dictionary, unsafe { kCGWindowBounds }) else { continue };
         let layer = cf_i64(dictionary, unsafe { kCGWindowLayer }).unwrap_or(0);
-        let pid = cf_i64(dictionary, unsafe { kCGWindowOwnerPID })
-            .and_then(|value| i32::try_from(value).ok())
-            .unwrap_or(0);
+        let pid =
+            cf_i64(dictionary, unsafe { kCGWindowOwnerPID }).and_then(|value| i32::try_from(value).ok()).unwrap_or(0);
         let alpha = cf_f64(dictionary, unsafe { kCGWindowAlpha }).unwrap_or(1.0);
         let flipped = rules::Rect::new(bounds.x, flip - (bounds.y + bounds.h), bounds.w, bounds.h);
         windows.push(Window { bounds: flipped, layer, pid, alpha });
@@ -116,11 +115,8 @@ fn is_candidate(window: &Window, own: i32) -> bool {
 }
 
 fn display_state(screen: &Screen, windows: &[Window], own: i32) -> rules::DisplayState {
-    let candidates: Vec<rules::Rect> = windows
-        .iter()
-        .filter(|window| is_candidate(window, own))
-        .map(|window| window.bounds)
-        .collect();
+    let candidates: Vec<rules::Rect> =
+        windows.iter().filter(|window| is_candidate(window, own)).map(|window| window.bounds).collect();
     let fullscreen = candidates.iter().any(|window| approximately_covers(*window, screen.frame, FULLSCREEN_TOLERANCE));
     let coverage = coverage_fraction(&candidates, screen.frame);
     return rules::DisplayState { display: screen.uuid.clone(), frame: screen.frame, fullscreen, coverage };

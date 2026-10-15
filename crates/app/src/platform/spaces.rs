@@ -195,14 +195,10 @@ impl Cgs {
     fn move_windows(&self, windows: &[u32], spaces: &[u64], add: bool) {
         let Some(ptrs) = self.ptrs else { return };
         let cid = self.connection();
-        let window_numbers: Vec<CFRetained<CFNumber>> = windows
-            .iter()
-            .map(|id| CFNumber::new_i64(i64::from(*id)))
-            .collect();
-        let space_numbers: Vec<CFRetained<CFNumber>> = spaces
-            .iter()
-            .map(|id| CFNumber::new_i64(i64::try_from(*id).unwrap_or(i64::MAX)))
-            .collect();
+        let window_numbers: Vec<CFRetained<CFNumber>> =
+            windows.iter().map(|id| CFNumber::new_i64(i64::from(*id))).collect();
+        let space_numbers: Vec<CFRetained<CFNumber>> =
+            spaces.iter().map(|id| CFNumber::new_i64(i64::try_from(*id).unwrap_or(i64::MAX))).collect();
         let window_refs: Vec<&CFType> = window_numbers.iter().map(|n| cf_ref(&**n)).collect();
         let space_refs: Vec<&CFType> = space_numbers.iter().map(|n| cf_ref(&**n)).collect();
         let window_array = CFArray::<CFType>::from_objects(&window_refs);
@@ -229,7 +225,11 @@ fn resolve() -> Option<FnPtrs> {
         let copy_display_spaces = libc::dlsym(handle, c"CGSCopyManagedDisplaySpaces".as_ptr());
         let add_windows = libc::dlsym(handle, c"CGSAddWindowsToSpaces".as_ptr());
         let remove_windows = libc::dlsym(handle, c"CGSRemoveWindowsFromSpaces".as_ptr());
-        if main_connection.is_null() || copy_display_spaces.is_null() || add_windows.is_null() || remove_windows.is_null() {
+        if main_connection.is_null()
+            || copy_display_spaces.is_null()
+            || add_windows.is_null()
+            || remove_windows.is_null()
+        {
             return None;
         }
         return Some(FnPtrs {
@@ -284,13 +284,13 @@ fn parse_display(dict: &CFDictionary<CFString, CFType>) -> Option<DisplayTopolog
 fn parse_space(dict: &CFDictionary<CFString, CFType>) -> Option<Space> {
     let uuid = dict.get(&CFString::from_str("uuid")).and_then(|value| cf_string(&value))?;
     let id = dict.get(&CFString::from_str("id64")).and_then(|value| cf_u64(&value));
-    let kind = dict
-        .get(&CFString::from_str("type"))
-        .and_then(|value| cf_i64(&value))
-        .map_or(SpaceKind::User, |value| match value {
-            2 => SpaceKind::System,
-            4 => SpaceKind::Fullscreen,
-            _ => SpaceKind::User,
+    let kind =
+        dict.get(&CFString::from_str("type")).and_then(|value| cf_i64(&value)).map_or(SpaceKind::User, |value| {
+            match value {
+                2 => SpaceKind::System,
+                4 => SpaceKind::Fullscreen,
+                _ => SpaceKind::User,
+            }
         });
     return Some(Space { uuid, id: id.unwrap_or(0), kind });
 }
@@ -399,10 +399,7 @@ mod tests {
         let specs = vec![SurfaceSpec { key: SurfaceKey::new("A", ALL_SPACES), space_id: None, can_join_all: true }];
         let existing = vec![Existing { key: SurfaceKey::new("A", ALL_SPACES), space_id: None, can_join_all: false }];
         let actions = diff(&existing, &specs);
-        assert_eq!(
-            actions,
-            vec![Action::Remove(SurfaceKey::new("A", ALL_SPACES)), Action::Create(specs[0].clone())]
-        );
+        assert_eq!(actions, vec![Action::Remove(SurfaceKey::new("A", ALL_SPACES)), Action::Create(specs[0].clone())]);
     }
 
     #[test]
@@ -416,11 +413,7 @@ mod tests {
     #[test]
     fn parse_from_core_foundation_structures() {
         let space = |uuid: &str, id: i64, kind: i64| {
-            let keys = [
-                CFString::from_str("uuid"),
-                CFString::from_str("id64"),
-                CFString::from_str("type"),
-            ];
+            let keys = [CFString::from_str("uuid"), CFString::from_str("id64"), CFString::from_str("type")];
             let values: [CFRetained<CFType>; 3] = [
                 unsafe { CFRetained::cast_unchecked(CFString::from_str(uuid)) },
                 unsafe { CFRetained::cast_unchecked(CFNumber::new_i64(id)) },
@@ -431,10 +424,7 @@ mod tests {
             return CFDictionary::<CFString, CFType>::from_slices(&key_refs, &refs);
         };
 
-        let spaces = CFArray::<CFType>::from_objects(&[
-            cf_ref(&space("s1", 10, 0)),
-            cf_ref(&space("s2", 11, 2)),
-        ]);
+        let spaces = CFArray::<CFType>::from_objects(&[cf_ref(&space("s1", 10, 0)), cf_ref(&space("s2", 11, 2))]);
 
         let display_keys = [
             CFString::from_str("Display Identifier"),

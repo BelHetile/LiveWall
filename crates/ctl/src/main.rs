@@ -4,9 +4,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use proto::{
-    ApplyTarget, FillMode, Geometry, Hotkeys, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
-};
+use proto::{ApplyTarget, FillMode, Geometry, Hotkeys, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody};
 use serde_json::Value;
 
 const EXIT_OK: u8 = 0;
@@ -103,9 +101,17 @@ enum Command {
 #[derive(Subcommand)]
 enum LibraryCommand {
     List,
-    Add { paths: Vec<String> },
-    Remove { ids: Vec<String> },
-    Rename { id: String, #[arg(long)] title: String },
+    Add {
+        paths: Vec<String>,
+    },
+    Remove {
+        ids: Vec<String>,
+    },
+    Rename {
+        id: String,
+        #[arg(long)]
+        title: String,
+    },
     Move {
         ids: Vec<String>,
         #[arg(long)]
@@ -248,20 +254,18 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Apply { item, target, target_id } => {
             let target = match target {
                 TargetKind::Default => ApplyTarget::Default,
-                TargetKind::Display => ApplyTarget::Display {
-                    display: target_id.ok_or("--target-id is required for --target display")?,
-                },
-                TargetKind::Space => ApplyTarget::Space {
-                    space: target_id.ok_or("--target-id is required for --target space")?,
-                },
+                TargetKind::Display => {
+                    ApplyTarget::Display { display: target_id.ok_or("--target-id is required for --target display")? }
+                }
+                TargetKind::Space => {
+                    ApplyTarget::Space { space: target_id.ok_or("--target-id is required for --target space")? }
+                }
             };
             Request::Apply { item, target }
         }
-        Command::SetGeometry { item, mode, x, y, zoom } => Request::SetGeometry {
-            item,
-            mode: mode.into(),
-            geometry: Geometry { x, y, zoom },
-        },
+        Command::SetGeometry { item, mode, x, y, zoom } => {
+            Request::SetGeometry { item, mode: mode.into(), geometry: Geometry { x, y, zoom } }
+        }
         Command::SetItem { item, volume, speed, muted, still_time } => {
             Request::SetItem { item, volume, speed, muted, still_time }
         }

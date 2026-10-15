@@ -94,12 +94,7 @@ pub struct Library {
 
 impl Default for Library {
     fn default() -> Self {
-        return Self {
-            v: LIBRARY_VERSION,
-            items: Vec::new(),
-            folders: Vec::new(),
-            placement: Placement::default(),
-        };
+        return Self { v: LIBRARY_VERSION, items: Vec::new(), folders: Vec::new(), placement: Placement::default() };
     }
 }
 

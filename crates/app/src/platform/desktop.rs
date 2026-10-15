@@ -53,13 +53,7 @@ impl DesktopApi {
         let Some(fns) = self.space else { return };
         let space = CFString::from_str(space);
         unsafe {
-            (fns.set)(
-                display,
-                std::ptr::from_ref(config).cast(),
-                0,
-                0,
-                CFRetained::as_ptr(&space).as_ptr().cast(),
-            );
+            (fns.set)(display, std::ptr::from_ref(config).cast(), 0, 0, CFRetained::as_ptr(&space).as_ptr().cast());
         }
     }
 }
@@ -144,9 +138,7 @@ pub fn decode(encoded: &str) -> Option<CFRetained<CFDictionary<CFString, CFType>
 
 pub fn image_path(config: &CFDictionary<CFString, CFType>) -> Option<String> {
     let key = CFString::from_str("ImageFilePath");
-    return config
-        .get(&key)
-        .and_then(|value| value.downcast_ref::<CFString>().map(ToString::to_string));
+    return config.get(&key).and_then(|value| value.downcast_ref::<CFString>().map(ToString::to_string));
 }
 
 pub fn is_empty(config: &CFDictionary<CFString, CFType>) -> bool {

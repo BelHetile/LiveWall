@@ -230,10 +230,7 @@ fn kill(child: &mut Child) {
 }
 
 fn current_pictures() -> Vec<String> {
-    let output = osascript(&[
-        "-e",
-        "tell application \"System Events\" to get picture of every desktop",
-    ]);
+    let output = osascript(&["-e", "tell application \"System Events\" to get picture of every desktop"]);
     let trimmed = output.trim();
     if trimmed.is_empty() {
         return Vec::new();

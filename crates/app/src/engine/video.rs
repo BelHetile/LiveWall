@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_av_foundation::{
     AVAsynchronousKeyValueLoading, AVLayerVideoGravityResize, AVPlayerItem, AVPlayerLayer, AVPlayerLooper,
     AVQueuePlayer, AVURLAsset,

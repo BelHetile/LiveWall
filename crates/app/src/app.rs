@@ -213,7 +213,8 @@ impl App {
         let block = block2::RcBlock::new(|_timer: NonNull<NSTimer>| {
             post(Event::GeometryTick);
         });
-        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(GEOMETRY_POLL_SECONDS, true, &block) };
+        let timer =
+            unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(GEOMETRY_POLL_SECONDS, true, &block) };
         self.geometry_timer = Some(timer);
     }
 
@@ -459,7 +460,12 @@ impl App {
             .iter()
             .map(|display| DisplayReport {
                 uuid: display.uuid.clone(),
-                frame: [display.frame.origin.x, display.frame.origin.y, display.frame.size.width, display.frame.size.height],
+                frame: [
+                    display.frame.origin.x,
+                    display.frame.origin.y,
+                    display.frame.size.width,
+                    display.frame.size.height,
+                ],
                 scale: display.scale,
             })
             .collect();

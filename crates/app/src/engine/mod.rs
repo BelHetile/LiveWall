@@ -16,13 +16,13 @@ use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
 use objc2_foundation::{NSNumber, NSTimer};
 use objc2_quartz_core::CALayer;
 
+use crate::engine::desktop::{Desktop, Mode, Target};
+use crate::engine::window::WallpaperWindow;
 use crate::geometry::{self, Size};
 use crate::model::{ItemId, ItemKind, Library};
 use crate::paths::Paths;
-use crate::rules;
 use crate::platform::spaces::{self, SurfaceKey};
-use crate::engine::desktop::{Desktop, Mode, Target};
-use crate::engine::window::WallpaperWindow;
+use crate::rules;
 
 pub struct Display {
     pub uuid: String,
@@ -140,11 +140,7 @@ impl Engine {
         let displays = collect_displays(mtm);
         let topology = cgs.topology();
         let api = crate::platform::desktop::DesktopApi::load();
-        let mode = if topology.fallback || !api.per_space() {
-            Mode::Screen
-        } else {
-            Mode::PerSpace
-        };
+        let mode = if topology.fallback || !api.per_space() { Mode::Screen } else { Mode::PerSpace };
         let mut desktop = Desktop::new(paths.swap_state_file(), mode);
         desktop.recover(mtm);
         return Self {
@@ -368,7 +364,8 @@ impl Engine {
         let block = block2::RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
             crate::app::post(crate::app::Event::VideoUnloadTick { item });
         });
-        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(f64::from(stop_after), false, &block) };
+        let timer =
+            unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(f64::from(stop_after), false, &block) };
         self.unload_timers.insert(item, timer);
     }
 
@@ -410,7 +407,12 @@ impl Engine {
                 space: key.space.clone(),
                 number: surface.window.window_number(),
                 level,
-                frame: [surface.frame.origin.x, surface.frame.origin.y, surface.frame.size.width, surface.frame.size.height],
+                frame: [
+                    surface.frame.origin.x,
+                    surface.frame.origin.y,
+                    surface.frame.size.width,
+                    surface.frame.size.height,
+                ],
                 is_on_active_space: surface.window.is_on_active_space(),
                 active: surface.active,
                 can_join_all: surface.spec.can_join_all,
@@ -443,11 +445,8 @@ impl Engine {
     }
 
     fn reposition(&mut self) {
-        let frames: Vec<(SurfaceKey, CGRect)> = self
-            .surfaces
-            .keys()
-            .map(|key| (key.clone(), self.display_frame(&key.display)))
-            .collect();
+        let frames: Vec<(SurfaceKey, CGRect)> =
+            self.surfaces.keys().map(|key| (key.clone(), self.display_frame(&key.display))).collect();
         for (key, frame) in frames {
             if let Some(surface) = self.surfaces.get_mut(&key)
                 && surface.frame != frame
@@ -459,11 +458,8 @@ impl Engine {
     }
 
     fn refresh_active(&mut self) {
-        let active: Vec<(SurfaceKey, bool)> = self
-            .surfaces
-            .keys()
-            .map(|key| (key.clone(), self.topology.is_active(&key.display, &key.space)))
-            .collect();
+        let active: Vec<(SurfaceKey, bool)> =
+            self.surfaces.keys().map(|key| (key.clone(), self.topology.is_active(&key.display, &key.space))).collect();
         for (key, is_active) in active {
             if let Some(surface) = self.surfaces.get_mut(&key) {
                 surface.active = is_active;
@@ -509,10 +505,7 @@ impl Engine {
             self.cgs.pin_window(window.window_number(), space_id);
         }
         let active = self.topology.is_active(&spec.key.display, &spec.key.space);
-        self.surfaces.insert(
-            spec.key.clone(),
-            Surface { window, spec, frame, active, item: None },
-        );
+        self.surfaces.insert(spec.key.clone(), Surface { window, spec, frame, active, item: None });
     }
 
     fn remove_surface(&mut self, key: &SurfaceKey) {
@@ -529,11 +522,8 @@ impl Engine {
     }
 
     fn apply_assignments(&mut self, library: &Library) {
-        let assignments: Vec<(SurfaceKey, Option<ItemId>)> = self
-            .surfaces
-            .keys()
-            .map(|key| (key.clone(), resolve_item(library, key)))
-            .collect();
+        let assignments: Vec<(SurfaceKey, Option<ItemId>)> =
+            self.surfaces.keys().map(|key| (key.clone(), resolve_item(library, key))).collect();
         for (key, item) in assignments {
             let current = self.surfaces.get(&key).and_then(|surface| surface.item);
             if current == item {
@@ -578,11 +568,8 @@ impl Engine {
     }
 
     fn update_playback(&mut self, library: &Library, playback: &Playback) {
-        let states: HashMap<SurfaceKey, (String, bool)> = self
-            .surfaces
-            .iter()
-            .map(|(key, surface)| (key.clone(), (key.display.clone(), surface.active)))
-            .collect();
+        let states: HashMap<SurfaceKey, (String, bool)> =
+            self.surfaces.iter().map(|(key, surface)| (key.clone(), (key.display.clone(), surface.active))).collect();
         let should = |key: &SurfaceKey| -> bool {
             let Some((display, active)) = states.get(key) else { return false };
             return should_play(playback.paused, playback.action_for(display), *active);

@@ -213,7 +213,8 @@ pub fn geometry_poll_needed(any_playing: bool, verdicts: &[Verdict], settings: &
     if !settings.pause_when_fullscreen && !settings.pause_when_maximized {
         return false;
     }
-    let geometry_paused = verdicts.iter().any(|verdict| matches!(verdict.cause, Some(Cause::Fullscreen | Cause::Coverage)));
+    let geometry_paused =
+        verdicts.iter().any(|verdict| matches!(verdict.cause, Some(Cause::Fullscreen | Cause::Coverage)));
     return any_playing || geometry_paused;
 }
 
@@ -239,10 +240,7 @@ mod tests {
     }
 
     fn one(snapshot: &Snapshot, config: &Config, id: &str) -> Verdict {
-        return evaluate(snapshot, config)
-            .into_iter()
-            .find(|verdict| verdict.display == id)
-            .expect("display verdict");
+        return evaluate(snapshot, config).into_iter().find(|verdict| verdict.display == id).expect("display verdict");
     }
 
     #[test]
@@ -389,11 +387,7 @@ mod tests {
 
     #[test]
     fn most_restrictive_wins() {
-        let snapshot = Snapshot {
-            low_power: true,
-            other_app_audio: true,
-            ..make(vec![display("A", true, 1.0)])
-        };
+        let snapshot = Snapshot { low_power: true, other_app_audio: true, ..make(vec![display("A", true, 1.0)]) };
         let verdict = one(&snapshot, &base(), "A");
         assert_eq!(verdict.action, Action::Pause);
         assert_eq!(verdict.cause, Some(Cause::LowPower));
@@ -435,7 +429,11 @@ mod tests {
     #[test]
     fn geometry_polling_requires_playback_and_a_geometry_rule() {
         let settings = |fullscreen: bool, maximized: bool| {
-            return Settings { pause_when_fullscreen: fullscreen, pause_when_maximized: maximized, ..Settings::default() };
+            return Settings {
+                pause_when_fullscreen: fullscreen,
+                pause_when_maximized: maximized,
+                ..Settings::default()
+            };
         };
         let paused = [Verdict { display: "d".to_string(), action: Action::Pause, cause: Some(Cause::Coverage) }];
         let audio = [Verdict { display: "d".to_string(), action: Action::Pause, cause: Some(Cause::OtherAppAudio) }];

@@ -36,10 +36,7 @@ pub fn load<T: Default + DeserializeOwned>(path: &Path) -> (T, Option<Warning>) 
         Ok(value) => (value, None),
         Err(error) => {
             let backup = damaged_backup(path).ok();
-            let warning = Warning {
-                message: format!("corrupt {}: {error}", path.display()),
-                backup,
-            };
+            let warning = Warning { message: format!("corrupt {}: {error}", path.display()), backup };
             return (T::default(), Some(warning));
         }
     }

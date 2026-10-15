@@ -141,7 +141,13 @@ impl Desktop {
         self.restore(mtm);
     }
 
-    pub fn update(&mut self, mtm: MainThreadMarker, targets: &[Target], stills: &BTreeMap<String, String>, force: bool) {
+    pub fn update(
+        &mut self,
+        mtm: MainThreadMarker,
+        targets: &[Target],
+        stills: &BTreeMap<String, String>,
+        force: bool,
+    ) {
         if force {
             self.applied.clear();
         }
@@ -214,10 +220,7 @@ impl Desktop {
                 }
             }
             self.applied.insert(surface.clone(), still.clone());
-            self.pending.insert(
-                surface,
-                Pending { display_id: target.display_id, space: target.space.clone(), still },
-            );
+            self.pending.insert(surface, Pending { display_id: target.display_id, space: target.space.clone(), still });
         }
     }
 
@@ -263,7 +266,9 @@ impl Desktop {
 
     fn read_back(&self, mtm: MainThreadMarker, pending: &Pending) -> Option<String> {
         return match self.mode {
-            Mode::PerSpace => self.api.copy(pending.display_id, &pending.space).and_then(|config| ffi::image_path(&config)),
+            Mode::PerSpace => {
+                self.api.copy(pending.display_id, &pending.space).and_then(|config| ffi::image_path(&config))
+            }
             Mode::Screen => ffi::screen_url(mtm, pending.display_id),
         };
     }
@@ -318,7 +323,9 @@ impl Desktop {
                 .copy(original.display_id, &original.space)
                 .and_then(|config| ffi::image_path(&config))
                 .is_some_and(|value| value.as_str() == url.as_str()),
-            Mode::Screen => ffi::screen_url(mtm, original.display_id).is_some_and(|value| value.as_str() == url.as_str()),
+            Mode::Screen => {
+                ffi::screen_url(mtm, original.display_id).is_some_and(|value| value.as_str() == url.as_str())
+            }
         };
     }
 
@@ -335,10 +342,9 @@ impl Desktop {
             let surface = key(&target.display, &target.space);
             let original = self.recorded.get(&surface);
             let current = match self.mode {
-                Mode::PerSpace => self
-                    .api
-                    .copy(target.display_id, &target.space)
-                    .and_then(|config| ffi::image_path(&config)),
+                Mode::PerSpace => {
+                    self.api.copy(target.display_id, &target.space).and_then(|config| ffi::image_path(&config))
+                }
                 Mode::Screen => ffi::screen_url(mtm, target.display_id),
             };
             let owned = self.applied.contains_key(&surface);

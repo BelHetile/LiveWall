@@ -120,7 +120,8 @@ impl GifNode {
     }
 
     fn schedule(&mut self) {
-        let delay = self.delays.get(self.index).copied().unwrap_or(0.1);        let item = self.item;
+        let delay = self.delays.get(self.index).copied().unwrap_or(0.1);
+        let item = self.item;
         let block = block2::RcBlock::new(move |_timer: NonNull<NSTimer>| {
             post(Event::GifTick { item });
         });
@@ -190,9 +191,8 @@ pub fn frames_to_evict(frame_bytes: &[usize], current: usize, total_bytes: usize
     if total_bytes <= budget {
         return Vec::new();
     }
-    let mut order: Vec<usize> = (0..frame_bytes.len())
-        .filter(|index| frame_bytes[*index] > 0 && *index != current)
-        .collect();
+    let mut order: Vec<usize> =
+        (0..frame_bytes.len()).filter(|index| frame_bytes[*index] > 0 && *index != current).collect();
     let distance = |index: usize| -> usize {
         return index.abs_diff(current);
     };

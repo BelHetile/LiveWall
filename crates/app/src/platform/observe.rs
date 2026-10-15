@@ -83,7 +83,12 @@ impl Observers {
             unsafe { NSWorkspaceDidTerminateApplicationNotification },
         ] {
             let token = unsafe {
-                workspace_center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&queue), &frontmost_block)
+                workspace_center.addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    None,
+                    Some(&queue),
+                    &frontmost_block,
+                )
             };
             subscriptions.push((workspace_center.clone(), token));
         }

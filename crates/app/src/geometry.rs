@@ -73,11 +73,7 @@ pub fn resolve(mode: FillMode, geometry: Geometry, media: Size, screen: Size) ->
         w: content_w,
         h: content_h,
     };
-    let slack = Slack {
-        x: overflow_x > EPSILON,
-        y: overflow_y > EPSILON,
-        zoom: true,
-    };
+    let slack = Slack { x: overflow_x > EPSILON, y: overflow_y > EPSILON, zoom: true };
     return Placement { rect, slack };
 }
 
