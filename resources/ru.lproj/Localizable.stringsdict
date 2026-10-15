@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>%ld file(s) skipped: unsupported format. Use mp4/mov/m4v/webm/mkv, png/jpg/heic/webp or gif.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>Пропущен %ld файл — формат не поддерживается. Подойдут mp4/mov/m4v/webm/mkv, png/jpg/heic/webp или gif.</string>
+			<key>few</key>
+			<string>Пропущено %ld файла — формат не поддерживается. Подойдут mp4/mov/m4v/webm/mkv, png/jpg/heic/webp или gif.</string>
+			<key>many</key>
+			<string>Пропущено %ld файлов — формат не поддерживается. Подойдут mp4/mov/m4v/webm/mkv, png/jpg/heic/webp или gif.</string>
+			<key>other</key>
+			<string>Пропущено %ld файлов — формат не поддерживается. Подойдут mp4/mov/m4v/webm/mkv, png/jpg/heic/webp или gif.</string>
+		</dict>
+	</dict>
+	<key>%ld icon(s) · right-click to remove</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld иконка · удалить — правый клик</string>
+			<key>few</key>
+			<string>%ld иконки · удалить — правый клик</string>
+			<key>many</key>
+			<string>%ld иконок · удалить — правый клик</string>
+			<key>other</key>
+			<string>%ld иконок · удалить — правый клик</string>
+		</dict>
+	</dict>
+	<key>%ld image(s) could not be added to My Icons.</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>Не удалось добавить в «Мои иконки» %ld картинку.</string>
+			<key>few</key>
+			<string>Не удалось добавить в «Мои иконки» %ld картинки.</string>
+			<key>many</key>
+			<string>Не удалось добавить в «Мои иконки» %ld картинок.</string>
+			<key>other</key>
+			<string>Не удалось добавить в «Мои иконки» %ld картинок.</string>
+		</dict>
+	</dict>
+	<key>Every %ld min</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>Каждую %ld мин</string>
+			<key>few</key>
+			<string>Каждые %ld мин</string>
+			<key>many</key>
+			<string>Каждые %ld мин</string>
+			<key>other</key>
+			<string>Каждые %ld мин</string>
+		</dict>
+	</dict>
+</dict>
+</plist>
