@@ -45,6 +45,8 @@ objc2-color-sync = { version = "0.3.2", default-features = false }
 block2 = "0.6"
 dispatch2 = "0.3"
 libc = "0.2"
+sha2 = "0.10"
+base64 = "0.22"
 proto = { package = "livewall-proto", path = "crates/proto" }
 
 [profile.release]

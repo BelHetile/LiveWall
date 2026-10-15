@@ -1,24 +1,31 @@
+pub mod desktop;
 pub mod gif;
 pub mod image;
+pub mod still;
 pub mod video;
 pub mod window;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::NSNumber;
+use objc2_foundation::{NSNumber, NSTimer};
 use objc2_quartz_core::CALayer;
 
 use crate::geometry::{self, Size};
 use crate::model::{ItemId, ItemKind, Library};
+use crate::paths::Paths;
 use crate::platform::spaces::{self, SurfaceKey};
+use crate::engine::desktop::{Desktop, Mode, Target};
 use crate::engine::window::WallpaperWindow;
 
 pub struct Display {
     pub uuid: String,
+    pub id: u32,
     pub frame: CGRect,
     pub scale: f64,
 }
@@ -99,18 +106,33 @@ pub struct Engine {
     displays: Vec<Display>,
     surfaces: HashMap<SurfaceKey, Surface>,
     nodes: HashMap<ItemId, Node>,
+    desktop: Desktop,
+    stills_dir: PathBuf,
+    still_pending: HashSet<String>,
+    unload_waiting: HashMap<ItemId, (String, f64)>,
+    unloaded: HashMap<ItemId, f64>,
+    unload_timers: HashMap<ItemId, Retained<NSTimer>>,
 }
 
 pub struct Playback {
     pub paused: bool,
     pub muted: bool,
+    pub stop_after: u32,
 }
 
 impl Engine {
-    pub fn new(mtm: MainThreadMarker) -> Self {
+    pub fn new(mtm: MainThreadMarker, paths: &Paths) -> Self {
         let cgs = spaces::Cgs::load();
         let displays = collect_displays(mtm);
         let topology = cgs.topology();
+        let api = crate::platform::desktop::DesktopApi::load();
+        let mode = if topology.fallback || !api.per_space() {
+            Mode::Screen
+        } else {
+            Mode::PerSpace
+        };
+        let mut desktop = Desktop::new(paths.swap_state_file(), mode);
+        desktop.recover(mtm);
         return Self {
             mtm,
             cgs,
@@ -118,6 +140,12 @@ impl Engine {
             displays,
             surfaces: HashMap::new(),
             nodes: HashMap::new(),
+            desktop,
+            stills_dir: paths.stills_dir(),
+            still_pending: HashSet::new(),
+            unload_waiting: HashMap::new(),
+            unloaded: HashMap::new(),
+            unload_timers: HashMap::new(),
         };
     }
 
@@ -153,6 +181,173 @@ impl Engine {
             && let NodeBody::Gif(gif) = &mut node.body
         {
             gif.tick();
+        }
+    }
+
+    pub fn refresh_desktop(&mut self, library: &Library, force: bool) {
+        let targets = self.desktop_targets();
+        let stills = self.resolve_stills(library, &targets);
+        self.desktop.update(self.mtm, &targets, &stills, force);
+    }
+
+    pub fn desktop_targets(&self) -> Vec<Target> {
+        let mut seen = HashSet::new();
+        let mut targets = Vec::new();
+        for surface in self.surfaces.values() {
+            let key = &surface.spec.key;
+            if !seen.insert((key.display.clone(), key.space.clone())) {
+                continue;
+            }
+            let Some(display) = self.displays.iter().find(|display| display.uuid == key.display) else { continue };
+            targets.push(Target { display: key.display.clone(), space: key.space.clone(), display_id: display.id });
+        }
+        return targets;
+    }
+
+    fn resolve_stills(&mut self, library: &Library, targets: &[Target]) -> std::collections::BTreeMap<String, String> {
+        let mut stills = std::collections::BTreeMap::new();
+        for target in targets {
+            let surface = SurfaceKey::new(target.display.clone(), target.space.clone());
+            let Some(item_id) = resolve_item(library, &surface) else { continue };
+            let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
+            if let Some(path) = self.still_for(item) {
+                stills.insert(desktop::key(&target.display, &target.space), path);
+            }
+        }
+        return stills;
+    }
+
+    fn still_for(&mut self, item: &crate::model::Item) -> Option<String> {
+        if item.kind == ItemKind::Image && still::accepts(&item.path) {
+            return Some(item.path.clone());
+        }
+        let key = still::cache_key(&item.path, still::mtime_secs(&item.path), item.still_time);
+        let dest = still::cache_file(&self.stills_dir, &key);
+        if dest.exists() {
+            return Some(dest.to_string_lossy().into_owned());
+        }
+        let dest = dest.to_string_lossy().into_owned();
+        if self.still_pending.insert(dest.clone()) {
+            still::generate(item.id, item.kind, &item.path, item.still_time, PathBuf::from(&dest));
+        }
+        return None;
+    }
+
+    pub fn on_still_ready(&mut self, item: ItemId, path: &str, library: &Library) {
+        self.still_pending.remove(path);
+        if let Some(pending) = self.unload_waiting.get(&item)
+            && pending.0 == path
+        {
+            let time = pending.1;
+            self.unload_waiting.remove(&item);
+            self.perform_unload(item, path, time);
+        }
+        self.refresh_desktop(library, false);
+    }
+
+    pub fn on_desktop_verify(&mut self) {
+        self.desktop.verify_tick(self.mtm);
+    }
+
+    pub fn on_lock(&mut self) {
+        self.desktop.on_lock();
+    }
+
+    pub fn on_unlock(&mut self, library: &Library) {
+        let targets = self.desktop_targets();
+        let stills = self.resolve_stills(library, &targets);
+        self.desktop.on_unlock(self.mtm, &targets, &stills);
+    }
+
+    pub fn desktop_report(&self) -> desktop::DesktopReport {
+        return self.desktop.report(self.mtm, &self.desktop_targets());
+    }
+
+    pub fn restore_desktop(&mut self) {
+        self.desktop.restore(self.mtm);
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn on_unload_tick(&mut self, item: ItemId, library: &Library, playback: &Playback) {
+        if self.unloaded.contains_key(&item) {
+            return;
+        }
+        let Some(node) = self.nodes.get(&item) else { return };
+        let NodeBody::Video(video) = &node.body else { return };
+        if video.is_playing() || !should_unload(video.paused_seconds(), playback.stop_after) {
+            return;
+        }
+        let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { return };
+        let time = video.current_time();
+        let key = still::cache_key(&entry.path, still::mtime_secs(&entry.path), time as f32);
+        let dest = still::cache_file(&self.stills_dir, &key);
+        let dest = dest.to_string_lossy().into_owned();
+        if std::path::Path::new(&dest).exists() {
+            self.perform_unload(item, &dest, time);
+        } else if let std::collections::hash_map::Entry::Vacant(slot) = self.unload_waiting.entry(item) {
+            slot.insert((dest.clone(), time));
+            still::generate(item, ItemKind::Video, &entry.path, time as f32, PathBuf::from(&dest));
+        }
+    }
+
+    fn perform_unload(&mut self, item: ItemId, still_path: &str, time: f64) {
+        let Some(node) = self.nodes.get(&item) else { return };
+        let keys = node.keys();
+        let Some(image) = image::ImageNode::new(still_path) else { return };
+        if let Some(node) = self.nodes.get_mut(&item) {
+            for key in &keys {
+                node.detach(key);
+            }
+        }
+        self.nodes.insert(item, Node { kind: ItemKind::Image, body: NodeBody::Image(image) });
+        for key in keys {
+            if let Some(node) = self.nodes.get_mut(&item)
+                && let Some(surface) = self.surfaces.get(&key)
+            {
+                node.attach(&key, surface.window.root());
+            }
+        }
+        self.unloaded.insert(item, time);
+        tracing::info!(%item, "unloaded paused video to a still frame");
+    }
+
+    fn reload_video(&mut self, item: ItemId, time: f64, library: &Library) {
+        let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { return };
+        let video = video::VideoNode::new(self.mtm, item, &entry.path);
+        let Some(old) = self.nodes.insert(item, Node { kind: ItemKind::Video, body: NodeBody::Video(video) }) else {
+            return;
+        };
+        let keys = old.keys();
+        for key in &keys {
+            if let Some(node) = self.nodes.get_mut(&item)
+                && let NodeBody::Video(video) = &mut node.body
+                && let Some(surface) = self.surfaces.get(key)
+            {
+                video.attach(key, surface.window.root());
+            }
+        }
+        if let Some(node) = self.nodes.get_mut(&item)
+            && let NodeBody::Video(video) = &mut node.body
+        {
+            video.set_pending_seek(time);
+        }
+        self.unloaded.remove(&item);
+    }
+
+    fn schedule_unload(&mut self, item: ItemId, stop_after: u32) {
+        if stop_after == 0 || self.unload_timers.contains_key(&item) {
+            return;
+        }
+        let block = block2::RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+            crate::app::post(crate::app::Event::VideoUnloadTick { item });
+        });
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(f64::from(stop_after), false, &block) };
+        self.unload_timers.insert(item, timer);
+    }
+
+    fn cancel_unload(&mut self, item: ItemId) {
+        if let Some(timer) = self.unload_timers.remove(&item) {
+            timer.invalidate();
         }
     }
 
@@ -361,17 +556,23 @@ impl Engine {
             .iter()
             .map(|(key, surface)| (key.clone(), surface.active))
             .collect();
-        for node in self.nodes.values_mut() {
+        let mut transitions: Vec<(ItemId, bool, bool)> = Vec::new();
+        for (item, node) in &mut self.nodes {
             let any_active = node.keys().iter().any(|key| active.get(key).copied().unwrap_or(false));
             let playing = should_play(playback.paused, false, true, any_active);
             match &mut node.body {
                 NodeBody::Video(video) => {
-                    let item = library.items.iter().find(|entry| entry.id == video.item);
-                    let volume = item.map_or(1.0_f32, |entry| entry.volume);
-                    let speed = item.map_or(1.0_f32, |entry| entry.speed);
-                    let muted = playback.muted || item.is_none_or(|entry| entry.muted);
+                    let entry = library.items.iter().find(|entry| entry.id == video.item);
+                    let volume = entry.map_or(1.0_f32, |entry| entry.volume);
+                    let speed = entry.map_or(1.0_f32, |entry| entry.speed);
+                    let muted = playback.muted || entry.is_none_or(|entry| entry.muted);
+                    let was = video.is_playing();
                     if video.loaded {
                         video.apply_playback(playing, muted, volume, speed);
+                    }
+                    let now = video.is_playing();
+                    if was != now {
+                        transitions.push((*item, was, now));
                     }
                 }
                 NodeBody::Gif(gif) => {
@@ -383,6 +584,27 @@ impl Engine {
                 }
                 NodeBody::Image(_) => {}
             }
+        }
+        let playing_unloaded: Vec<(ItemId, f64)> = self
+            .unloaded
+            .iter()
+            .filter(|(item, _)| {
+                self.nodes
+                    .get(item)
+                    .is_some_and(|node| node.keys().iter().any(|key| active.get(key).copied().unwrap_or(false)))
+            })
+            .filter(|(_, _)| should_play(playback.paused, false, true, true))
+            .map(|(item, time)| (*item, *time))
+            .collect();
+        for (item, was, now) in transitions {
+            if now {
+                self.cancel_unload(item);
+            } else if was {
+                self.schedule_unload(item, playback.stop_after);
+            }
+        }
+        for (item, time) in playing_unloaded {
+            self.reload_video(item, time, library);
         }
     }
 
@@ -435,6 +657,10 @@ pub fn should_play(user_paused: bool, low_power: bool, rule_keep_running: bool, 
     return !user_paused && !low_power && rule_keep_running && on_active_space;
 }
 
+pub fn should_unload(paused_seconds: f64, stop_after: u32) -> bool {
+    return stop_after > 0 && paused_seconds >= f64::from(stop_after);
+}
+
 pub fn resolve_item(library: &Library, key: &SurfaceKey) -> Option<ItemId> {
     if let Some(assignment) = library.placement.spaces.get(&key.space)
         && assignment.item.is_some()
@@ -454,8 +680,10 @@ fn collect_displays(mtm: MainThreadMarker) -> Vec<Display> {
     let mut displays = Vec::new();
     for index in 0..screens.count() {
         let screen = screens.objectAtIndex(index);
+        let id = display_id(&screen);
         displays.push(Display {
             uuid: display_uuid(&screen),
+            id,
             frame: screen.frame(),
             scale: screen.backingScaleFactor(),
         });
@@ -463,12 +691,19 @@ fn collect_displays(mtm: MainThreadMarker) -> Vec<Display> {
     return displays;
 }
 
-fn display_uuid(screen: &NSScreen) -> String {
+fn screen_number(screen: &NSScreen) -> Option<u32> {
     let description = screen.deviceDescription();
-    if let Some(value) = description.objectForKey(&objc2_foundation::NSString::from_str("NSScreenNumber"))
-        && let Some(number) = value.downcast_ref::<NSNumber>()
-    {
-        let identifier = number.unsignedIntValue();
+    return description
+        .objectForKey(&objc2_foundation::NSString::from_str("NSScreenNumber"))
+        .and_then(|value| value.downcast_ref::<NSNumber>().map(objc2_foundation::NSNumber::unsignedIntValue));
+}
+
+fn display_id(screen: &NSScreen) -> u32 {
+    return screen_number(screen).unwrap_or(0);
+}
+
+fn display_uuid(screen: &NSScreen) -> String {
+    if let Some(identifier) = screen_number(screen) {
         let uuid = unsafe { objc2_color_sync::CGDisplayCreateUUIDFromDisplayID(identifier) };
         if let Some(string) = objc2_core_foundation::CFUUID::new_string(None, Some(&uuid)) {
             return string.to_string();
@@ -513,6 +748,18 @@ mod tests {
         assert!(!should_play(false, true, true, true));
         assert!(!should_play(false, false, false, true));
         assert!(!should_play(false, false, true, false));
+    }
+
+    #[test]
+    fn unload_fires_only_after_the_delay() {
+        assert!(!should_unload(29.0, 30));
+        assert!(should_unload(30.0, 30));
+        assert!(should_unload(31.0, 30));
+    }
+
+    #[test]
+    fn unload_never_fires_when_disabled() {
+        assert!(!should_unload(9999.0, 0));
     }
 
     #[test]

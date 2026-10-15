@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_av_foundation::{
@@ -5,6 +7,7 @@ use objc2_av_foundation::{
     AVQueuePlayer, AVURLAsset,
 };
 use objc2_core_foundation::CGRect;
+use objc2_core_media::CMTime;
 use objc2_foundation::{NSArray, NSString, NSURL};
 use objc2_quartz_core::CALayer;
 
@@ -18,7 +21,9 @@ pub struct VideoNode {
     pub loaded: bool,
     pub duration: f64,
     playing: bool,
+    paused_since: Option<Instant>,
     speed: f32,
+    pending_seek: Option<f64>,
     player: Retained<AVQueuePlayer>,
     asset: Retained<AVURLAsset>,
     looper: Option<Retained<AVPlayerLooper>>,
@@ -40,7 +45,9 @@ impl VideoNode {
             loaded: false,
             duration: 0.0,
             playing: false,
+            paused_since: None,
             speed: 1.0,
+            pending_seek: None,
             player,
             asset,
             looper: None,
@@ -66,6 +73,9 @@ impl VideoNode {
         let looper = unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&self.player, &player_item) };
         self.looper = Some(looper);
         self.loaded = true;
+        if let Some(seconds) = self.pending_seek.take() {
+            unsafe { self.player.seekToTime(CMTime::with_seconds(seconds.max(0.0), 600)) };
+        }
     }
 
     pub fn attach(&mut self, key: &SurfaceKey, root: &CALayer) {
@@ -107,13 +117,31 @@ impl VideoNode {
         }
         self.playing = playing;
         if playing {
+            self.paused_since = None;
             unsafe {
                 self.player.play();
                 self.player.setRate(self.speed);
             }
         } else {
+            self.paused_since = Some(Instant::now());
             unsafe { self.player.pause() };
         }
+    }
+
+    pub fn is_playing(&self) -> bool {
+        return self.playing;
+    }
+
+    pub fn paused_seconds(&self) -> f64 {
+        return self.paused_since.map_or(0.0, |since| since.elapsed().as_secs_f64());
+    }
+
+    pub fn current_time(&self) -> f64 {
+        return unsafe { self.player.currentTime().seconds() };
+    }
+
+    pub fn set_pending_seek(&mut self, seconds: f64) {
+        self.pending_seek = Some(seconds);
     }
 
     pub fn rate(&self) -> f32 {

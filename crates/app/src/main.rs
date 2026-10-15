@@ -85,20 +85,23 @@ fn main() -> ExitCode {
         }
     };
 
-    let (app, warnings) = App::new(&paths, mtm);
-    install(app);
-    for warning in warnings {
-        tracing::warn!(%warning, "store");
+    {
+        let _guard = runtime.enter();
+        let (app, warnings) = App::new(&paths, mtm);
+        install(app);
+        for warning in warnings {
+            tracing::warn!(%warning, "store");
+        }
+
+        runtime.spawn(serve(listener));
+        runtime.spawn(watch_signals());
+
+        let application = NSApplication::sharedApplication(mtm);
+        let delegate = Delegate::new(mtm);
+        application.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        let _ = application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        application.run();
     }
-
-    runtime.spawn(serve(listener));
-    runtime.spawn(watch_signals());
-
-    let application = NSApplication::sharedApplication(mtm);
-    let delegate = Delegate::new(mtm);
-    application.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    let _ = application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    application.run();
 
     cleanup(&socket_path);
     runtime.shutdown_timeout(Duration::from_secs(2));

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
@@ -23,6 +24,11 @@ pub enum Event {
     SpacesChanged,
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
+    StillReady { item: ItemId, path: PathBuf },
+    DesktopVerify,
+    ScreenLocked,
+    ScreenUnlocked,
+    VideoUnloadTick { item: ItemId },
 }
 
 pub struct App {
@@ -46,23 +52,37 @@ impl App {
             paused: false,
             library,
             settings,
-            engine: Engine::new(mtm),
-            _observers: Observers::install(),
+            engine: Engine::new(mtm, paths),
+            _observers: Observers::install(mtm),
             paths: paths.clone(),
         };
-        app.sync();
+        app.sync(false);
         return (app, warnings);
     }
 
     fn handle(&mut self, event: Event) {
         match event {
-            Event::Quit => quit(),
-            Event::ScreensChanged | Event::SpacesChanged => self.sync(),
+            Event::Quit => {
+                self.engine.restore_desktop();
+                quit();
+            }
+            Event::ScreensChanged => self.sync(false),
+            Event::SpacesChanged => self.sync(true),
             Event::VideoLoaded { item } => {
                 let playback = self.playback();
                 self.engine.on_video_loaded(item, &self.library, &playback);
             }
             Event::GifTick { item } => self.engine.on_gif_tick(item),
+            Event::StillReady { item, path } => {
+                self.engine.on_still_ready(item, &path.to_string_lossy(), &self.library);
+            }
+            Event::DesktopVerify => self.engine.on_desktop_verify(),
+            Event::ScreenLocked => self.engine.on_lock(),
+            Event::ScreenUnlocked => self.engine.on_unlock(&self.library),
+            Event::VideoUnloadTick { item } => {
+                let playback = self.playback();
+                self.engine.on_unload_tick(item, &self.library, &playback);
+            }
             Event::Request(request, reply) => {
                 let response = self.dispatch(&request);
                 let _ = reply.send(response);
@@ -71,17 +91,19 @@ impl App {
     }
 
     fn playback(&self) -> Playback {
-        return Playback { paused: self.paused, muted: self.muted };
+        return Playback { paused: self.paused, muted: self.muted, stop_after: self.settings.stop_after_seconds };
     }
 
-    fn sync(&mut self) {
+    fn sync(&mut self, force_desktop: bool) {
         let playback = self.playback();
         self.engine.sync(&self.library, &playback);
+        self.engine.refresh_desktop(&self.library, force_desktop);
     }
 
     fn reapply(&mut self) {
         let playback = self.playback();
         self.engine.reapply(&self.library, &playback);
+        self.engine.refresh_desktop(&self.library, false);
     }
 
     fn persist_library(&self) {
@@ -214,6 +236,7 @@ impl App {
                     "nodes": self.engine.node_summary(),
                 }));
             }
+            Request::Desktop => return ok(&self.engine.desktop_report()),
             Request::SettingsGet => return ok(&self.settings),
             Request::SettingsSet { patch } => {
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
