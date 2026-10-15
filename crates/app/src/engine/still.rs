@@ -74,9 +74,13 @@ fn generate_video(item: ItemId, path: &str, still_time: f32, dest: PathBuf) {
     let block = block2::RcBlock::new(move |image: *mut CGImage, _time: CMTime, error: *mut NSError| {
         if !error.is_null() {
             tracing::warn!(item = %item, "still generation failed");
+            failed(&dest);
             return;
         }
-        let Some(image) = NonNull::new(image) else { return };
+        let Some(image) = NonNull::new(image) else {
+            failed(&dest);
+            return;
+        };
         let image = unsafe { CFRetained::retain(image) };
         finish(item, &image, &dest);
     });
@@ -87,9 +91,18 @@ fn generate_video(item: ItemId, path: &str, still_time: f32, dest: PathBuf) {
 fn spawn_frame(item: ItemId, path: &str, dest: PathBuf) {
     let path = path.to_string();
     tokio::task::spawn_blocking(move || {
-        let Some(url) = CFURL::from_file_path(&path) else { return };
-        let Some(source) = (unsafe { CGImageSource::with_url(&url, None) }) else { return };
-        let Some(image) = (unsafe { source.image_at_index(0, None) }) else { return };
+        let Some(url) = CFURL::from_file_path(&path) else {
+            failed(&dest);
+            return;
+        };
+        let Some(source) = (unsafe { CGImageSource::with_url(&url, None) }) else {
+            failed(&dest);
+            return;
+        };
+        let Some(image) = (unsafe { source.image_at_index(0, None) }) else {
+            failed(&dest);
+            return;
+        };
         finish(item, &image, &dest);
     });
 }
@@ -97,8 +110,15 @@ fn spawn_frame(item: ItemId, path: &str, dest: PathBuf) {
 fn finish(item: ItemId, image: &CFRetained<CGImage>, dest: &Path) {
     match write_png(image, dest) {
         Ok(()) => post(Event::StillReady { item, path: dest.to_path_buf() }),
-        Err(error) => tracing::warn!(item = %item, %error, "cannot write still"),
+        Err(error) => {
+            tracing::warn!(item = %item, %error, "cannot write still");
+            failed(dest);
+        }
     }
+}
+
+fn failed(dest: &Path) {
+    post(Event::StillFailed { path: dest.to_string_lossy().into_owned() });
 }
 
 fn write_png(image: &CFRetained<CGImage>, dest: &Path) -> io::Result<()> {

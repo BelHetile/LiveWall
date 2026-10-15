@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 
 use crate::app::{Event, post};
 use crate::import::{self, Transfer};
+use crate::jobs;
 use crate::media::probe;
 use crate::model::Item;
 use crate::process::Process;
@@ -21,7 +22,6 @@ pub const MIN_HEIGHT: u32 = 720;
 pub const MAX_HEIGHT: u32 = 2160;
 pub const H264_CEILING: u32 = 1080;
 pub const ESCALATION: Duration = Duration::from_secs(3);
-pub const EVICT_AFTER: Duration = Duration::from_mins(10);
 pub const LW_PROGRESS: &str = "LWPROG ";
 pub const LW_POST: &str = "LWPOST ";
 
@@ -344,7 +344,7 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
         }
         let _ = std::fs::remove_dir_all(&job_dir);
         set_state(&shared, &id, JobState::Cancelled);
-        evict(&handle, Arc::clone(&shared), id.clone());
+        jobs::evict_after(&handle, Arc::clone(&shared), id.clone(), |_| true);
         return;
     }
 
@@ -356,14 +356,14 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
     if !success {
         let _ = std::fs::remove_dir_all(&job_dir);
         fail(&shared, &id, failure_reason(&stderr_text));
-        evict(&handle, Arc::clone(&shared), id);
+        jobs::evict_after(&handle, Arc::clone(&shared), id, |_| true);
         return;
     }
 
     let Some(file) = find_output(&job_dir) else {
         let _ = std::fs::remove_dir_all(&job_dir);
         fail(&shared, &id, "yt-dlp produced no output file");
-        evict(&handle, Arc::clone(&shared), id);
+        jobs::evict_after(&handle, Arc::clone(&shared), id, |_| true);
         return;
     };
 
@@ -384,7 +384,7 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
     } else {
         post(Event::DownloadImported { job: id.clone(), items });
     }
-    evict(&handle, shared, id);
+    jobs::evict_after(&handle, shared, id, |_| true);
 }
 
 fn spawn_progress(
@@ -417,15 +417,6 @@ fn spawn_progress(
 
 fn fail(shared: &Mutex<BTreeMap<String, JobRecord>>, id: &str, reason: impl Into<String>) {
     set_state(shared, id, JobState::Failed { reason: reason.into() });
-}
-
-fn evict(handle: &Handle, shared: Arc<Mutex<BTreeMap<String, JobRecord>>>, id: String) {
-    handle.spawn(async move {
-        tokio::time::sleep(EVICT_AFTER).await;
-        if let Ok(mut jobs) = shared.lock() {
-            jobs.remove(&id);
-        }
-    });
 }
 
 fn failure_reason(stderr: &str) -> String {

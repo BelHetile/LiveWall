@@ -268,6 +268,10 @@ impl Engine {
         self.refresh_desktop(library, false);
     }
 
+    pub fn on_still_failed(&mut self, path: &str) {
+        self.still_pending.remove(path);
+    }
+
     pub fn on_desktop_verify(&mut self) {
         self.desktop.verify_tick(self.mtm);
     }

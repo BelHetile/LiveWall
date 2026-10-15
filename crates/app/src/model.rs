@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use proto::{FillMode, Geometry, Hotkeys};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub const LIBRARY_VERSION: u32 = 1;
@@ -119,6 +120,61 @@ impl Default for Library {
     }
 }
 
+impl Library {
+    pub fn create_folder(&mut self, name: String) -> FolderId {
+        let id = Uuid::new_v4();
+        self.folders.push(Folder { id, name, icon: None });
+        return id;
+    }
+
+    pub fn rename_item(&mut self, id: ItemId, title: String) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.title = title;
+        return true;
+    }
+
+    pub fn move_items(&mut self, ids: &[ItemId], folder: Option<FolderId>) -> usize {
+        let mut moved = 0usize;
+        for item in &mut self.items {
+            if ids.contains(&item.id) {
+                item.folder = folder;
+                moved += 1;
+            }
+        }
+        return moved;
+    }
+
+    pub fn has_folder(&self, id: FolderId) -> bool {
+        return self.folders.iter().any(|folder| folder.id == id);
+    }
+
+    pub fn rename_folder(&mut self, id: FolderId, name: String) -> bool {
+        let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
+            return false;
+        };
+        folder.name = name;
+        return true;
+    }
+
+    pub fn delete_folder(&mut self, id: FolderId) -> Option<usize> {
+        let before = self.folders.len();
+        self.folders.retain(|folder| folder.id != id);
+        if self.folders.len() == before {
+            return None;
+        }
+        let mut moved = 0usize;
+        for item in &mut self.items {
+            if item.folder == Some(id) {
+                item.folder = None;
+                moved += 1;
+            }
+        }
+        return Some(moved);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -208,6 +264,35 @@ impl Settings {
     }
 }
 
+pub fn apply_patch(settings: &mut Settings, patch: &Value) -> Result<(), String> {
+    let mut base = serde_json::to_value(&*settings).map_err(|error| error.to_string())?;
+    merge_patch(&mut base, patch);
+    let mut merged: Settings = serde_json::from_value(base).map_err(|error| error.to_string())?;
+    merged.normalize();
+    *settings = merged;
+    return Ok(());
+}
+
+fn merge_patch(target: &mut Value, patch: &Value) {
+    let Some(patch_map) = patch.as_object() else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(serde_json::Map::new());
+    }
+    let Some(target_map) = target.as_object_mut() else {
+        return;
+    };
+    for (key, value) in patch_map {
+        if value.is_null() {
+            target_map.remove(key);
+        } else {
+            merge_patch(target_map.entry(key.clone()).or_insert(Value::Null), value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +373,102 @@ mod tests {
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");
         assert_eq!(item, back);
+    }
+
+    fn sample_item() -> Item {
+        return Item {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Video,
+            path: "/tmp/a.mp4".into(),
+            title: "A".into(),
+            added_at: jiff::Timestamp::UNIX_EPOCH,
+            folder: None,
+            mode: FillMode::Fill,
+            modes: BTreeMap::new(),
+            volume: 1.0,
+            speed: 1.0,
+            muted: true,
+            still_time: 0.0,
+            optimized: false,
+            width: 0,
+            height: 0,
+            duration: 0.0,
+            fps: 0.0,
+            codec: None,
+            audio_codec: None,
+            hdr: false,
+            playable: true,
+            needs_optimize: false,
+            optimize_reason: None,
+        };
+    }
+
+    #[test]
+    fn folder_delete_moves_items_to_root() {
+        let mut library = Library::default();
+        let folder = library.create_folder("Trips".into());
+        assert!(library.has_folder(folder));
+        let mut item = sample_item();
+        item.folder = Some(folder);
+        let id = item.id;
+        library.items.push(item);
+        assert_eq!(library.move_items(&[id], Some(folder)), 1);
+        assert_eq!(library.items[0].folder, Some(folder));
+        assert!(library.rename_folder(folder, "Holidays".into()));
+        assert_eq!(library.folders[0].name, "Holidays");
+        assert_eq!(library.delete_folder(folder), Some(1));
+        assert!(!library.has_folder(folder));
+        assert_eq!(library.items.len(), 1);
+        assert_eq!(library.items[0].folder, None);
+        assert_eq!(library.delete_folder(folder), None);
+    }
+
+    #[test]
+    fn rename_item_reports_missing() {
+        let mut library = Library::default();
+        assert!(!library.rename_item(Uuid::new_v4(), "x".into()));
+        let item = sample_item();
+        let id = item.id;
+        library.items.push(item);
+        assert!(library.rename_item(id, "New".into()));
+        assert_eq!(library.items[0].title, "New");
+    }
+
+    #[test]
+    fn merge_patch_nests_objects_and_deletes_nulls() {
+        let mut settings = Settings::default();
+        settings.hotkeys.random = Some(proto::KeyCombo::new("r", vec![proto::Modifier::Control]));
+        apply_patch(
+            &mut settings,
+            &serde_json::json!({
+                "volume": 0.25,
+                "hotkeys": { "random": null },
+                "tools": { "install_consent": true },
+            }),
+        )
+        .expect("patch");
+        assert!((settings.volume - 0.25).abs() < f32::EPSILON);
+        assert!(settings.hotkeys.random.is_none());
+        assert!(settings.hotkeys.next.is_some());
+        assert!(settings.tools.install_consent);
+        assert!(settings.optimize_on_import);
+    }
+
+    #[test]
+    fn merge_patch_null_resets_fields_to_default() {
+        let mut settings = Settings { volume: 0.25, rotate_minutes: 5, ..Settings::default() };
+        apply_patch(&mut settings, &serde_json::json!({ "volume": null, "rotate_minutes": null })).expect("patch");
+        assert!((settings.volume - 1.0).abs() < f32::EPSILON);
+        assert_eq!(settings.rotate_minutes, 30);
+    }
+
+    #[test]
+    fn merge_patch_rejects_invalid_and_keeps_settings() {
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        assert!(apply_patch(&mut settings, &serde_json::json!({ "volume": "loud" })).is_err());
+        assert_eq!(settings, before);
+        assert!(apply_patch(&mut settings, &serde_json::json!("not an object")).is_err());
+        assert_eq!(settings, before);
     }
 }

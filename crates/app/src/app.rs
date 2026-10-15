@@ -9,7 +9,6 @@ use objc2_app_kit::NSApplication;
 use objc2_foundation::NSTimer;
 use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
 use serde::Serialize;
-use serde_json::Value;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -21,7 +20,7 @@ use crate::import;
 use crate::media::optimize;
 use crate::media::probe;
 use crate::menu::{Menu, MenuAction, MenuState};
-use crate::model::{Item, ItemId, ItemKind, Library, Settings};
+use crate::model::{Item, ItemId, ItemKind, Library, Settings, apply_patch};
 use crate::paths::Paths;
 use crate::platform::detect;
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
@@ -47,6 +46,7 @@ pub enum Event {
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
     StillReady { item: ItemId, path: PathBuf },
+    StillFailed { path: String },
     DesktopVerify,
     ScreenLocked,
     ScreenUnlocked,
@@ -173,6 +173,7 @@ impl App {
             Event::StillReady { item, path } => {
                 self.engine.on_still_ready(item, &path.to_string_lossy(), &self.library);
             }
+            Event::StillFailed { path } => self.engine.on_still_failed(&path),
             Event::DesktopVerify => self.engine.on_desktop_verify(),
             Event::ScreenLocked => {
                 self.screen_locked = true;
@@ -648,24 +649,53 @@ impl App {
                 return ok(&serde_json::json!({ "removed": removed }));
             }
             Request::LibraryRename { id, title } => {
-                if let Ok(id) = id.parse::<Uuid>()
-                    && let Some(item) = self.library.items.iter_mut().find(|item| item.id == id)
-                {
-                    item.title.clone_from(title);
-                    self.persist_library();
-                    return ok(&serde_json::json!({ "renamed": true }));
-                }
-                return Response::err(ErrorCode::NotFound, "no such item");
-            }
-            Request::LibraryMove { ids, folder } => {
-                let folder = folder.as_ref().and_then(|value| value.parse::<Uuid>().ok());
-                for id in ids.iter().filter_map(|value| value.parse::<Uuid>().ok()) {
-                    if let Some(item) = self.library.items.iter_mut().find(|item| item.id == id) {
-                        item.folder = folder;
-                    }
+                let Ok(id) = id.parse::<Uuid>() else {
+                    return Response::err(ErrorCode::Invalid, "invalid item id");
+                };
+                if !self.library.rename_item(id, title.clone()) {
+                    return Response::err(ErrorCode::NotFound, "no such item");
                 }
                 self.persist_library();
-                return ok(&serde_json::json!({ "moved": ids.len() }));
+                return ok(&serde_json::json!({ "renamed": true }));
+            }
+            Request::LibraryMove { ids, folder } => {
+                let folder = match folder {
+                    Some(value) => match value.parse::<Uuid>() {
+                        Ok(id) if self.library.has_folder(id) => Some(id),
+                        Ok(_) => return Response::err(ErrorCode::NotFound, "no such folder"),
+                        Err(_) => return Response::err(ErrorCode::Invalid, "invalid folder id"),
+                    },
+                    None => None,
+                };
+                let ids: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
+                let moved = self.library.move_items(&ids, folder);
+                self.persist_library();
+                return ok(&serde_json::json!({ "moved": moved }));
+            }
+            Request::FolderCreate { name } => {
+                let id = self.library.create_folder(name.clone());
+                self.persist_library();
+                return ok(&serde_json::json!({ "id": id.to_string(), "name": name }));
+            }
+            Request::FolderRename { id, name } => {
+                let Ok(id) = id.parse::<Uuid>() else {
+                    return Response::err(ErrorCode::Invalid, "invalid folder id");
+                };
+                if !self.library.rename_folder(id, name.clone()) {
+                    return Response::err(ErrorCode::NotFound, "no such folder");
+                }
+                self.persist_library();
+                return ok(&serde_json::json!({ "id": id.to_string(), "name": name }));
+            }
+            Request::FolderDelete { id } => {
+                let Ok(id) = id.parse::<Uuid>() else {
+                    return Response::err(ErrorCode::Invalid, "invalid folder id");
+                };
+                let Some(moved) = self.library.delete_folder(id) else {
+                    return Response::err(ErrorCode::NotFound, "no such folder");
+                };
+                self.persist_library();
+                return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
             }
             Request::Apply { item, target } => {
                 let item = match item {
@@ -759,7 +789,13 @@ impl App {
             }
             Request::Downloads => return ok(&self.downloads.reports()),
             Request::Quit => return Response::ok(serde_json::json!({})),
-            _ => return Response::err(ErrorCode::NotImplemented, "command not implemented yet"),
+            Request::LibraryAdd { .. }
+            | Request::Tools
+            | Request::ToolsInstall { .. }
+            | Request::Probe { .. }
+            | Request::Download { .. } => {
+                return Response::err(ErrorCode::Internal, "request is handled asynchronously");
+            }
         }
     }
 
@@ -1025,18 +1061,6 @@ fn random_index(len: usize, current: Option<usize>) -> usize {
         index = (index + 1) % len;
     }
     return index;
-}
-
-fn apply_patch(settings: &mut Settings, patch: &Value) -> Result<(), String> {
-    let mut base = serde_json::to_value(&*settings).map_err(|error| error.to_string())?;
-    if let (Some(base), Some(patch)) = (base.as_object_mut(), patch.as_object()) {
-        for (key, value) in patch {
-            base.insert(key.clone(), value.clone());
-        }
-    }
-    *settings = serde_json::from_value(base).map_err(|error| error.to_string())?;
-    settings.normalize();
-    return Ok(());
 }
 
 #[derive(Serialize)]

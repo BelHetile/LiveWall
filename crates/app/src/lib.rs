@@ -6,6 +6,7 @@ mod hotkey;
 mod i18n;
 mod import;
 mod ipc;
+mod jobs;
 mod media;
 mod menu;
 mod model;

@@ -100,9 +100,34 @@ fn every_verb() {
     err(&socket, &["download-status", MISSING]);
     err(&socket, &["tools-install", "ffmpeg"]);
     err(&socket, &["download", "ftp://example.invalid/x", "--no-wait"]);
-    err(&socket, &["folder", "create", "F"]);
+    err(&socket, &["settings", "set", r#"{"volume":"loud"}"#]);
+
+    let folder = ok_json(&socket, &["folder", "create", "F"]);
+    let folder_id = folder["data"]["id"].as_str().expect("folder id").to_string();
+    ok_json(&socket, &["folder", "rename", &folder_id, "G"]);
+    ok_json(&socket, &["library", "move", &id, "--folder", &folder_id]);
+    let moved = ok_json(&socket, &["library", "list"]);
+    assert_eq!(moved["data"]["items"][0]["folder"], serde_json::json!(folder_id), "move into folder: {moved}");
+    ok_json(&socket, &["folder", "delete", &folder_id]);
+    let after = ok_json(&socket, &["library", "list"]);
+    assert_eq!(after["data"]["items"].as_array().map(Vec::len), Some(1), "folder delete dropped an item: {after}");
+    assert!(after["data"]["items"][0]["folder"].is_null(), "item not moved to root: {after}");
+    assert_eq!(after["data"]["folders"].as_array().map(Vec::len), Some(0), "folder not deleted: {after}");
     err(&socket, &["folder", "rename", MISSING, "G"]);
     err(&socket, &["folder", "delete", MISSING]);
+    err(&socket, &["library", "move", &id, "--folder", MISSING]);
+
+    ok_json(&socket, &["settings", "set", r#"{"hotkeys":{"random":{"key":"x","modifiers":["control"]}}}"#]);
+    let patched = ok_json(&socket, &["settings", "get"]);
+    assert_eq!(patched["data"]["hotkeys"]["random"]["key"], serde_json::json!("x"), "nested merge: {patched}");
+    assert!(patched["data"]["hotkeys"]["next"].is_object(), "sibling hotkey clobbered: {patched}");
+    ok_json(&socket, &["settings", "set", r#"{"hotkeys":{"random":null}}"#]);
+    let patched = ok_json(&socket, &["settings", "get"]);
+    assert!(patched["data"]["hotkeys"]["random"].is_null(), "nested delete failed: {patched}");
+    ok_json(&socket, &["settings", "set", r#"{"tools":{"install_consent":true}}"#]);
+    let patched = ok_json(&socket, &["settings", "get"]);
+    assert_eq!(patched["data"]["tools"]["install_consent"], serde_json::json!(true), "nested merge: {patched}");
+    assert_eq!(patched["data"]["rotate_minutes"], serde_json::json!(30), "unrelated field clobbered: {patched}");
 
     let login = lwctl_run(&socket, &["login-item", "set", "false"]);
     assert!(matches!(login.status.code(), Some(0 | 1)), "login-item set exit: {:?}", login.status.code());

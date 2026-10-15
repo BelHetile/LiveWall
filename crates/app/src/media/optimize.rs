@@ -12,6 +12,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{Notify, OnceCell, mpsc};
 
 use crate::app::{Event, post};
+use crate::jobs;
 use crate::media::probe::{self, Probe};
 use crate::model::{ItemId, ItemKind};
 use crate::process::Process;
@@ -272,24 +273,25 @@ struct JobRecord {
 }
 
 struct Shared {
-    jobs: Mutex<BTreeMap<ItemId, JobRecord>>,
+    jobs: Arc<Mutex<BTreeMap<ItemId, JobRecord>>>,
     hevc: OnceCell<bool>,
 }
 
 pub struct Queue {
     tx: mpsc::UnboundedSender<Job>,
     shared: Arc<Shared>,
+    handle: Handle,
 }
 
 impl Queue {
     pub fn new(handle: &Handle) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let shared = Arc::new(Shared { jobs: Mutex::new(BTreeMap::new()), hevc: OnceCell::new() });
+        let shared = Arc::new(Shared { jobs: Arc::new(Mutex::new(BTreeMap::new())), hevc: OnceCell::new() });
         let mut worker = Worker { shared: Arc::clone(&shared), handle: handle.clone() };
         handle.spawn(async move {
             worker.run(rx).await;
         });
-        return Self { tx, shared };
+        return Self { tx, shared, handle: handle.clone() };
     }
 
     pub fn enqueue(&self, job: Job) -> bool {
@@ -322,6 +324,7 @@ impl Queue {
         }
         if matches!(record.state, JobState::Queued) {
             record.state = JobState::Cancelled;
+            jobs::evict_after(&self.handle, Arc::clone(&self.shared.jobs), item, JobRecord::terminal);
         }
     }
 }
@@ -350,6 +353,11 @@ impl Worker {
         {
             record.state = state;
         }
+    }
+
+    fn finish(&self, item: ItemId, state: JobState) {
+        self.set_state(item, state);
+        jobs::evict_after(&self.handle, Arc::clone(&self.shared.jobs), item, JobRecord::terminal);
     }
 
     fn take_cancelled(&self, item: ItemId) -> bool {
@@ -475,7 +483,7 @@ impl Worker {
                 let _ = task.await;
             }
             let _ = std::fs::remove_file(&temp);
-            self.set_state(item, JobState::Cancelled);
+            self.finish(item, JobState::Cancelled);
             return;
         }
 
@@ -525,7 +533,7 @@ impl Worker {
             crate::media::thumb::ensure(item, ItemKind::Video, path.clone(), probed.duration, job.thumbs_dir.clone())
                 .await;
 
-        self.set_state(item, JobState::Done { path: path.clone() });
+        self.finish(item, JobState::Done { path: path.clone() });
         post(Event::OptimizeDone { item, result: Ok(Optimized { path, probe: probed }) });
     }
 
@@ -543,7 +551,7 @@ impl Worker {
     }
 
     fn fail(&self, item: ItemId, reason: String) {
-        self.set_state(item, JobState::Failed { reason: reason.clone() });
+        self.finish(item, JobState::Failed { reason: reason.clone() });
         post(Event::OptimizeDone { item, result: Err(reason) });
     }
 }
