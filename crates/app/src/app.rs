@@ -1,8 +1,11 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::NSApplication;
+use objc2_foundation::NSTimer;
 use proto::{ApplyTarget, ErrorCode, FillMode, Request, Response};
 use serde::Serialize;
 use serde_json::Value;
@@ -14,7 +17,11 @@ use crate::import;
 use crate::model::{Item, ItemId, ItemKind, Library, Settings};
 use crate::paths::Paths;
 use crate::platform::observe::Observers;
+use crate::platform::{detect, system};
+use crate::rules;
 use crate::store;
+
+const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
@@ -22,6 +29,11 @@ pub enum Event {
     Quit,
     ScreensChanged,
     SpacesChanged,
+    FrontmostChanged,
+    AudioChanged,
+    DisplayAsleep(bool),
+    LowPowerChanged,
+    GeometryTick,
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
     StillReady { item: ItemId, path: PathBuf },
@@ -31,14 +43,22 @@ pub enum Event {
     VideoUnloadTick { item: ItemId },
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     paths: Paths,
     library: Library,
     settings: Settings,
     paused: bool,
     muted: bool,
+    display_asleep: bool,
+    screen_locked: bool,
+    low_power: bool,
+    snapshot: rules::Snapshot,
+    verdicts: Vec<rules::Verdict>,
+    geometry_timer: Option<Retained<NSTimer>>,
     engine: Engine,
-    _observers: Observers,
+    nap: system::AppNap,
+    observers: Observers,
 }
 
 impl App {
@@ -50,13 +70,21 @@ impl App {
         let mut app = Self {
             muted: settings.muted,
             paused: false,
+            display_asleep: false,
+            screen_locked: false,
+            low_power: system::low_power_mode(),
+            snapshot: rules::Snapshot::default(),
+            verdicts: Vec::new(),
+            geometry_timer: None,
             library,
             settings,
             engine: Engine::new(mtm, paths),
-            _observers: Observers::install(mtm),
+            nap: system::AppNap::new(),
+            observers: Observers::install(mtm),
             paths: paths.clone(),
         };
         app.sync(false);
+        app.refresh_rules();
         return (app, warnings);
     }
 
@@ -66,19 +94,47 @@ impl App {
                 self.engine.restore_desktop();
                 quit();
             }
-            Event::ScreensChanged => self.sync(false),
-            Event::SpacesChanged => self.sync(true),
+            Event::ScreensChanged => {
+                self.sync(false);
+                self.refresh_rules();
+            }
+            Event::SpacesChanged => {
+                self.sync(true);
+                self.refresh_rules();
+            }
+            Event::FrontmostChanged | Event::GeometryTick => self.refresh_rules(),
+            Event::AudioChanged => {
+                self.observers.rebind_audio();
+                self.refresh_rules();
+            }
+            Event::DisplayAsleep(asleep) => {
+                self.display_asleep = asleep;
+                self.refresh_rules();
+            }
+            Event::LowPowerChanged => {
+                self.low_power = system::low_power_mode();
+                self.refresh_rules();
+            }
             Event::VideoLoaded { item } => {
                 let playback = self.playback();
                 self.engine.on_video_loaded(item, &self.library, &playback);
+                self.refresh_power();
             }
             Event::GifTick { item } => self.engine.on_gif_tick(item),
             Event::StillReady { item, path } => {
                 self.engine.on_still_ready(item, &path.to_string_lossy(), &self.library);
             }
             Event::DesktopVerify => self.engine.on_desktop_verify(),
-            Event::ScreenLocked => self.engine.on_lock(),
-            Event::ScreenUnlocked => self.engine.on_unlock(&self.library),
+            Event::ScreenLocked => {
+                self.screen_locked = true;
+                self.engine.on_lock();
+                self.refresh_rules();
+            }
+            Event::ScreenUnlocked => {
+                self.screen_locked = false;
+                self.engine.on_unlock(&self.library);
+                self.refresh_rules();
+            }
             Event::VideoUnloadTick { item } => {
                 let playback = self.playback();
                 self.engine.on_unload_tick(item, &self.library, &playback);
@@ -91,7 +147,74 @@ impl App {
     }
 
     fn playback(&self) -> Playback {
-        return Playback { paused: self.paused, muted: self.muted, stop_after: self.settings.stop_after_seconds };
+        return Playback {
+            paused: self.paused,
+            muted: self.muted,
+            stop_after: self.settings.stop_after_seconds,
+            verdicts: self.verdicts.clone(),
+        };
+    }
+
+    fn detect(&self) -> rules::Snapshot {
+        let screens: Vec<detect::Screen> = self
+            .engine
+            .displays()
+            .iter()
+            .map(|display| detect::Screen {
+                uuid: display.uuid.clone(),
+                frame: rules::Rect::new(
+                    display.frame.origin.x,
+                    display.frame.origin.y,
+                    display.frame.size.width,
+                    display.frame.size.height,
+                ),
+            })
+            .collect();
+        let signals = detect::Signals {
+            display_asleep: self.display_asleep,
+            screen_locked: self.screen_locked,
+            low_power: self.low_power,
+        };
+        return detect::snapshot(&screens, signals);
+    }
+
+    fn refresh_rules(&mut self) {
+        self.snapshot = self.detect();
+        let config = rules::Config::from_settings(&self.settings);
+        self.verdicts = rules::evaluate(&self.snapshot, &config);
+        let playback = self.playback();
+        self.engine.refresh_playback(&self.library, &playback);
+        self.refresh_power();
+    }
+
+    fn refresh_power(&mut self) {
+        if self.engine.any_playing() {
+            self.nap.begin();
+        } else {
+            self.nap.end();
+        }
+        self.update_geometry_timer();
+    }
+
+    fn update_geometry_timer(&mut self) {
+        let needed = rules::geometry_poll_needed(self.engine.any_playing(), &self.verdicts, &self.settings);
+        match (needed, self.geometry_timer.is_some()) {
+            (true, false) => self.start_geometry_timer(),
+            (false, true) => {
+                if let Some(timer) = self.geometry_timer.take() {
+                    timer.invalidate();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn start_geometry_timer(&mut self) {
+        let block = block2::RcBlock::new(|_timer: NonNull<NSTimer>| {
+            post(Event::GeometryTick);
+        });
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(GEOMETRY_POLL_SECONDS, true, &block) };
+        self.geometry_timer = Some(timer);
     }
 
     fn sync(&mut self, force_desktop: bool) {
@@ -104,6 +227,7 @@ impl App {
         let playback = self.playback();
         self.engine.reapply(&self.library, &playback);
         self.engine.refresh_desktop(&self.library, false);
+        self.refresh_power();
     }
 
     fn persist_library(&self) {
@@ -148,6 +272,9 @@ impl App {
                     muted: self.muted,
                     current: self.current_item().map(|id| id.to_string()),
                     surfaces: self.engine.windows().len(),
+                    playing: self.engine.playing_count(),
+                    app_nap_token: self.nap.active(),
+                    paused_by: self.paused_by(),
                 });
             }
             Request::Pause => return self.set_paused(true),
@@ -237,12 +364,14 @@ impl App {
                 }));
             }
             Request::Desktop => return ok(&self.engine.desktop_report()),
+            Request::Rules => return ok(&self.rules_report()),
             Request::SettingsGet => return ok(&self.settings),
             Request::SettingsSet { patch } => {
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Response::err(ErrorCode::Invalid, message);
                 }
                 self.persist_settings();
+                self.refresh_rules();
                 return ok(&self.settings);
             }
             Request::Quit => return Response::ok(serde_json::json!({})),
@@ -279,6 +408,32 @@ impl App {
         self.persist_library();
         self.reapply();
         return ok(&serde_json::json!({ "item": id.to_string() }));
+    }
+
+    fn paused_by(&self) -> Vec<DisplayPause> {
+        let mut reports = Vec::with_capacity(self.snapshot.displays.len());
+        for display in &self.snapshot.displays {
+            let mut by = Vec::new();
+            if self.paused {
+                by.push("user".to_string());
+            }
+            if let Some(verdict) = self.verdicts.iter().find(|verdict| verdict.display == display.display)
+                && let Some(cause) = &verdict.cause
+            {
+                by.push(format!("rule:{}", cause.label()));
+            }
+            reports.push(DisplayPause { display: display.display.clone(), by });
+        }
+        return reports;
+    }
+
+    fn rules_report(&self) -> RulesReport<'_> {
+        return RulesReport {
+            snapshot: &self.snapshot,
+            actions: &self.verdicts,
+            geometry_polling: self.geometry_timer.is_some(),
+            app_nap_token: self.nap.active(),
+        };
     }
 
     fn current_report(&self) -> CurrentReport {
@@ -397,6 +552,23 @@ struct StatusReport {
     muted: bool,
     current: Option<String>,
     surfaces: usize,
+    playing: usize,
+    app_nap_token: bool,
+    paused_by: Vec<DisplayPause>,
+}
+
+#[derive(Serialize)]
+struct DisplayPause {
+    display: String,
+    by: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RulesReport<'a> {
+    snapshot: &'a rules::Snapshot,
+    actions: &'a [rules::Verdict],
+    geometry_polling: bool,
+    app_nap_token: bool,
 }
 
 #[derive(Serialize)]

@@ -6,13 +6,17 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplicationDidChangeScreenParametersNotification, NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
+    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceScreensDidSleepNotification,
+    NSWorkspaceScreensDidWakeNotification,
 };
 use objc2_foundation::{
     NSDistributedNotificationCenter, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior, NSObject,
-    NSObjectProtocol, NSOperationQueue, NSString,
+    NSObjectProtocol, NSOperationQueue, NSProcessInfoPowerStateDidChangeNotification, NSString,
 };
 
 use crate::app::{Event, post};
+use crate::platform::detect::AudioMonitor;
 
 type Subscription = (Retained<NSNotificationCenter>, Retained<ProtocolObject<dyn NSObjectProtocol>>);
 
@@ -47,11 +51,14 @@ pub struct Observers {
     subscriptions: Vec<Subscription>,
     lock_center: Option<Retained<NSDistributedNotificationCenter>>,
     lock_observer: Option<Retained<LockObserver>>,
+    audio: AudioMonitor,
 }
 
 impl Observers {
+    #[allow(clippy::too_many_lines)]
     pub fn install(mtm: MainThreadMarker) -> Self {
         let mut subscriptions = Vec::new();
+        let queue = NSOperationQueue::mainQueue();
 
         let workspace_center = NSWorkspace::sharedWorkspace().notificationCenter();
         let spaces_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
@@ -61,11 +68,51 @@ impl Observers {
             workspace_center.addObserverForName_object_queue_usingBlock(
                 Some(NSWorkspaceActiveSpaceDidChangeNotification),
                 None,
-                Some(&NSOperationQueue::mainQueue()),
+                Some(&queue),
                 &spaces_block,
             )
         };
-        subscriptions.push((workspace_center, spaces));
+        subscriptions.push((workspace_center.clone(), spaces));
+
+        let frontmost_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::FrontmostChanged);
+        });
+        for name in [
+            unsafe { NSWorkspaceDidActivateApplicationNotification },
+            unsafe { NSWorkspaceDidLaunchApplicationNotification },
+            unsafe { NSWorkspaceDidTerminateApplicationNotification },
+        ] {
+            let token = unsafe {
+                workspace_center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&queue), &frontmost_block)
+            };
+            subscriptions.push((workspace_center.clone(), token));
+        }
+
+        let sleep_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::DisplayAsleep(true));
+        });
+        let sleep = unsafe {
+            workspace_center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceScreensDidSleepNotification),
+                None,
+                Some(&queue),
+                &sleep_block,
+            )
+        };
+        subscriptions.push((workspace_center.clone(), sleep));
+
+        let wake_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::DisplayAsleep(false));
+        });
+        let wake = unsafe {
+            workspace_center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceScreensDidWakeNotification),
+                None,
+                Some(&queue),
+                &wake_block,
+            )
+        };
+        subscriptions.push((workspace_center, wake));
 
         let app_center = NSNotificationCenter::defaultCenter();
         let screens_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
@@ -75,11 +122,25 @@ impl Observers {
             app_center.addObserverForName_object_queue_usingBlock(
                 Some(NSApplicationDidChangeScreenParametersNotification),
                 None,
-                Some(&NSOperationQueue::mainQueue()),
+                Some(&queue),
                 &screens_block,
             )
         };
         subscriptions.push((app_center, screens));
+
+        let power_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::LowPowerChanged);
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        let power = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSProcessInfoPowerStateDidChangeNotification),
+                None,
+                Some(&queue),
+                &power_block,
+            )
+        };
+        subscriptions.push((center, power));
 
         let lock_center = NSDistributedNotificationCenter::defaultCenter();
         let lock_observer = LockObserver::new(mtm);
@@ -104,7 +165,12 @@ impl Observers {
             subscriptions,
             lock_center: Some(lock_center),
             lock_observer: Some(lock_observer),
+            audio: AudioMonitor::install(),
         };
+    }
+
+    pub fn rebind_audio(&mut self) {
+        self.audio.rebind();
     }
 }
 

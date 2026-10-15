@@ -6,6 +6,7 @@ mod ipc;
 mod model;
 mod paths;
 mod platform;
+mod rules;
 mod store;
 
 pub use app::{App, Event, install, post};

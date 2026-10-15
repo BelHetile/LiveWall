@@ -52,6 +52,7 @@ objc2-foundation = { workspace = true, features = [
     "NSRunLoop",
     "NSError",
     "NSDistributedNotificationCenter",
+    "NSProcessInfo",
     "block2",
 ] }
 objc2-app-kit = { workspace = true, features = [
@@ -89,6 +90,7 @@ objc2-core-graphics = { workspace = true, features = [
     "CGImage",
 ] }
 objc2-core-media = { workspace = true, features = ["std", "CMTime"] }
+objc2-core-audio = { workspace = true, features = ["std", "AudioHardware", "objc2", "block2", "dispatch2"] }
 objc2-quartz-core = { workspace = true, features = ["std", "CALayer", "objc2-core-foundation"] }
 objc2-av-foundation = { workspace = true, features = [
     "std",

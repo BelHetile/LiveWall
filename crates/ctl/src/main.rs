@@ -43,6 +43,7 @@ enum Command {
     Spaces,
     Windows,
     Desktop,
+    Rules,
     #[command(subcommand)]
     Library(LibraryCommand),
     #[command(subcommand)]
@@ -231,6 +232,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Spaces => Request::Spaces,
         Command::Windows => Request::Windows,
         Command::Desktop => Request::Desktop,
+        Command::Rules => Request::Rules,
         Command::Library(command) => match command {
             LibraryCommand::List => Request::LibraryList,
             LibraryCommand::Add { paths } => Request::LibraryAdd { paths },

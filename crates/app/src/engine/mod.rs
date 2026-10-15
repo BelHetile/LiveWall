@@ -19,6 +19,7 @@ use objc2_quartz_core::CALayer;
 use crate::geometry::{self, Size};
 use crate::model::{ItemId, ItemKind, Library};
 use crate::paths::Paths;
+use crate::rules;
 use crate::platform::spaces::{self, SurfaceKey};
 use crate::engine::desktop::{Desktop, Mode, Target};
 use crate::engine::window::WallpaperWindow;
@@ -112,12 +113,25 @@ pub struct Engine {
     unload_waiting: HashMap<ItemId, (String, f64)>,
     unloaded: HashMap<ItemId, f64>,
     unload_timers: HashMap<ItemId, Retained<NSTimer>>,
+    playing: usize,
 }
 
 pub struct Playback {
     pub paused: bool,
     pub muted: bool,
     pub stop_after: u32,
+    pub verdicts: Vec<rules::Verdict>,
+}
+
+impl Playback {
+    fn action_for(&self, display: &str) -> rules::Action {
+        for verdict in &self.verdicts {
+            if verdict.display == display {
+                return verdict.action;
+            }
+        }
+        return rules::Action::KeepRunning;
+    }
 }
 
 impl Engine {
@@ -146,6 +160,7 @@ impl Engine {
             unload_waiting: HashMap::new(),
             unloaded: HashMap::new(),
             unload_timers: HashMap::new(),
+            playing: 0,
         };
     }
 
@@ -165,6 +180,18 @@ impl Engine {
         self.apply_assignments(library);
         self.apply_frames(library);
         self.update_playback(library, playback);
+    }
+
+    pub fn refresh_playback(&mut self, library: &Library, playback: &Playback) {
+        self.update_playback(library, playback);
+    }
+
+    pub fn any_playing(&self) -> bool {
+        return self.playing > 0;
+    }
+
+    pub fn playing_count(&self) -> usize {
+        return self.playing;
     }
 
     pub fn on_video_loaded(&mut self, item: ItemId, library: &Library, playback: &Playback) {
@@ -551,15 +578,22 @@ impl Engine {
     }
 
     fn update_playback(&mut self, library: &Library, playback: &Playback) {
-        let active: HashMap<SurfaceKey, bool> = self
+        let states: HashMap<SurfaceKey, (String, bool)> = self
             .surfaces
             .iter()
-            .map(|(key, surface)| (key.clone(), surface.active))
+            .map(|(key, surface)| (key.clone(), (key.display.clone(), surface.active)))
             .collect();
+        let should = |key: &SurfaceKey| -> bool {
+            let Some((display, active)) = states.get(key) else { return false };
+            return should_play(playback.paused, playback.action_for(display), *active);
+        };
+        let mut playing_count = 0usize;
         let mut transitions: Vec<(ItemId, bool, bool)> = Vec::new();
         for (item, node) in &mut self.nodes {
-            let any_active = node.keys().iter().any(|key| active.get(key).copied().unwrap_or(false));
-            let playing = should_play(playback.paused, false, true, any_active);
+            let playing = node.keys().iter().any(&should);
+            if playing {
+                playing_count += 1;
+            }
             match &mut node.body {
                 NodeBody::Video(video) => {
                     let entry = library.items.iter().find(|entry| entry.id == video.item);
@@ -585,17 +619,13 @@ impl Engine {
                 NodeBody::Image(_) => {}
             }
         }
-        let playing_unloaded: Vec<(ItemId, f64)> = self
+        let reloading: Vec<(ItemId, f64)> = self
             .unloaded
             .iter()
-            .filter(|(item, _)| {
-                self.nodes
-                    .get(item)
-                    .is_some_and(|node| node.keys().iter().any(|key| active.get(key).copied().unwrap_or(false)))
-            })
-            .filter(|(_, _)| should_play(playback.paused, false, true, true))
+            .filter(|(item, _)| self.nodes.get(item).is_some_and(|node| node.keys().iter().any(&should)))
             .map(|(item, time)| (*item, *time))
             .collect();
+        playing_count += reloading.len();
         for (item, was, now) in transitions {
             if now {
                 self.cancel_unload(item);
@@ -603,9 +633,10 @@ impl Engine {
                 self.schedule_unload(item, playback.stop_after);
             }
         }
-        for (item, time) in playing_unloaded {
+        for (item, time) in reloading {
             self.reload_video(item, time, library);
         }
+        self.playing = playing_count;
     }
 
     fn ensure_node(&mut self, item: ItemId, library: &Library) {
@@ -652,9 +683,8 @@ fn pixel_size(points: f64) -> u32 {
     return points.min(f64::from(u32::MAX)) as u32;
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
-pub fn should_play(user_paused: bool, low_power: bool, rule_keep_running: bool, on_active_space: bool) -> bool {
-    return !user_paused && !low_power && rule_keep_running && on_active_space;
+pub fn should_play(user_paused: bool, action: rules::Action, on_active_space: bool) -> bool {
+    return !user_paused && action.keeps_running() && on_active_space;
 }
 
 pub fn should_unload(paused_seconds: f64, stop_after: u32) -> bool {
@@ -743,11 +773,12 @@ mod tests {
 
     #[test]
     fn should_play_requires_every_precondition() {
-        assert!(should_play(false, false, true, true));
-        assert!(!should_play(true, false, true, true));
-        assert!(!should_play(false, true, true, true));
-        assert!(!should_play(false, false, false, true));
-        assert!(!should_play(false, false, true, false));
+        use crate::rules::Action;
+        assert!(should_play(false, Action::KeepRunning, true));
+        assert!(!should_play(true, Action::KeepRunning, true));
+        assert!(!should_play(false, Action::Pause, true));
+        assert!(!should_play(false, Action::Stop, true));
+        assert!(!should_play(false, Action::KeepRunning, false));
     }
 
     #[test]
