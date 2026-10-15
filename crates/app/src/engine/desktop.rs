@@ -104,6 +104,7 @@ pub struct Desktop {
     recorded: BTreeMap<String, Original>,
     applied: BTreeMap<String, String>,
     pending: BTreeMap<String, Pending>,
+    deferred: BTreeMap<String, (Target, String)>,
     verify_started: Option<Instant>,
     timer: Option<objc2::rc::Retained<NSTimer>>,
     locked: bool,
@@ -119,6 +120,7 @@ impl Desktop {
             recorded: BTreeMap::new(),
             applied: BTreeMap::new(),
             pending: BTreeMap::new(),
+            deferred: BTreeMap::new(),
             verify_started: None,
             timer: None,
             locked: false,
@@ -138,7 +140,7 @@ impl Desktop {
         tracing::info!(surfaces = state.surfaces.len(), "restoring desktop pictures from a previous run");
         self.mode = state.mode;
         self.recorded = state.surfaces;
-        self.restore(mtm);
+        self.send_originals(mtm);
     }
 
     pub fn update(
@@ -205,30 +207,40 @@ impl Desktop {
         if self.locked && self.mode == Mode::Screen {
             return;
         }
+        self.deferred.retain(|surface, (_, still)| stills.get(surface) == Some(still));
         for (target, still) in apply_targets(&self.recorded, &self.applied, stills, targets) {
             let surface = key(&target.display, &target.space);
-            match self.mode {
-                Mode::PerSpace => {
-                    let config = ffi::still_config(&still);
-                    self.api.set(target.display_id, &config, &target.space);
-                }
-                Mode::Screen => {
-                    if let Err(error) = ffi::screen_set(mtm, target.display_id, &still) {
-                        self.last_error = Some(error);
-                        continue;
-                    }
+            if self.pending.contains_key(&surface) {
+                self.deferred.insert(surface, (target, still));
+                continue;
+            }
+            self.send(mtm, &target, still);
+        }
+    }
+
+    fn send(&mut self, mtm: MainThreadMarker, target: &Target, still: String) {
+        match self.mode {
+            Mode::PerSpace => {
+                let config = ffi::still_config(&still);
+                self.api.set(target.display_id, &config, &target.space);
+            }
+            Mode::Screen => {
+                if let Err(error) = ffi::screen_set(mtm, target.display_id, &still) {
+                    self.last_error = Some(error);
+                    return;
                 }
             }
-            self.applied.insert(surface.clone(), still.clone());
-            self.pending.insert(surface, Pending { display_id: target.display_id, space: target.space.clone(), still });
         }
+        let surface = key(&target.display, &target.space);
+        self.applied.insert(surface.clone(), still.clone());
+        self.pending.insert(surface, Pending { display_id: target.display_id, space: target.space.clone(), still });
+        self.verify_started = Some(Instant::now());
     }
 
     fn schedule(&mut self) {
         if self.pending.is_empty() || self.timer.is_some() {
             return;
         }
-        self.verify_started = Some(Instant::now());
         let block = block2::RcBlock::new(|_timer: std::ptr::NonNull<NSTimer>| {
             post(Event::DesktopVerify);
         });
@@ -237,21 +249,24 @@ impl Desktop {
     }
 
     pub fn verify_tick(&mut self, mtm: MainThreadMarker) {
-        let mut confirmed = Vec::new();
-        for (surface, pending) in &self.pending {
-            if self.read_back(mtm, pending).as_deref() == Some(pending.still.as_str()) {
-                confirmed.push(surface.clone());
+        let timed_out = self.verify_started.is_some_and(|started| started.elapsed() >= VERIFY_TIMEOUT);
+        let settled: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| timed_out || self.read_back(mtm, pending).as_deref() == Some(pending.still.as_str()))
+            .map(|(surface, _)| surface.clone())
+            .collect();
+        if timed_out {
+            tracing::warn!(pending = settled.len(), "desktop picture takeover unconfirmed");
+        }
+        for surface in settled {
+            self.pending.remove(&surface);
+            if let Some((target, still)) = self.deferred.remove(&surface) {
+                self.send(mtm, &target, still);
             }
         }
-        for surface in confirmed {
-            self.pending.remove(&surface);
-        }
-        let timed_out = self.verify_started.is_some_and(|started| started.elapsed() >= VERIFY_TIMEOUT);
         if self.pending.is_empty() {
-            tracing::info!("desktop picture takeover confirmed");
-            self.stop_verify();
-        } else if timed_out {
-            tracing::warn!(pending = self.pending.len(), "desktop picture takeover unconfirmed");
+            tracing::info!("desktop picture takeover settled");
             self.stop_verify();
         }
     }
@@ -262,6 +277,7 @@ impl Desktop {
         }
         self.verify_started = None;
         self.pending.clear();
+        self.deferred.clear();
     }
 
     fn read_back(&self, mtm: MainThreadMarker, pending: &Pending) -> Option<String> {
@@ -275,6 +291,17 @@ impl Desktop {
 
     pub fn restore(&mut self, mtm: MainThreadMarker) {
         self.stop_verify();
+        self.send_originals(mtm);
+        if let Err(error) = std::fs::remove_file(&self.swap_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "cannot remove swap state");
+        }
+        self.recorded.clear();
+        self.applied.clear();
+    }
+
+    fn send_originals(&self, mtm: MainThreadMarker) {
         let originals = restore_list(&self.recorded);
         for original in &originals {
             match self.mode {
@@ -295,13 +322,6 @@ impl Desktop {
             }
         }
         self.await_restore(mtm, &originals);
-        if let Err(error) = std::fs::remove_file(&self.swap_path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(%error, "cannot remove swap state");
-        }
-        self.recorded.clear();
-        self.applied.clear();
     }
 
     fn await_restore(&self, mtm: MainThreadMarker, originals: &[Original]) {
