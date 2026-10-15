@@ -231,7 +231,7 @@ impl Engine {
         let mut stills = std::collections::BTreeMap::new();
         for target in targets {
             let surface = SurfaceKey::new(target.display.clone(), target.space.clone());
-            let Some(item_id) = resolve_item(library, &surface) else { continue };
+            let Some(item_id) = playable_item(library, resolve_item(library, &surface)) else { continue };
             let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
             if let Some(path) = self.still_for(item) {
                 stills.insert(desktop::key(&target.display, &target.space), path);
@@ -523,7 +523,7 @@ impl Engine {
 
     fn apply_assignments(&mut self, library: &Library) {
         let assignments: Vec<(SurfaceKey, Option<ItemId>)> =
-            self.surfaces.keys().map(|key| (key.clone(), resolve_item(library, key))).collect();
+            self.surfaces.keys().map(|key| (key.clone(), playable_item(library, resolve_item(library, key)))).collect();
         for (key, item) in assignments {
             let current = self.surfaces.get(&key).and_then(|surface| surface.item);
             if current == item {
@@ -692,6 +692,10 @@ pub fn resolve_item(library: &Library, key: &SurfaceKey) -> Option<ItemId> {
     return library.placement.default.item;
 }
 
+pub fn playable_item(library: &Library, item: Option<ItemId>) -> Option<ItemId> {
+    return item.filter(|id| library.items.iter().find(|entry| entry.id == *id).is_some_and(|entry| entry.playable));
+}
+
 fn collect_displays(mtm: MainThreadMarker) -> Vec<Display> {
     let screens = NSScreen::screens(mtm);
     let mut displays = Vec::new();
@@ -814,8 +818,11 @@ mod tests {
             duration: 0.0,
             fps: 0.0,
             codec: None,
+            audio_codec: None,
             hdr: false,
+            playable: true,
             needs_optimize: false,
+            optimize_reason: None,
         };
         assert_eq!(item.geometry(), proto::Geometry::default());
         item.modes.insert(proto::FillMode::Custom, proto::Geometry { x: 0.5, y: 0.0, zoom: 2.0 });

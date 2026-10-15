@@ -49,6 +49,9 @@ fn main() -> ExitCode {
         eprintln!("LiveWall: cannot create data directory: {error}");
         return ExitCode::FAILURE;
     }
+    if let Err(error) = paths.reset_incoming() {
+        eprintln!("LiveWall: cannot reset the incoming directory: {error}");
+    }
 
     let socket_path = proto::socket_path();
     let _ = SOCKET_PATH.set(socket_path.clone());

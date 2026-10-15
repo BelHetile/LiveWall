@@ -202,7 +202,10 @@ pub enum Request {
     Download { url: String, consent: bool },
     DownloadStatus { id: String },
     DownloadCancel { id: String },
+    Downloads,
     Optimize { id: String },
+    OptimizeStatus { id: String },
+    OptimizeCancel { id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -342,7 +345,10 @@ mod tests {
             Request::Download { url: "https://example.com/v".into(), consent: true },
             Request::DownloadStatus { id: "job".into() },
             Request::DownloadCancel { id: "job".into() },
+            Request::Downloads,
             Request::Optimize { id: "a".into() },
+            Request::OptimizeStatus { id: "a".into() },
+            Request::OptimizeCancel { id: "a".into() },
         ];
     }
 

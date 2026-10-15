@@ -36,6 +36,7 @@ pub struct Probe {
     pub transfer: Option<String>,
     pub hdr: bool,
     pub audio: bool,
+    pub audio_codec: Option<String>,
     pub duration: f64,
     pub frames: Option<usize>,
     pub decodable: bool,
@@ -50,6 +51,19 @@ pub enum Reason {
     NonHardwareCodec,
     FpsAboveLimit,
     ResolutionAboveDisplay,
+    ContainerUnsupported,
+}
+
+impl Reason {
+    pub fn label(self) -> &'static str {
+        return match self {
+            Reason::Av1WithoutHardware => "av1-without-hardware",
+            Reason::NonHardwareCodec => "non-hardware-codec",
+            Reason::FpsAboveLimit => "fps-above-limit",
+            Reason::ResolutionAboveDisplay => "resolution-above-display",
+            Reason::ContainerUnsupported => "container-unsupported",
+        };
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +84,12 @@ pub fn av1_hardware() -> bool {
     return unsafe { VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) };
 }
 
+pub const SUPPORTED_CONTAINERS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
+
+pub fn supported_container(container: Option<&str>) -> bool {
+    return container.is_some_and(|container| SUPPORTED_CONTAINERS.contains(&container));
+}
+
 pub fn container_of(path: &str) -> Option<String> {
     return std::path::Path::new(path).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
 }
@@ -83,6 +103,9 @@ pub fn inspect(path: &str, kind: ItemKind) -> Probe {
 
 pub fn verdict(probe: &Probe, policy: Policy) -> Verdict {
     if !probe.decodable {
+        if probe.kind == ItemKind::Video && supported_container(probe.container.as_deref()) {
+            return Verdict::NeedsOptimize { reasons: vec![Reason::ContainerUnsupported] };
+        }
         let reason = probe.decode_error.clone().unwrap_or_else(|| "cannot decode media".to_string());
         return Verdict::Unsupported { reason };
     }
@@ -129,7 +152,7 @@ fn video_probe(path: &str) -> Probe {
     let url = NSURL::fileURLWithPath(&NSString::from_str(path));
     let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
     let facts = load_video(&asset);
-    let audio = load_audio(&asset);
+    let audio_codec = load_audio(&asset);
     let (facts, decode_error) = match facts {
         Ok(facts) => (Some(facts), None),
         Err(reason) => (None, Some(reason)),
@@ -146,7 +169,8 @@ fn video_probe(path: &str) -> Probe {
         color_primaries: facts.as_ref().and_then(|facts| facts.color_primaries.clone()),
         transfer: facts.as_ref().and_then(|facts| facts.transfer.clone()),
         hdr: facts.as_ref().is_some_and(|facts| is_hdr(facts.transfer.as_deref())),
-        audio,
+        audio: audio_codec.is_some(),
+        audio_codec,
         duration: facts.as_ref().map_or(0.0, |facts| facts.duration),
         frames: None,
         decodable,
@@ -213,21 +237,34 @@ fn read_video_facts(asset: &AVAsset, tracks: &NSArray<AVAssetTrack>) -> Result<V
     });
 }
 
-fn load_audio(asset: &AVURLAsset) -> bool {
-    let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
-        return false;
-    };
+fn load_audio(asset: &AVURLAsset) -> Option<String> {
+    let media_type = (unsafe { AVMediaTypeAudio })?;
     let (sender, receiver) = std::sync::mpsc::channel();
     let block = block2::RcBlock::new(move |tracks: *mut NSArray<AVAssetTrack>, error: *mut NSError| {
-        let count = if error.is_null() {
-            NonNull::new(tracks).map_or(0, |tracks| unsafe { tracks.as_ref().count() })
+        let codec = if error.is_null() {
+            NonNull::new(tracks).map(|tracks| unsafe { tracks.as_ref() }).and_then(read_audio_codec)
         } else {
-            0
+            None
         };
-        let _ = sender.send(count);
+        let _ = sender.send(codec);
     });
     unsafe { asset.loadTracksWithMediaType_completionHandler(media_type, &block) };
-    return receiver.recv().unwrap_or(0) > 0;
+    return receiver.recv().unwrap_or(None);
+}
+
+fn read_audio_codec(tracks: &NSArray<AVAssetTrack>) -> Option<String> {
+    if tracks.count() == 0 {
+        return None;
+    }
+    let track = tracks.objectAtIndex(0);
+    let descriptions = unsafe { track.formatDescriptions() };
+    if descriptions.count() == 0 {
+        return None;
+    }
+    let object = descriptions.objectAtIndex(0);
+    let pointer = NonNull::from(&*object).cast::<CMFormatDescription>();
+    let description = unsafe { CFRetained::retain(pointer) };
+    return Some(fourcc(unsafe { description.media_sub_type() }).trim().to_ascii_lowercase());
 }
 
 fn decode_check(asset: &AVAsset, track: &AVAssetTrack) -> (bool, Option<String>) {
@@ -275,6 +312,7 @@ fn image_probe(path: &str, kind: ItemKind) -> Probe {
         transfer: None,
         hdr: false,
         audio: false,
+        audio_codec: None,
         duration: 0.0,
         frames: None,
         decodable: false,
@@ -370,6 +408,7 @@ mod tests {
             transfer: None,
             hdr: false,
             audio: true,
+            audio_codec: Some("aac".to_string()),
             duration: 3.0,
             frames: None,
             decodable: true,
@@ -420,7 +459,25 @@ mod tests {
         let mut probe = video("hvc1", 0, 0, 0.0, false);
         probe.decodable = false;
         probe.decode_error = Some("cannot decode".to_string());
+        probe.container = Some("mp3".to_string());
         assert_eq!(verdict(&probe, policy()), Verdict::Unsupported { reason: "cannot decode".to_string() });
+    }
+
+    #[test]
+    fn undecodable_video_container_needs_optimize() {
+        let mut probe = video("vp09", 1280, 720, 30.0, false);
+        probe.decodable = false;
+        probe.decode_error = Some("cannot open".to_string());
+        probe.container = Some("webm".to_string());
+        assert_eq!(verdict(&probe, policy()), Verdict::NeedsOptimize { reasons: vec![Reason::ContainerUnsupported] });
+    }
+
+    #[test]
+    fn container_unsupported_matches_only_supported_video() {
+        assert!(supported_container(Some("mp4")));
+        assert!(supported_container(Some("mkv")));
+        assert!(!supported_container(Some("avi")));
+        assert!(!supported_container(None));
     }
 
     #[test]

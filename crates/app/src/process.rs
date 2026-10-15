@@ -1,9 +1,6 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,7 +22,8 @@ pub fn signal_group(pgid: i32, signal: i32) {
     }
 }
 
-pub fn group_alive(pgid: i32) -> bool {
+#[cfg(test)]
+fn group_alive(pgid: i32) -> bool {
     if pgid <= 1 {
         return false;
     }
@@ -53,12 +51,11 @@ pub struct Process {
     program: OsString,
     args: Vec<OsString>,
     envs: Vec<(OsString, OsString)>,
-    cwd: Option<PathBuf>,
 }
 
 impl Process {
     pub fn new(program: impl Into<OsString>) -> Self {
-        return Self { program: program.into(), args: Vec::new(), envs: Vec::new(), cwd: None };
+        return Self { program: program.into(), args: Vec::new(), envs: Vec::new() };
     }
 
     pub fn arg(&mut self, arg: impl Into<OsString>) -> &mut Self {
@@ -82,38 +79,27 @@ impl Process {
         return self;
     }
 
-    pub fn current_dir(&mut self, dir: impl Into<PathBuf>) -> &mut Self {
-        self.cwd = Some(dir.into());
-        return self;
-    }
-
-    fn command(&self, capture: bool) -> Command {
+    fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
         for (key, value) in &self.envs {
             command.env(key, value);
         }
-        if let Some(dir) = &self.cwd {
-            command.current_dir(dir);
-        }
         command.process_group(0);
         command.kill_on_drop(true);
-        if capture {
-            command.stdout(Stdio::piped());
-            command.stderr(Stdio::piped());
-        } else {
-            command.stdin(Stdio::null());
-        }
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
         return command;
     }
 
-    pub fn spawn(&self) -> io::Result<Child> {
-        let inner = self.command(false).spawn()?;
+    pub fn spawn_piped(&self) -> io::Result<Child> {
+        let inner = self.command().spawn()?;
         return Ok(Child::adopt(inner));
     }
 
     pub async fn output(&self) -> io::Result<Output> {
-        let inner = self.command(true).spawn()?;
+        let inner = self.command().spawn()?;
         let pid = inner.id().unwrap_or(0);
         register(pid, pgid_of(pid));
         let result = inner.wait_with_output().await;
@@ -137,11 +123,8 @@ impl Child {
         return Self { inner, pid, pgid: group, alive: true };
     }
 
-    pub fn pid(&self) -> Option<u32> {
-        return self.inner.id();
-    }
-
-    pub fn pgid(&self) -> i32 {
+    #[cfg(test)]
+    fn pgid(&self) -> i32 {
         return self.pgid;
     }
 
@@ -159,14 +142,6 @@ impl Child {
 
     pub fn kill(&self) {
         signal_group(self.pgid, libc::SIGKILL);
-    }
-
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        let status = self.inner.try_wait()?;
-        if status.is_some() {
-            self.finish();
-        }
-        return Ok(status);
     }
 
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
@@ -241,7 +216,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let marker = dir.path().join("ready");
         let script = format!("trap \"\" TERM; : > '{}'; sleep 30", marker.display());
-        let mut child = stub(&script).spawn().expect("spawn");
+        let mut child = stub(&script).spawn_piped().expect("spawn");
         let pgid = child.pgid();
         assert!(pgid > 1);
         await_marker(&marker).await;
@@ -256,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_is_prompt_when_term_is_honoured() {
-        let mut child = stub("sleep 30").spawn().expect("spawn");
+        let mut child = stub("sleep 30").spawn_piped().expect("spawn");
         let pgid = child.pgid();
         let started = Instant::now();
         child.cancel(Duration::from_secs(5)).await.expect("cancel");
@@ -267,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_reaps_without_killing_an_unrelated_group() {
-        let mut child = stub("exit 0").spawn().expect("spawn");
+        let mut child = stub("exit 0").spawn_piped().expect("spawn");
         let pgid = child.pgid();
         let status = child.wait().await.expect("wait");
         assert!(status.success());

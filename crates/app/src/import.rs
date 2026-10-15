@@ -9,7 +9,6 @@ use crate::media::{probe, thumb};
 use crate::model::{Item, ItemKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Transfer {
     Copy,
     Move,
@@ -165,10 +164,21 @@ async fn import_one(
         duration: prepared.probe.duration,
         fps: prepared.probe.fps,
         codec: prepared.probe.codec.clone(),
+        audio_codec: prepared.probe.audio_codec.clone(),
         hdr: prepared.probe.hdr,
+        playable: prepared.probe.decodable,
         needs_optimize: prepared.needs_optimize,
+        optimize_reason: reason_text(&prepared.verdict),
     };
     return Ok(ImportedItem { item, needs_optimize: prepared.needs_optimize, result });
+}
+
+fn reason_text(verdict: &probe::Verdict) -> Option<String> {
+    let probe::Verdict::NeedsOptimize { reasons } = verdict else {
+        return None;
+    };
+    let labels: Vec<&str> = reasons.iter().map(|reason| reason.label()).collect();
+    return Some(labels.join(","));
 }
 
 #[allow(clippy::result_large_err)]

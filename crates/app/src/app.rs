@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -12,10 +13,12 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::download;
 use crate::engine::{Engine, Playback};
 use crate::hotkey;
 use crate::i18n::{self, Strings};
 use crate::import;
+use crate::media::optimize;
 use crate::media::probe;
 use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{Item, ItemId, ItemKind, Library, Settings};
@@ -52,6 +55,8 @@ pub enum Event {
     Hotkey(HotkeyAction),
     Menu(MenuAction),
     ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
+    OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
+    DownloadImported { job: String, items: Vec<Item> },
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -75,6 +80,8 @@ pub struct App {
     strings: Strings,
     menu: Menu,
     handle: tokio::runtime::Handle,
+    optimize: Arc<optimize::Queue>,
+    downloads: Arc<download::Queue>,
 }
 
 impl App {
@@ -99,6 +106,9 @@ impl App {
             &strings,
         );
 
+        let handle = tokio::runtime::Handle::current();
+        let optimize = Arc::new(optimize::Queue::new(&handle));
+        let downloads = Arc::new(download::Queue::new(handle.clone()));
         let mut app = Self {
             muted,
             paused: false,
@@ -117,7 +127,9 @@ impl App {
             hotkey_failures,
             strings,
             menu,
-            handle: tokio::runtime::Handle::current(),
+            handle,
+            optimize,
+            downloads,
             paths: paths.clone(),
         };
         app.sync(false);
@@ -184,6 +196,8 @@ impl App {
                 let response = self.finish_import(&report);
                 let _ = reply.send(response);
             }
+            Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
+            Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
         }
         self.sync_menu();
     }
@@ -194,6 +208,7 @@ impl App {
             Request::Probe { path } => self.start_probe(path, reply),
             Request::Tools => self.start_tools(reply),
             Request::ToolsInstall { tool, consent } => self.start_tools_install(&tool, consent, reply),
+            Request::Download { url, consent } => self.start_download(url, consent, reply),
             other => {
                 let response = self.dispatch(&other);
                 let _ = reply.send(response);
@@ -213,19 +228,84 @@ impl App {
 
     fn finish_import(&mut self, report: &import::Report) -> Response {
         let added = report.imported.len();
+        let items: Vec<Item> = report.imported.iter().map(|imported| imported.item.clone()).collect();
+        self.add_items(items);
+        return ok(&AddReport { added, skipped: report.skipped, results: &report.results });
+    }
+
+    fn add_items(&mut self, items: Vec<Item>) {
         let mut queue = Vec::new();
-        for imported in &report.imported {
-            if imported.needs_optimize && self.settings.optimize_on_import {
-                queue.push(imported.item.id);
+        for item in &items {
+            if item.needs_optimize && self.settings.optimize_on_import {
+                queue.push(item.id);
             }
         }
-        self.library.items.extend(report.imported.iter().map(|imported| imported.item.clone()));
+        self.library.items.extend(items);
         self.persist_library();
         self.reapply();
         for item in queue {
-            self.on_optimize_requested(item);
+            let _ = self.on_optimize_requested(item);
         }
-        return ok(&AddReport { added, skipped: report.skipped, results: &report.results });
+    }
+
+    fn finish_download_import(&mut self, job: &str, items: Vec<Item>) {
+        let done =
+            items.first().map(|item| download::JobState::Done { item: item.id.to_string(), path: item.path.clone() });
+        self.add_items(items);
+        if let Some(state) = done {
+            self.downloads.complete(job, state);
+        }
+    }
+
+    fn start_download(&mut self, url: String, consent: bool, reply: oneshot::Sender<Response>) {
+        let queue = Arc::clone(&self.downloads);
+        let paths = self.paths.clone();
+        let settings_consent = self.settings.tools.install_consent;
+        let policy = self.probe_policy();
+        let height = self.max_display_px();
+        let av1_hw = probe::av1_hardware();
+        self.handle.spawn(async move {
+            let response =
+                match resolve_download(&url, consent || settings_consent, &paths, policy, height, av1_hw, &queue).await
+                {
+                    Ok(id) => Response::ok(serde_json::json!({ "id": id, "state": "queued" })),
+                    Err((code, message)) => Response::err(code, message),
+                };
+            let _ = reply.send(response);
+        });
+    }
+
+    fn finish_optimize(&mut self, item: ItemId, result: Result<optimize::Optimized, String>) {
+        match result {
+            Ok(optimized) => {
+                if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) {
+                    entry.path = optimized.path;
+                    entry.width = optimized.probe.width;
+                    entry.height = optimized.probe.height;
+                    entry.fps = optimized.probe.fps;
+                    entry.codec = optimized.probe.codec;
+                    entry.audio_codec = optimized.probe.audio_codec;
+                    entry.hdr = optimized.probe.hdr;
+                    entry.duration = optimized.probe.duration;
+                    entry.playable = true;
+                    entry.needs_optimize = false;
+                    entry.optimize_reason = None;
+                    entry.optimized = true;
+                }
+                tracing::info!(%item, "optimize complete");
+            }
+            Err(reason) => {
+                let playable = self.library.items.iter().any(|entry| entry.id == item && entry.playable);
+                if playable {
+                    tracing::warn!(%item, %reason, "optimize failed; keeping original");
+                } else {
+                    tracing::warn!(%item, %reason, "optimize failed; removing unplayable item");
+                    let _ = self.remove_items(&[item.to_string()]);
+                }
+            }
+        }
+        self.persist_library();
+        self.reapply();
     }
 
     fn start_probe(&mut self, path: String, reply: oneshot::Sender<Response>) {
@@ -279,9 +359,67 @@ impl App {
         });
     }
 
-    #[allow(clippy::unused_self)]
-    fn on_optimize_requested(&mut self, item: ItemId) {
-        tracing::info!(%item, "optimize requested");
+    fn on_optimize_requested(&self, item: ItemId) -> Result<(), (ErrorCode, String)> {
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
+            return Err((ErrorCode::NotFound, "no such item".to_string()));
+        };
+        if !entry.needs_optimize {
+            return Err((ErrorCode::Media, "item does not need optimization".to_string()));
+        }
+        let tools_dir = self.paths.tools_dir();
+        let Some(ffmpeg) = tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) else {
+            return Err((ErrorCode::ToolMissing, "ffmpeg is not installed".to_string()));
+        };
+        let fallback = optimize::Source {
+            width: entry.width,
+            height: entry.height,
+            fps: entry.fps,
+            bit_depth: None,
+            hdr: entry.hdr,
+            transfer: None,
+            audio: optimize::audio_plan(entry.audio_codec.as_deref(), false),
+        };
+        let job = optimize::Job {
+            item,
+            input: PathBuf::from(&entry.path),
+            thumbs_dir: self.paths.thumbs_dir(),
+            ffmpeg,
+            fps_limit: self.settings.optimize_fps_limit,
+            max_pixels: self.max_display_px(),
+            duration: entry.duration,
+            fallback,
+        };
+        if !self.optimize.enqueue(job) {
+            return Err((ErrorCode::Busy, "optimize is already queued for this item".to_string()));
+        }
+        return Ok(());
+    }
+
+    fn start_optimize(&self, id: &str) -> Response {
+        let Ok(uuid) = id.parse::<Uuid>() else {
+            return Response::err(ErrorCode::Invalid, "invalid item id");
+        };
+        return match self.on_optimize_requested(uuid) {
+            Ok(()) => ok(&serde_json::json!({ "id": id, "state": "queued" })),
+            Err((code, message)) => Response::err(code, message),
+        };
+    }
+
+    fn optimize_status(&self, id: &str) -> Response {
+        let Ok(uuid) = id.parse::<Uuid>() else {
+            return Response::err(ErrorCode::Invalid, "invalid item id");
+        };
+        return match self.optimize.status(uuid) {
+            Some(state) => ok(&state.report(uuid)),
+            None => Response::err(ErrorCode::NotFound, "no optimize job for this item"),
+        };
+    }
+
+    fn download_status(&self, id: &str) -> Response {
+        return match self.downloads.status(id) {
+            Some(state) => ok(&state.report(id)),
+            None => Response::err(ErrorCode::NotFound, "no such download job"),
+        };
     }
 
     fn probe_policy(&self) -> probe::Policy {
@@ -538,6 +676,16 @@ impl App {
                     },
                     None => None,
                 };
+                if let Some(id) = item
+                    && let Some(entry) = self.library.items.iter().find(|entry| entry.id == id)
+                    && !entry.playable
+                {
+                    let reason = entry
+                        .optimize_reason
+                        .clone()
+                        .unwrap_or_else(|| "media is not playable until optimized".to_string());
+                    return Response::err(ErrorCode::Media, reason);
+                }
                 self.apply_target(item, target);
                 self.persist_library();
                 self.reapply();
@@ -596,6 +744,21 @@ impl App {
             Request::LoginItemGet => return ok(&serde_json::json!({ "status": system::login_item_status() })),
             Request::LoginItemSet { enabled } => return self.set_login_item(*enabled),
             Request::Menu => return ok(&self.menu.report()),
+            Request::Optimize { id } => return self.start_optimize(id),
+            Request::OptimizeStatus { id } => return self.optimize_status(id),
+            Request::OptimizeCancel { id } => {
+                let Ok(uuid) = id.parse::<Uuid>() else {
+                    return Response::err(ErrorCode::Invalid, "invalid item id");
+                };
+                self.optimize.cancel(uuid);
+                return ok(&serde_json::json!({ "id": id, "state": "cancelled" }));
+            }
+            Request::DownloadStatus { id } => return self.download_status(id),
+            Request::DownloadCancel { id } => {
+                self.downloads.cancel(id);
+                return ok(&serde_json::json!({ "id": id, "state": "cancelled" }));
+            }
+            Request::Downloads => return ok(&self.downloads.reports()),
             Request::Quit => return Response::ok(serde_json::json!({})),
             _ => return Response::err(ErrorCode::NotImplemented, "command not implemented yet"),
         }
@@ -956,6 +1119,55 @@ fn ok<T: Serialize>(value: &T) -> Response {
         Ok(data) => Response::ok(data),
         Err(_) => Response::err(ErrorCode::Internal, "serialization failed"),
     }
+}
+
+async fn resolve_download(
+    url: &str,
+    consent: bool,
+    paths: &Paths,
+    policy: probe::Policy,
+    height: u32,
+    av1_hw: bool,
+    queue: &download::Queue,
+) -> Result<String, (ErrorCode, String)> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err((ErrorCode::Invalid, "invalid url".to_string()));
+    }
+    let tools_dir = paths.tools_dir();
+    let yt_dlp = require_tool(tools::ToolKind::YtDlp, &tools_dir, consent).await?;
+    let ffmpeg = require_tool(tools::ToolKind::Ffmpeg, &tools_dir, consent).await?;
+    let deno = match tools::locate(tools::ToolKind::Deno, &tools_dir) {
+        Some(path) => Some(path),
+        None if consent => tools::install(tools::ToolKind::Deno, &tools_dir).await.ok(),
+        None => None,
+    };
+    let spec = download::Spec {
+        url: url.to_string(),
+        yt_dlp,
+        ffmpeg,
+        deno,
+        incoming: paths.incoming_dir(),
+        wallpapers: paths.wallpapers_dir(),
+        thumbs: paths.thumbs_dir(),
+        policy,
+        height,
+        av1_hw,
+    };
+    return Ok(queue.enqueue(spec));
+}
+
+async fn require_tool(
+    kind: tools::ToolKind,
+    tools_dir: &std::path::Path,
+    consent: bool,
+) -> Result<PathBuf, (ErrorCode, String)> {
+    if let Some(path) = tools::locate(kind, tools_dir) {
+        return Ok(path);
+    }
+    if !consent {
+        return Err((ErrorCode::ConsentRequired, format!("{} is not installed; consent required", kind.id())));
+    }
+    return tools::install(kind, tools_dir).await.map_err(|error| (ErrorCode::ToolMissing, error));
 }
 
 fn quit() {

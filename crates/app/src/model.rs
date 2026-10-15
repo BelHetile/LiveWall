@@ -61,9 +61,15 @@ pub struct Item {
     #[serde(default)]
     pub codec: Option<String>,
     #[serde(default)]
+    pub audio_codec: Option<String>,
+    #[serde(default)]
     pub hdr: bool,
+    #[serde(default = "default_true")]
+    pub playable: bool,
     #[serde(default)]
     pub needs_optimize: bool,
+    #[serde(default)]
+    pub optimize_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -273,8 +279,11 @@ mod tests {
             duration: 12.5,
             fps: 30.0,
             codec: Some("hvc1".into()),
+            audio_codec: Some("aac".into()),
             hdr: true,
+            playable: true,
             needs_optimize: false,
+            optimize_reason: None,
         };
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");

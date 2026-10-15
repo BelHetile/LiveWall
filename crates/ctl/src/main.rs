@@ -110,6 +110,13 @@ enum Command {
     Optimize {
         id: String,
     },
+    OptimizeStatus {
+        id: String,
+    },
+    OptimizeCancel {
+        id: String,
+    },
+    Downloads,
 }
 
 #[derive(Subcommand)]
@@ -325,6 +332,9 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::DownloadStatus { id } => Request::DownloadStatus { id },
         Command::DownloadCancel { id } => Request::DownloadCancel { id },
         Command::Optimize { id } => Request::Optimize { id },
+        Command::OptimizeStatus { id } => Request::OptimizeStatus { id },
+        Command::OptimizeCancel { id } => Request::OptimizeCancel { id },
+        Command::Downloads => Request::Downloads,
         Command::Download { .. } => return Err("download is handled separately".into()),
     };
     return Ok(request);

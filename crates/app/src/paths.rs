@@ -71,6 +71,14 @@ impl Paths {
         }
         return Ok(());
     }
+
+    pub fn reset_incoming(&self) -> io::Result<()> {
+        let dir = self.incoming_dir();
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+        return create_private_dir(&dir);
+    }
 }
 
 fn data_dir() -> PathBuf {
