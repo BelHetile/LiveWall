@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use proto::{FillMode, Geometry, Hotkeys};
+use proto::{FillMode, Geometry, Hotkeys, Transition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -231,6 +231,7 @@ pub struct Settings {
     pub language: Option<Language>,
     pub hotkeys: Hotkeys,
     pub tools: Tools,
+    pub transition: Transition,
 }
 
 impl Default for Settings {
@@ -254,6 +255,7 @@ impl Default for Settings {
             language: None,
             hotkeys: Hotkeys::default(),
             tools: Tools::default(),
+            transition: Transition::default(),
         };
     }
 }
@@ -261,6 +263,7 @@ impl Default for Settings {
 impl Settings {
     pub(crate) fn normalize(&mut self) {
         self.optimize_fps_limit = self.optimize_fps_limit.clamp(15, 120);
+        self.transition.normalize();
     }
 }
 
@@ -470,5 +473,45 @@ mod tests {
         assert_eq!(settings, before);
         assert!(apply_patch(&mut settings, &serde_json::json!("not an object")).is_err());
         assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn transition_defaults_to_empty() {
+        let settings: Settings = serde_json::from_str("{}").expect("empty object");
+        assert_eq!(settings.transition, Transition::default());
+    }
+
+    #[test]
+    fn merge_patch_merges_and_clears_transition_fields() {
+        let mut settings = Settings::default();
+        apply_patch(&mut settings, &serde_json::json!({ "transition": { "kind": "wipe", "angle": 90.0 } }))
+            .expect("patch");
+        assert_eq!(settings.transition.kind, Some(proto::TransitionKind::Wipe));
+        assert_eq!(settings.transition.angle, Some(90.0));
+
+        apply_patch(&mut settings, &serde_json::json!({ "transition": { "angle": null } })).expect("patch");
+        assert_eq!(settings.transition.kind, Some(proto::TransitionKind::Wipe));
+        assert!(settings.transition.angle.is_none());
+        assert!((settings.volume - 1.0).abs() < f32::EPSILON, "unrelated field clobbered");
+    }
+
+    #[test]
+    fn transition_patch_with_bad_values_is_rejected() {
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        assert!(apply_patch(&mut settings, &serde_json::json!({ "transition": { "bezier": [1.0, 2.0] } })).is_err());
+        assert_eq!(settings, before);
+        assert!(apply_patch(&mut settings, &serde_json::json!({ "transition": { "pos": "nowhere" } })).is_err());
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn normalize_clamps_transition_duration_and_wave() {
+        let mut settings = Settings::default();
+        settings.transition.duration = Some(-3.0);
+        settings.transition.wave = Some([-1.0, 5.0]);
+        settings.normalize();
+        assert_eq!(settings.transition.duration, Some(0.0));
+        assert_eq!(settings.transition.wave, Some([0.0, 5.0]));
     }
 }

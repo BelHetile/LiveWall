@@ -9,7 +9,8 @@ use livewall::proto::{self, ApplyTarget, Request, RequestEnvelope, Response, Res
 const POLL: Duration = Duration::from_millis(200);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(20);
-const RESTORE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
+const SETTLE: Duration = Duration::from_secs(4);
 
 fn main() -> ExitCode {
     if std::env::var("LW_E2E").as_deref() != Ok("1") {
@@ -133,7 +134,8 @@ impl Sandbox {
         let ResponseBody::Ok { data } = list.body else { return false };
         let Some(items) = data["items"].as_array() else { return false };
         let Some(id) = items.first().and_then(|item| item["id"].as_str()) else { return false };
-        let applied = self.request(Request::Apply { item: Some(id.to_string()), target: ApplyTarget::Default });
+        let applied =
+            self.request(Request::Apply { item: Some(id.to_string()), target: ApplyTarget::Default, transition: None });
         return matches!(applied.body, ResponseBody::Ok { .. });
     }
 
@@ -216,9 +218,15 @@ fn wait_for_socket(socket: &Path, timeout: Duration) {
 
 fn await_pictures(expected: &[String], timeout: Duration) {
     let deadline = Instant::now() + timeout;
+    let mut stable_since: Option<Instant> = None;
     while Instant::now() < deadline {
         if current_pictures() == expected {
-            return;
+            let since = *stable_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= SETTLE {
+                return;
+            }
+        } else {
+            stable_since = None;
         }
         std::thread::sleep(POLL);
     }

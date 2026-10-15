@@ -25,6 +25,7 @@ use crate::paths::Paths;
 use crate::platform::detect;
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
+use crate::platform::spaces::SurfaceKey;
 use crate::platform::system::{self, LoginItemStatus};
 use crate::process;
 use crate::rules;
@@ -51,6 +52,7 @@ pub enum Event {
     ScreenLocked,
     ScreenUnlocked,
     VideoUnloadTick { item: ItemId },
+    TransitionDone { key: SurfaceKey },
     Hotkey(HotkeyAction),
     Menu(MenuAction),
     ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
@@ -188,6 +190,12 @@ impl App {
             Event::VideoUnloadTick { item } => {
                 let playback = self.playback();
                 self.engine.on_unload_tick(item, &self.library, &playback);
+            }
+            Event::TransitionDone { key } => {
+                self.engine.on_transition_done(&key);
+                let playback = self.playback();
+                self.engine.refresh_playback(&self.library, &playback);
+                self.refresh_power();
             }
             Event::Hotkey(action) => self.run_hotkey(action),
             Event::Menu(action) => self.run_menu(action),
@@ -439,13 +447,13 @@ impl App {
     fn run_hotkey(&mut self, action: HotkeyAction) {
         match action {
             HotkeyAction::Next => {
-                let _ = self.select(Selection::Next);
+                let _ = self.select(Selection::Next, None);
             }
             HotkeyAction::Previous => {
-                let _ = self.select(Selection::Previous);
+                let _ = self.select(Selection::Previous, None);
             }
             HotkeyAction::Random => {
-                let _ = self.select(Selection::Random);
+                let _ = self.select(Selection::Random, None);
             }
             HotkeyAction::TogglePause => {
                 let paused = self.paused;
@@ -465,13 +473,13 @@ impl App {
                 let _ = self.set_paused(!paused);
             }
             MenuAction::Next => {
-                let _ = self.select(Selection::Next);
+                let _ = self.select(Selection::Next, None);
             }
             MenuAction::Previous => {
-                let _ = self.select(Selection::Previous);
+                let _ = self.select(Selection::Previous, None);
             }
             MenuAction::Random => {
-                let _ = self.select(Selection::Random);
+                let _ = self.select(Selection::Random, None);
             }
             MenuAction::ToggleMute => {
                 let muted = self.muted;
@@ -580,8 +588,13 @@ impl App {
     }
 
     fn reapply(&mut self) {
+        self.reapply_with(None);
+    }
+
+    fn reapply_with(&mut self, request: Option<&proto::Transition>) {
         let playback = self.playback();
-        self.engine.reapply(&self.library, &playback);
+        let transition = crate::engine::transition::resolve(&self.settings.transition, request);
+        self.engine.reapply(&self.library, &playback, Some(&transition));
         self.engine.refresh_desktop(&self.library, false);
         self.refresh_power();
     }
@@ -697,7 +710,7 @@ impl App {
                 self.persist_library();
                 return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
             }
-            Request::Apply { item, target } => {
+            Request::Apply { item, target, transition } => {
                 let item = match item {
                     Some(value) => match value.parse::<Uuid>() {
                         Ok(id) => Some(id),
@@ -717,12 +730,12 @@ impl App {
                 }
                 self.apply_target(item, target);
                 self.persist_library();
-                self.reapply();
+                self.reapply_with(transition.as_ref());
                 return ok(&serde_json::json!({ "applied": item.map(|id| id.to_string()) }));
             }
-            Request::Next => return self.select(Selection::Next),
-            Request::Previous => return self.select(Selection::Previous),
-            Request::Random => return self.select(Selection::Random),
+            Request::Next { transition } => return self.select(Selection::Next, transition.as_ref()),
+            Request::Previous { transition } => return self.select(Selection::Previous, transition.as_ref()),
+            Request::Random { transition } => return self.select(Selection::Random, transition.as_ref()),
             Request::SetGeometry { item, mode, geometry } => {
                 let Ok(id) = item.parse::<Uuid>() else {
                     return Response::err(ErrorCode::Invalid, "invalid item id");
@@ -981,7 +994,7 @@ impl App {
         }
     }
 
-    fn select(&mut self, selection: Selection) -> Response {
+    fn select(&mut self, selection: Selection, transition: Option<&proto::Transition>) -> Response {
         let ids: Vec<ItemId> = self.library.items.iter().map(|item| item.id).collect();
         if ids.is_empty() {
             return Response::err(ErrorCode::NotFound, "library is empty");
@@ -994,7 +1007,7 @@ impl App {
         };
         self.library.placement.default.item = Some(ids[index]);
         self.persist_library();
-        self.reapply();
+        self.reapply_with(transition);
         return ok(&serde_json::json!({ "item": ids[index].to_string() }));
     }
 }

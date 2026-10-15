@@ -156,6 +156,10 @@ impl VideoNode {
         return self.layers.len();
     }
 
+    pub fn layer(&self, key: &SurfaceKey) -> Option<Retained<CALayer>> {
+        return self.layers.iter().find(|(existing, _)| existing == key).map(|(_, layer)| layer.clone().into_super());
+    }
+
     pub fn keys(&self) -> Vec<SurfaceKey> {
         return self.layers.iter().map(|(key, _)| key.clone()).collect();
     }

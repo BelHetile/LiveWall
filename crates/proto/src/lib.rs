@@ -159,6 +159,219 @@ pub enum ApplyTarget {
     Space { space: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransitionKind {
+    None,
+    Simple,
+    Fade,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Wipe,
+    Wave,
+    Grow,
+    Center,
+    Any,
+    Outer,
+    Random,
+}
+
+impl TransitionKind {
+    pub const ALL: [TransitionKind; 14] = [
+        TransitionKind::None,
+        TransitionKind::Simple,
+        TransitionKind::Fade,
+        TransitionKind::Left,
+        TransitionKind::Right,
+        TransitionKind::Top,
+        TransitionKind::Bottom,
+        TransitionKind::Wipe,
+        TransitionKind::Wave,
+        TransitionKind::Grow,
+        TransitionKind::Center,
+        TransitionKind::Any,
+        TransitionKind::Outer,
+        TransitionKind::Random,
+    ];
+
+    pub const RANDOM_POOL: [TransitionKind; 12] = [
+        TransitionKind::Simple,
+        TransitionKind::Fade,
+        TransitionKind::Left,
+        TransitionKind::Right,
+        TransitionKind::Top,
+        TransitionKind::Bottom,
+        TransitionKind::Wipe,
+        TransitionKind::Wave,
+        TransitionKind::Grow,
+        TransitionKind::Center,
+        TransitionKind::Any,
+        TransitionKind::Outer,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        return match self {
+            TransitionKind::None => "none",
+            TransitionKind::Simple => "simple",
+            TransitionKind::Fade => "fade",
+            TransitionKind::Left => "left",
+            TransitionKind::Right => "right",
+            TransitionKind::Top => "top",
+            TransitionKind::Bottom => "bottom",
+            TransitionKind::Wipe => "wipe",
+            TransitionKind::Wave => "wave",
+            TransitionKind::Grow => "grow",
+            TransitionKind::Center => "center",
+            TransitionKind::Any => "any",
+            TransitionKind::Outer => "outer",
+            TransitionKind::Random => "random",
+        };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Axis {
+    Fraction(f64),
+    Pixels(i64),
+}
+
+impl Axis {
+    fn parse(text: &str) -> Result<Self, String> {
+        if let Ok(value) = text.parse::<i64>() {
+            return Ok(Self::Pixels(value));
+        }
+        return text.parse::<f64>().map(Self::Fraction).map_err(|_| format!("invalid coordinate '{text}'"));
+    }
+}
+
+impl std::fmt::Display for Axis {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return match self {
+            Axis::Pixels(value) => write!(formatter, "{value}"),
+            Axis::Fraction(value) if value.fract() == 0.0 => write!(formatter, "{value:.1}"),
+            Axis::Fraction(value) => write!(formatter, "{value}"),
+        };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pos {
+    pub x: Axis,
+    pub y: Axis,
+}
+
+impl Pos {
+    pub fn center() -> Self {
+        return Self { x: Axis::Fraction(0.5), y: Axis::Fraction(0.5) };
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let key = text.trim().to_ascii_lowercase();
+        if let Some((x, y)) = alias(&key) {
+            return Ok(Self { x: Axis::Fraction(x), y: Axis::Fraction(y) });
+        }
+        let (x, y) = key.split_once(',').ok_or_else(|| format!("invalid position '{text}'"))?;
+        return Ok(Self { x: Axis::parse(x.trim())?, y: Axis::parse(y.trim())? });
+    }
+}
+
+fn alias(key: &str) -> Option<(f64, f64)> {
+    return match key {
+        "center" => Some((0.5, 0.5)),
+        "top" => Some((0.5, 1.0)),
+        "bottom" => Some((0.5, 0.0)),
+        "left" => Some((0.0, 0.5)),
+        "right" => Some((1.0, 0.5)),
+        "top-left" => Some((0.0, 1.0)),
+        "top-right" => Some((1.0, 1.0)),
+        "bottom-left" => Some((0.0, 0.0)),
+        "bottom-right" => Some((1.0, 0.0)),
+        _ => None,
+    };
+}
+
+impl std::fmt::Display for Pos {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return write!(formatter, "{},{}", self.x, self.y);
+    }
+}
+
+impl Serialize for Pos {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        return serializer.serialize_str(&self.to_string());
+    }
+}
+
+impl<'de> Deserialize<'de> for Pos {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        return Pos::parse(&text).map_err(serde::de::Error::custom);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Transition {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TransitionKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[f64; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pos: Option<Pos>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invert_y: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wave: Option<[f64; 2]>,
+}
+
+impl Transition {
+    pub const DEFAULT_BEZIER: [f64; 4] = [0.54, 0.0, 0.34, 0.99];
+    pub const DEFAULT_DURATION: f64 = 1.0;
+    pub const DEFAULT_ANGLE: f64 = 45.0;
+    pub const DEFAULT_WAVE: [f64; 2] = [20.0, 20.0];
+
+    pub fn normalize(&mut self) {
+        if let Some(duration) = &mut self.duration {
+            *duration = duration.clamp(0.0, 3600.0);
+        }
+        if let Some(wave) = &mut self.wave {
+            wave[0] = wave[0].max(0.0);
+            wave[1] = wave[1].max(0.0);
+        }
+    }
+}
+
+pub fn parse_bezier(text: &str) -> Result<[f64; 4], String> {
+    let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+    if parts.len() != 4 {
+        return Err(format!("expected four bezier control points, got {}", parts.len()));
+    }
+    let mut out = [0.0; 4];
+    for (slot, part) in out.iter_mut().zip(parts) {
+        *slot = part.parse::<f64>().map_err(|_| format!("invalid bezier control point '{part}'"))?;
+    }
+    return Ok(out);
+}
+
+pub fn parse_wave(text: &str) -> Result<[f64; 2], String> {
+    let normalized = text.replace(['x', 'X'], ",");
+    let parts: Vec<&str> = normalized.split(',').map(str::trim).filter(|part| !part.is_empty()).collect();
+    if parts.len() != 2 {
+        return Err(format!("expected a wave width and height, got {}", parts.len()));
+    }
+    let mut out = [0.0; 2];
+    for (slot, part) in out.iter_mut().zip(parts) {
+        *slot = part.parse::<f64>().map_err(|_| format!("invalid wave dimension '{part}'"))?;
+    }
+    return Ok(out);
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "kebab-case", rename_all_fields = "kebab-case")]
 pub enum Request {
@@ -167,9 +380,18 @@ pub enum Request {
     TogglePause,
     Mute,
     Unmute,
-    Next,
-    Previous,
-    Random,
+    Next {
+        #[serde(default)]
+        transition: Option<Transition>,
+    },
+    Previous {
+        #[serde(default)]
+        transition: Option<Transition>,
+    },
+    Random {
+        #[serde(default)]
+        transition: Option<Transition>,
+    },
     Status,
     Current,
     Quit,
@@ -179,33 +401,90 @@ pub enum Request {
     Desktop,
     Rules,
     LibraryList,
-    LibraryAdd { paths: Vec<String> },
-    LibraryRemove { ids: Vec<String> },
-    LibraryRename { id: String, title: String },
-    LibraryMove { ids: Vec<String>, folder: Option<String> },
-    FolderCreate { name: String },
-    FolderRename { id: String, name: String },
-    FolderDelete { id: String },
-    Apply { item: Option<String>, target: ApplyTarget },
-    SetGeometry { item: String, mode: FillMode, geometry: Geometry },
-    SetItem { item: String, volume: Option<f32>, speed: Option<f32>, muted: Option<bool>, still_time: Option<f32> },
+    LibraryAdd {
+        paths: Vec<String>,
+    },
+    LibraryRemove {
+        ids: Vec<String>,
+    },
+    LibraryRename {
+        id: String,
+        title: String,
+    },
+    LibraryMove {
+        ids: Vec<String>,
+        folder: Option<String>,
+    },
+    FolderCreate {
+        name: String,
+    },
+    FolderRename {
+        id: String,
+        name: String,
+    },
+    FolderDelete {
+        id: String,
+    },
+    Apply {
+        item: Option<String>,
+        target: ApplyTarget,
+        #[serde(default)]
+        transition: Option<Transition>,
+    },
+    SetGeometry {
+        item: String,
+        mode: FillMode,
+        geometry: Geometry,
+    },
+    SetItem {
+        item: String,
+        volume: Option<f32>,
+        speed: Option<f32>,
+        muted: Option<bool>,
+        still_time: Option<f32>,
+    },
     SettingsGet,
-    SettingsSet { patch: Value },
+    SettingsSet {
+        patch: Value,
+    },
     HotkeysGet,
-    HotkeysSet { action: HotkeyAction, combo: Option<String> },
+    HotkeysSet {
+        action: HotkeyAction,
+        combo: Option<String>,
+    },
     LoginItemGet,
-    LoginItemSet { enabled: bool },
+    LoginItemSet {
+        enabled: bool,
+    },
     Menu,
     Tools,
-    ToolsInstall { tool: String, consent: bool },
-    Probe { path: String },
-    Download { url: String, consent: bool },
-    DownloadStatus { id: String },
-    DownloadCancel { id: String },
+    ToolsInstall {
+        tool: String,
+        consent: bool,
+    },
+    Probe {
+        path: String,
+    },
+    Download {
+        url: String,
+        consent: bool,
+    },
+    DownloadStatus {
+        id: String,
+    },
+    DownloadCancel {
+        id: String,
+    },
     Downloads,
-    Optimize { id: String },
-    OptimizeStatus { id: String },
-    OptimizeCancel { id: String },
+    Optimize {
+        id: String,
+    },
+    OptimizeStatus {
+        id: String,
+    },
+    OptimizeCancel {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,9 +576,16 @@ mod tests {
             Request::TogglePause,
             Request::Mute,
             Request::Unmute,
-            Request::Next,
-            Request::Previous,
-            Request::Random,
+            Request::Next { transition: None },
+            Request::Previous { transition: None },
+            Request::Random {
+                transition: Some(Transition {
+                    kind: Some(TransitionKind::Wipe),
+                    duration: Some(1.5),
+                    angle: Some(90.0),
+                    ..Transition::default()
+                }),
+            },
             Request::Status,
             Request::Current,
             Request::Quit,
@@ -316,9 +602,17 @@ mod tests {
             Request::FolderCreate { name: "Folder".into() },
             Request::FolderRename { id: "f".into(), name: "Renamed".into() },
             Request::FolderDelete { id: "f".into() },
-            Request::Apply { item: Some("a".into()), target: ApplyTarget::Default },
-            Request::Apply { item: None, target: ApplyTarget::Display { display: "d".into() } },
-            Request::Apply { item: Some("a".into()), target: ApplyTarget::Space { space: "s".into() } },
+            Request::Apply { item: Some("a".into()), target: ApplyTarget::Default, transition: None },
+            Request::Apply { item: None, target: ApplyTarget::Display { display: "d".into() }, transition: None },
+            Request::Apply {
+                item: Some("a".into()),
+                target: ApplyTarget::Space { space: "s".into() },
+                transition: Some(Transition {
+                    kind: Some(TransitionKind::Grow),
+                    pos: Some(Pos::parse("top-right").expect("pos")),
+                    ..Transition::default()
+                }),
+            },
             Request::SetGeometry {
                 item: "a".into(),
                 mode: FillMode::Custom,
@@ -445,5 +739,90 @@ mod tests {
         assert!(hotkeys.pause.is_some());
         assert!(hotkeys.next.is_none());
         assert!(hotkeys.random.is_none());
+    }
+
+    #[test]
+    fn transition_kinds_use_kebab_wire_names() {
+        for kind in TransitionKind::ALL {
+            let text = serde_json::to_string(&kind).expect("serialize");
+            assert_eq!(text, format!("\"{}\"", kind.as_str()), "{kind:?}");
+            let back: TransitionKind = serde_json::from_str(&text).expect("deserialize");
+            assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn pos_parses_aliases_fractions_and_pixels() {
+        assert_eq!(Pos::parse("center").unwrap(), Pos { x: Axis::Fraction(0.5), y: Axis::Fraction(0.5) });
+        assert_eq!(Pos::parse("TOP-LEFT").unwrap(), Pos { x: Axis::Fraction(0.0), y: Axis::Fraction(1.0) });
+        assert_eq!(Pos::parse("0.25,0.75").unwrap(), Pos { x: Axis::Fraction(0.25), y: Axis::Fraction(0.75) });
+        assert_eq!(Pos::parse("100, 200").unwrap(), Pos { x: Axis::Pixels(100), y: Axis::Pixels(200) });
+        assert_eq!(Pos::parse("0.5,100").unwrap(), Pos { x: Axis::Fraction(0.5), y: Axis::Pixels(100) });
+        assert!(Pos::parse("bogus").is_err());
+        assert!(Pos::parse("1,2,3").is_err());
+        assert!(Pos::parse("0.5,x").is_err());
+    }
+
+    #[test]
+    fn pos_round_trips_through_a_string() {
+        for text in ["center", "0.25,0.75", "100,200", "0.0,1.0"] {
+            let pos = Pos::parse(text).expect("parse");
+            let encoded = serde_json::to_string(&pos).expect("serialize");
+            let decoded: Pos = serde_json::from_str(&encoded).expect("deserialize");
+            assert_eq!(decoded, pos, "{text}");
+        }
+        assert_eq!(serde_json::to_string(&Pos::center()).unwrap(), "\"0.5,0.5\"");
+        assert_eq!(
+            serde_json::to_string(&Pos { x: Axis::Fraction(1.0), y: Axis::Fraction(0.0) }).unwrap(),
+            "\"1.0,0.0\""
+        );
+        assert_eq!(serde_json::to_string(&Pos { x: Axis::Pixels(10), y: Axis::Pixels(20) }).unwrap(), "\"10,20\"");
+    }
+
+    #[test]
+    fn bezier_and_wave_parsing() {
+        let bezier = parse_bezier("0.54,0,0.34,0.99").expect("bezier");
+        for (got, want) in bezier.into_iter().zip([0.54, 0.0, 0.34, 0.99]) {
+            assert!((got - want).abs() < 1e-9, "{got} != {want}");
+        }
+        assert!(parse_bezier("0.5,0.5,0.5").is_err());
+        assert!(parse_bezier("a,b,c,d").is_err());
+        let wave = parse_wave("20,20").expect("wave");
+        assert!((wave[0] - 20.0).abs() < 1e-9 && (wave[1] - 20.0).abs() < 1e-9);
+        let wave = parse_wave("30x40").expect("wave");
+        assert!((wave[0] - 30.0).abs() < 1e-9 && (wave[1] - 40.0).abs() < 1e-9);
+        assert!(parse_wave("20").is_err());
+    }
+
+    #[test]
+    fn transition_object_round_trips_and_omits_empty_fields() {
+        let empty = Transition::default();
+        assert_eq!(serde_json::to_string(&empty).unwrap(), "{}");
+        let full = Transition {
+            kind: Some(TransitionKind::Wave),
+            duration: Some(2.5),
+            bezier: Some([0.1, 0.2, 0.3, 0.4]),
+            angle: Some(90.0),
+            pos: Some(Pos::parse("bottom-right").unwrap()),
+            invert_y: Some(true),
+            wave: Some([12.0, 34.0]),
+        };
+        let text = serde_json::to_string(&full).expect("serialize");
+        let back: Transition = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, full);
+    }
+
+    #[test]
+    fn transition_rejects_bad_bezier_length() {
+        assert!(serde_json::from_str::<Transition>(r#"{"bezier":[0.1,0.2,0.3]}"#).is_err());
+        assert!(serde_json::from_str::<Transition>(r#"{"pos":"nonsense"}"#).is_err());
+        assert!(serde_json::from_str::<Transition>(r#"{"kind":"spiral"}"#).is_err());
+    }
+
+    #[test]
+    fn next_verb_omits_default_transition() {
+        let encoded = encode(&RequestEnvelope::new(Request::Next { transition: None }));
+        let text = String::from_utf8(encoded).expect("utf8");
+        assert!(text.contains("\"cmd\":\"next\""), "{text}");
     }
 }

@@ -33,9 +33,18 @@ enum Command {
     TogglePause,
     Mute,
     Unmute,
-    Next,
-    Previous,
-    Random,
+    Next {
+        #[command(flatten)]
+        transition: TransitionArgs,
+    },
+    Previous {
+        #[command(flatten)]
+        transition: TransitionArgs,
+    },
+    Random {
+        #[command(flatten)]
+        transition: TransitionArgs,
+    },
     Status,
     Current,
     Quit,
@@ -55,6 +64,8 @@ enum Command {
         target: TargetKind,
         #[arg(long)]
         target_id: Option<String>,
+        #[command(flatten)]
+        transition: TransitionArgs,
     },
     SetGeometry {
         item: String,
@@ -185,6 +196,78 @@ enum HotkeyActionArg {
     Random,
 }
 
+#[derive(clap::Args, Clone)]
+struct TransitionArgs {
+    #[arg(short = 't', long, value_enum, help = "Wallpaper transition to play")]
+    transition: Option<TransitionKindArg>,
+    #[arg(long, help = "Transition duration in seconds")]
+    duration: Option<f64>,
+    #[arg(long, help = "Bezier control points as a,b,c,d")]
+    bezier: Option<String>,
+    #[arg(long, help = "Wipe and wave angle in degrees")]
+    angle: Option<f64>,
+    #[arg(long, help = "Circle origin: x,y or an alias such as center")]
+    pos: Option<String>,
+    #[arg(long, help = "Flip the y axis of --pos")]
+    invert_y: bool,
+    #[arg(long, help = "Wave size as width,height")]
+    wave: Option<String>,
+}
+
+impl TransitionArgs {
+    fn build(self) -> Result<Option<proto::Transition>, String> {
+        let mut out = proto::Transition::default();
+        let mut any = false;
+        if let Some(kind) = self.transition {
+            out.kind = Some(kind.into());
+            any = true;
+        }
+        if let Some(duration) = self.duration {
+            out.duration = Some(duration);
+            any = true;
+        }
+        if let Some(bezier) = self.bezier {
+            out.bezier = Some(proto::parse_bezier(&bezier)?);
+            any = true;
+        }
+        if let Some(angle) = self.angle {
+            out.angle = Some(angle);
+            any = true;
+        }
+        if let Some(pos) = self.pos {
+            out.pos = Some(proto::Pos::parse(&pos)?);
+            any = true;
+        }
+        if self.invert_y {
+            out.invert_y = Some(true);
+            any = true;
+        }
+        if let Some(wave) = self.wave {
+            out.wave = Some(proto::parse_wave(&wave)?);
+            any = true;
+        }
+        return Ok(if any { Some(out) } else { None });
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TransitionKindArg {
+    None,
+    Simple,
+    Fade,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Wipe,
+    Wave,
+    Grow,
+    Center,
+    Any,
+    Outer,
+    Random,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum TargetKind {
     Default,
@@ -269,9 +352,9 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::TogglePause => Request::TogglePause,
         Command::Mute => Request::Mute,
         Command::Unmute => Request::Unmute,
-        Command::Next => Request::Next,
-        Command::Previous => Request::Previous,
-        Command::Random => Request::Random,
+        Command::Next { transition } => Request::Next { transition: transition.build()? },
+        Command::Previous { transition } => Request::Previous { transition: transition.build()? },
+        Command::Random { transition } => Request::Random { transition: transition.build()? },
         Command::Status => Request::Status,
         Command::Current => Request::Current,
         Command::Quit => Request::Quit,
@@ -292,7 +375,7 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Rename { id, name } => Request::FolderRename { id, name },
             FolderCommand::Delete { id } => Request::FolderDelete { id },
         },
-        Command::Apply { item, target, target_id } => {
+        Command::Apply { item, target, target_id, transition } => {
             let target = match target {
                 TargetKind::Default => ApplyTarget::Default,
                 TargetKind::Display => {
@@ -302,7 +385,7 @@ fn build_request(command: Command) -> Result<Request, String> {
                     ApplyTarget::Space { space: target_id.ok_or("--target-id is required for --target space")? }
                 }
             };
-            Request::Apply { item, target }
+            Request::Apply { item, target, transition: transition.build()? }
         }
         Command::SetGeometry { item, mode, x, y, zoom } => {
             Request::SetGeometry { item, mode: mode.into(), geometry: Geometry { x, y, zoom } }
@@ -457,6 +540,27 @@ fn finish_download(data: &Value) -> u8 {
             }
             return EXIT_OK;
         }
+    }
+}
+
+impl From<TransitionKindArg> for proto::TransitionKind {
+    fn from(value: TransitionKindArg) -> Self {
+        return match value {
+            TransitionKindArg::None => Self::None,
+            TransitionKindArg::Simple => Self::Simple,
+            TransitionKindArg::Fade => Self::Fade,
+            TransitionKindArg::Left => Self::Left,
+            TransitionKindArg::Right => Self::Right,
+            TransitionKindArg::Top => Self::Top,
+            TransitionKindArg::Bottom => Self::Bottom,
+            TransitionKindArg::Wipe => Self::Wipe,
+            TransitionKindArg::Wave => Self::Wave,
+            TransitionKindArg::Grow => Self::Grow,
+            TransitionKindArg::Center => Self::Center,
+            TransitionKindArg::Any => Self::Any,
+            TransitionKindArg::Outer => Self::Outer,
+            TransitionKindArg::Random => Self::Random,
+        };
     }
 }
 

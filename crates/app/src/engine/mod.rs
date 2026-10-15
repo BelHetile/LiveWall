@@ -2,6 +2,7 @@ pub mod desktop;
 pub mod gif;
 pub mod image;
 pub mod still;
+pub mod transition;
 pub mod video;
 pub mod window;
 
@@ -98,6 +99,20 @@ impl Node {
             NodeBody::Image(node) => node.layer_count(),
         };
     }
+
+    fn layer(&self, key: &SurfaceKey) -> Option<Retained<CALayer>> {
+        return match &self.body {
+            NodeBody::Video(node) => node.layer(key),
+            NodeBody::Gif(node) => node.layer(key),
+            NodeBody::Image(node) => node.layer(key),
+        };
+    }
+}
+
+struct ActiveTransition {
+    old: ItemId,
+    layer: Retained<CALayer>,
+    timer: Retained<NSTimer>,
 }
 
 pub struct Engine {
@@ -113,6 +128,8 @@ pub struct Engine {
     unload_waiting: HashMap<ItemId, (String, f64)>,
     unloaded: HashMap<ItemId, f64>,
     unload_timers: HashMap<ItemId, Retained<NSTimer>>,
+    pending_starts: Vec<(SurfaceKey, ItemId)>,
+    transitions: HashMap<SurfaceKey, ActiveTransition>,
     playing: usize,
 }
 
@@ -156,6 +173,8 @@ impl Engine {
             unload_waiting: HashMap::new(),
             unloaded: HashMap::new(),
             unload_timers: HashMap::new(),
+            pending_starts: Vec::new(),
+            transitions: HashMap::new(),
             playing: 0,
         };
     }
@@ -169,12 +188,18 @@ impl Engine {
         }
         self.reposition();
         self.refresh_active();
-        self.reapply(library, playback);
+        self.reapply(library, playback, None);
     }
 
-    pub fn reapply(&mut self, library: &Library, playback: &Playback) {
-        self.apply_assignments(library);
+    pub fn reapply(
+        &mut self,
+        library: &Library,
+        playback: &Playback,
+        transition: Option<&transition::ResolvedTransition>,
+    ) {
+        self.apply_assignments(library, transition.is_some());
         self.apply_frames(library);
+        self.begin_transitions(transition);
         self.update_playback(library, playback);
     }
 
@@ -196,7 +221,7 @@ impl Engine {
         {
             video.on_loaded(self.mtm);
         }
-        self.reapply(library, playback);
+        self.reapply(library, playback, None);
     }
 
     pub fn on_gif_tick(&mut self, item: ItemId) {
@@ -513,6 +538,7 @@ impl Engine {
     }
 
     fn remove_surface(&mut self, key: &SurfaceKey) {
+        self.finish_transition(key);
         let Some(surface) = self.surfaces.remove(key) else { return };
         if let Some(item) = surface.item
             && let Some(node) = self.nodes.get_mut(&item)
@@ -525,7 +551,7 @@ impl Engine {
         surface.window.close();
     }
 
-    fn apply_assignments(&mut self, library: &Library) {
+    fn apply_assignments(&mut self, library: &Library, animate: bool) {
         let assignments: Vec<(SurfaceKey, Option<ItemId>)> =
             self.surfaces.keys().map(|key| (key.clone(), playable_item(library, resolve_item(library, key)))).collect();
         for (key, item) in assignments {
@@ -533,13 +559,17 @@ impl Engine {
             if current == item {
                 continue;
             }
-            if let Some(old) = current
-                && let Some(node) = self.nodes.get_mut(&old)
-            {
-                node.detach(&key);
-            }
-            if let Some(surface) = self.surfaces.get_mut(&key) {
-                surface.item = None;
+            self.finish_transition(&key);
+            let keep_old = animate && current.is_some() && item.is_some();
+            if !keep_old {
+                if let Some(old) = current
+                    && let Some(node) = self.nodes.get_mut(&old)
+                {
+                    node.detach(&key);
+                }
+                if let Some(surface) = self.surfaces.get_mut(&key) {
+                    surface.item = None;
+                }
             }
             if let Some(item) = item {
                 self.ensure_node(item, library);
@@ -548,6 +578,9 @@ impl Engine {
                 }
                 if let Some(surface) = self.surfaces.get_mut(&key) {
                     surface.item = Some(item);
+                }
+                if keep_old {
+                    self.pending_starts.push((key.clone(), current.unwrap()));
                 }
             }
         }
@@ -563,6 +596,60 @@ impl Engine {
             self.unload_waiting.remove(&item);
             self.unloaded.remove(&item);
         }
+    }
+
+    fn begin_transitions(&mut self, spec: Option<&transition::ResolvedTransition>) {
+        let pending = std::mem::take(&mut self.pending_starts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(spec) = spec.filter(|spec| !spec.instant()) else {
+            self.detach_pending(&pending);
+            return;
+        };
+        for (key, old) in pending {
+            let Some(new) = self.surfaces.get(&key).and_then(|surface| surface.item) else { continue };
+            let Some(layer) = self.nodes.get(&new).and_then(|node| node.layer(&key)) else {
+                if let Some(node) = self.nodes.get_mut(&old) {
+                    node.detach(&key);
+                }
+                continue;
+            };
+            transition::apply(&layer, spec);
+            let block = block2::RcBlock::new({
+                let key = key.clone();
+                move |_timer: std::ptr::NonNull<NSTimer>| {
+                    crate::app::post(crate::app::Event::TransitionDone { key: key.clone() });
+                }
+            });
+            let timer =
+                unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(spec.timer_seconds(), false, &block) };
+            self.transitions.insert(key, ActiveTransition { old, layer, timer });
+        }
+        self.prune_orphans();
+    }
+
+    fn detach_pending(&mut self, pending: &[(SurfaceKey, ItemId)]) {
+        for (key, old) in pending {
+            if let Some(node) = self.nodes.get_mut(old) {
+                node.detach(key);
+            }
+        }
+        self.prune_orphans();
+    }
+
+    fn finish_transition(&mut self, key: &SurfaceKey) {
+        let Some(active) = self.transitions.remove(key) else { return };
+        active.timer.invalidate();
+        if let Some(node) = self.nodes.get_mut(&active.old) {
+            node.detach(key);
+        }
+        unsafe { active.layer.setMask(None) };
+        self.prune_orphans();
+    }
+
+    pub fn on_transition_done(&mut self, key: &SurfaceKey) {
+        self.finish_transition(key);
     }
 
     fn apply_frames(&self, library: &Library) {
@@ -594,7 +681,7 @@ impl Engine {
         let mut transitions: Vec<(ItemId, bool, bool)> = Vec::new();
         for (item, node) in &mut self.nodes {
             let playing = node.keys().iter().any(&should);
-            if playing {
+            if playing && !matches!(node.body, NodeBody::Image(_)) {
                 playing_count += 1;
             }
             match &mut node.body {

@@ -198,7 +198,11 @@ fn run_unplayable(fixtures: &Fixtures) {
     assert_eq!(item["playable"], json!(false), "corrupt should be non-playable: {item}");
     assert_eq!(item["needs_optimize"], json!(true), "corrupt should need optimize: {item}");
 
-    let response = sandbox.request(Request::Apply { item: Some(id.clone()), target: proto::ApplyTarget::Default });
+    let response = sandbox.request(Request::Apply {
+        item: Some(id.clone()),
+        target: proto::ApplyTarget::Default,
+        transition: None,
+    });
     match response.body {
         ResponseBody::Err(body) => assert_eq!(body.code, ErrorCode::Media, "apply on non-playable: {body:?}"),
         ResponseBody::Ok { .. } => panic!("apply on a non-playable item must fail"),

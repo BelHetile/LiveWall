@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(150);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(20);
-const RESTORE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
+const SETTLE: Duration = Duration::from_secs(4);
 const MAX_LINE: usize = 64 * 1024;
 
 const MISSING: &str = "11111111-1111-1111-1111-111111111111";
@@ -31,13 +32,140 @@ fn ipc_end_to_end() {
     }
     let guard = Guard::capture();
     every_verb();
+    settle(&guard);
+    wallpaper_transitions();
+    settle(&guard);
     second_instance_exits();
     stale_socket_recovers();
+    settle(&guard);
     quit_removes_socket_and_restores();
+    settle(&guard);
     concurrent_clients();
     oversize_line_rejected();
+    settle(&guard);
     drop(guard);
     println!("e2e_ipc: ok");
+}
+
+fn wallpaper_transitions() {
+    println!("e2e_ipc: wallpaper change transitions");
+    let sandbox = Sandbox::new("transition");
+    sandbox.launch();
+    let socket = sandbox.socket();
+    let first = sandbox.write_png_named("a.png").to_string_lossy().into_owned();
+    let second = sandbox.write_png_named("b.png").to_string_lossy().into_owned();
+
+    let added = ok_json(&socket, &["library", "add", &first]);
+    let a_id = added["data"]["results"][0]["id"].as_str().expect("item id").to_string();
+    let added = ok_json(&socket, &["library", "add", &second]);
+    let b_id = added["data"]["results"][0]["id"].as_str().expect("item id").to_string();
+    assert_ne!(a_id, b_id, "library deduplicated distinct files: {added}");
+
+    ok_json(&socket, &["apply", "--item", &a_id, "--target", "default", "--transition", "fade", "--duration", "0.3"]);
+    let current = ok_json(&socket, &["current"]);
+    assert_eq!(current["data"]["item"], serde_json::json!(a_id), "apply+a transition: {current}");
+
+    let kinds = [
+        "simple", "fade", "left", "right", "top", "bottom", "wipe", "wave", "grow", "center", "any", "outer", "random",
+        "none",
+    ];
+    for kind in kinds {
+        ok_json(
+            &socket,
+            &["apply", "--item", &b_id, "--target", "default", "--transition", kind, "--duration", "0.12"],
+        );
+        ok_json(
+            &socket,
+            &["apply", "--item", &a_id, "--target", "default", "--transition", kind, "--duration", "0.12"],
+        );
+    }
+
+    ok_json(
+        &socket,
+        &[
+            "apply",
+            "--item",
+            &b_id,
+            "--target",
+            "default",
+            "--transition",
+            "wave",
+            "--duration",
+            "0.2",
+            "--angle",
+            "30",
+            "--wave",
+            "30x40",
+            "--bezier",
+            "0.1,0.2,0.3,0.4",
+        ],
+    );
+    ok_json(
+        &socket,
+        &[
+            "apply",
+            "--item",
+            &a_id,
+            "--target",
+            "default",
+            "--transition",
+            "grow",
+            "--duration",
+            "0.2",
+            "--pos",
+            "top-right",
+            "--invert-y",
+        ],
+    );
+    ok_json(
+        &socket,
+        &[
+            "apply",
+            "--item",
+            &b_id,
+            "--target",
+            "default",
+            "--transition",
+            "grow",
+            "--duration",
+            "0.2",
+            "--pos",
+            "100,200",
+        ],
+    );
+    ok_json(&socket, &["next", "--transition", "fade", "--duration", "0.1"]);
+    ok_json(&socket, &["previous", "--transition", "wipe"]);
+    ok_json(&socket, &["random", "--transition", "grow", "--duration", "0.1"]);
+
+    ok_json(&socket, &["apply", "--item", &a_id, "--target", "default", "--transition", "wipe", "--duration", "3"]);
+    ok_json(&socket, &["apply", "--item", &b_id, "--target", "default", "--transition", "fade", "--duration", "0.1"]);
+    await_single_node(&socket, &b_id);
+
+    ok_json(&socket, &["settings", "set", r#"{"transition":{"kind":"wipe","angle":90.0}}"#]);
+    let settings = ok_json(&socket, &["settings", "get"]);
+    assert_eq!(settings["data"]["transition"]["kind"], serde_json::json!("wipe"), "transition stored: {settings}");
+    assert_eq!(settings["data"]["transition"]["angle"], serde_json::json!(90.0), "transition angle: {settings}");
+    let windows = ok_json(&socket, &["windows"]);
+    assert!(windows["data"]["nodes"].as_array().is_some(), "windows report: {windows}");
+
+    let usage = lwctl_run(&socket, &["apply", "--item", &a_id, "--transition", "wipe", "--pos", "nowhere"]);
+    assert_eq!(usage.status.code(), Some(64), "invalid --pos should be a usage error");
+
+    ok_json(&socket, &["quit"]);
+    sandbox.reap();
+}
+
+fn await_single_node(socket: &Path, item: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let windows = ok_json(socket, &["windows"]);
+        let nodes = windows["data"]["nodes"].as_array().cloned().unwrap_or_default();
+        if nodes.len() == 1 && nodes[0]["item"].as_str() == Some(item) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "nodes did not settle on {item}: {windows}");
+        std::thread::sleep(POLL);
+    }
 }
 
 fn every_verb() {
@@ -301,12 +429,23 @@ fn await_taken(socket: &Path) {
 
 fn await_pictures(expected: &[String], timeout: Duration) {
     let deadline = Instant::now() + timeout;
+    let mut stable_since: Option<Instant> = None;
     while Instant::now() < deadline {
         if current_pictures() == expected {
-            return;
+            let since = *stable_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= SETTLE {
+                return;
+            }
+        } else {
+            stable_since = None;
         }
         std::thread::sleep(POLL);
     }
+}
+
+fn settle(guard: &Guard) {
+    await_pictures(&guard.pictures, RESTORE_TIMEOUT);
+    assert_eq!(current_pictures(), guard.pictures, "desktop picture did not settle back to the original");
 }
 
 fn wait_for_socket(socket: &Path) {
@@ -340,7 +479,11 @@ impl Sandbox {
     }
 
     fn write_png(&self) -> PathBuf {
-        let path = self.dir.path().join("icon.png");
+        return self.write_png_named("icon.png");
+    }
+
+    fn write_png_named(&self, name: &str) -> PathBuf {
+        let path = self.dir.path().join(name);
         std::fs::write(&path, PNG).expect("write png");
         return path;
     }
