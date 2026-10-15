@@ -53,7 +53,7 @@ pub fn selector(max_height: u32, av1_hw: bool) -> String {
     return format!("{best}/{fallback_split}/{merged}/{single}/b");
 }
 
-pub fn merge_format() -> &'static str {
+fn merge_format() -> &'static str {
     return "mp4";
 }
 

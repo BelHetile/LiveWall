@@ -84,8 +84,7 @@ pub struct MenuState {
 pub struct Menu {
     status_item: Retained<NSStatusItem>,
     root: Retained<NSMenu>,
-    #[allow(dead_code)]
-    target: Retained<MenuTarget>,
+    _target: Retained<MenuTarget>,
     title: Retained<NSMenuItem>,
     pause: Retained<NSMenuItem>,
     next: Retained<NSMenuItem>,
@@ -128,7 +127,7 @@ impl Menu {
 
         status_item.setMenu(Some(&root));
 
-        let menu = Self { status_item, root, target, title, pause, next, previous, random, mute, login, quit };
+        let menu = Self { status_item, root, _target: target, title, pause, next, previous, random, mute, login, quit };
         menu.update(state, strings);
         return menu;
     }

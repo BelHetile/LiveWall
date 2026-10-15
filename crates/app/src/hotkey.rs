@@ -230,6 +230,7 @@ pub fn keycode(key: &str) -> Option<u32> {
     return KEYS.iter().find(|(name, _)| *name == key).map(|(_, code)| *code);
 }
 
+#[cfg(test)]
 pub fn key_name(code: u32) -> Option<&'static str> {
     return KEYS.iter().find(|(_, value)| *value == code).map(|(name, _)| *name);
 }
@@ -272,6 +273,7 @@ pub fn parse(input: &str) -> Result<KeyCombo, ParseError> {
     return Ok(KeyCombo { key, modifiers });
 }
 
+#[cfg(test)]
 pub fn format(combo: &KeyCombo) -> String {
     let mut parts: Vec<String> = Vec::new();
     for modifier in canonical_modifiers(&combo.modifiers) {

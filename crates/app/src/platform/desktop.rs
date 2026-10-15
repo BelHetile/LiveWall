@@ -12,6 +12,8 @@ use objc2_core_foundation::{
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
+use crate::platform::cf_ref;
+
 const HI_SERVICES: &std::ffi::CStr =
     c"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices";
 
@@ -105,10 +107,6 @@ fn screen_for(mtm: MainThreadMarker, display: u32) -> Option<Retained<NSScreen>>
         }
     }
     return None;
-}
-
-fn cf_ref<T: AsRef<CFType>>(value: &T) -> &CFType {
-    return value.as_ref();
 }
 
 pub fn encode(config: &CFDictionary<CFString, CFType>) -> Option<String> {

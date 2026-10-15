@@ -34,7 +34,6 @@ use crate::tools;
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 
-#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
     Quit,

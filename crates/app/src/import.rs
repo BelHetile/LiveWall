@@ -48,7 +48,8 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn added(&self) -> usize {
+    #[cfg(test)]
+    fn added(&self) -> usize {
         return self.imported.len();
     }
 }

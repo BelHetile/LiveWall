@@ -35,10 +35,6 @@ impl Strings {
         }
     }
 
-    pub fn language(&self) -> Language {
-        return self.language;
-    }
-
     pub fn get(&self, key: &str) -> String {
         return self.table.get(key).cloned().unwrap_or_else(|| key.to_string());
     }

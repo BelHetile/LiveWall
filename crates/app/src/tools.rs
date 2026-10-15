@@ -69,11 +69,11 @@ pub struct ToolsReport {
     pub tools: Vec<ToolStatus>,
 }
 
-pub fn brew_path() -> PathBuf {
+fn brew_path() -> PathBuf {
     return std::env::var_os("LIVEWALL_BREW").map_or_else(|| PathBuf::from(HOMEBREW_BIN).join("brew"), PathBuf::from);
 }
 
-pub fn search_dirs(tools_dir: &Path) -> [PathBuf; 2] {
+fn search_dirs(tools_dir: &Path) -> [PathBuf; 2] {
     return [tools_dir.to_path_buf(), PathBuf::from(HOMEBREW_BIN)];
 }
 

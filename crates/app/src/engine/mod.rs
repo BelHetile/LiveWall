@@ -547,6 +547,18 @@ impl Engine {
                 }
             }
         }
+        self.prune_orphans();
+    }
+
+    fn prune_orphans(&mut self) {
+        let orphans: Vec<ItemId> =
+            self.nodes.iter().filter(|(_, node)| node.keys().is_empty()).map(|(item, _)| *item).collect();
+        for item in orphans {
+            self.nodes.remove(&item);
+            self.cancel_unload(item);
+            self.unload_waiting.remove(&item);
+            self.unloaded.remove(&item);
+        }
     }
 
     fn apply_frames(&self, library: &Library) {

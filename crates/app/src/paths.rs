@@ -13,16 +13,7 @@ impl Paths {
         return Self { base: data_dir() };
     }
 
-    #[cfg(test)]
-    pub fn for_test(base: std::path::PathBuf) -> Self {
-        return Self { base };
-    }
-
-    pub fn base(&self) -> &Path {
-        return &self.base;
-    }
-
-    pub fn join(&self, name: &str) -> PathBuf {
+    fn join(&self, name: &str) -> PathBuf {
         return self.base.join(name);
     }
 

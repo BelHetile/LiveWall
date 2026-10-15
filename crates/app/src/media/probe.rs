@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ItemKind;
 
-pub const SAMPLE_LIMIT: usize = 4;
+const SAMPLE_LIMIT: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
@@ -84,13 +84,13 @@ pub fn av1_hardware() -> bool {
     return unsafe { VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) };
 }
 
-pub const SUPPORTED_CONTAINERS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
+const SUPPORTED_CONTAINERS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
 
 pub fn supported_container(container: Option<&str>) -> bool {
     return container.is_some_and(|container| SUPPORTED_CONTAINERS.contains(&container));
 }
 
-pub fn container_of(path: &str) -> Option<String> {
+fn container_of(path: &str) -> Option<String> {
     return std::path::Path::new(path).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
 }
 

@@ -2,7 +2,7 @@ mod app;
 mod download;
 mod engine;
 mod geometry;
-pub mod hotkey;
+mod hotkey;
 mod i18n;
 mod import;
 mod ipc;

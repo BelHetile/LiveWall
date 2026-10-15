@@ -16,7 +16,7 @@ pub fn kill_all() {
     }
 }
 
-pub fn signal_group(pgid: i32, signal: i32) {
+fn signal_group(pgid: i32, signal: i32) {
     if pgid > 1 {
         unsafe { libc::killpg(pgid, signal) };
     }
@@ -136,11 +136,11 @@ impl Child {
         return self.inner.stderr.take();
     }
 
-    pub fn terminate(&self) {
+    fn terminate(&self) {
         signal_group(self.pgid, libc::SIGTERM);
     }
 
-    pub fn kill(&self) {
+    fn kill(&self) {
         signal_group(self.pgid, libc::SIGKILL);
     }
 

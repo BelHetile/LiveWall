@@ -4,13 +4,11 @@ use std::sync::OnceLock;
 
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 
+use crate::platform::cf_ref;
+
 pub const ALL_SPACES: &str = "*";
 
 const CORE_GRAPHICS: &std::ffi::CStr = c"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics";
-
-fn cf_ref<T: AsRef<CFType>>(value: &T) -> &CFType {
-    return value.as_ref();
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
