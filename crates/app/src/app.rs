@@ -427,6 +427,14 @@ impl App {
     }
 
     fn add_items(&mut self, mut items: Vec<Item>) {
+        let av1: Vec<String> = if probe::av1_hardware() {
+            Vec::new()
+        } else {
+            items.iter().filter(|item| item.codec.as_deref() == Some("av01")).map(|item| item.title.clone()).collect()
+        };
+        if !av1.is_empty() {
+            crate::ui::av1_notice(&av1, self.settings.optimize_on_import);
+        }
         let mut queue = Vec::new();
         for item in &mut items {
             item.volume = self.settings.volume;

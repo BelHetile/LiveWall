@@ -286,6 +286,21 @@ pub fn dismiss_sheets() {
     update(|ui, _| ui.end_sheets());
 }
 
+pub fn av1_notice(titles: &[String], converting: bool) {
+    let visible = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.window.isVisible()));
+    if !visible {
+        return;
+    }
+    let names = titles.iter().map(|title| format!("“{title}”")).collect::<Vec<_>>().join(", ");
+    let next = if converting {
+        "LiveWall converts it to HEVC; it plays once the conversion finishes."
+    } else {
+        "Use Optimize for This Mac to convert it to HEVC."
+    };
+    let message = format!("This Mac’s chip can’t decode AV1 video: {names}. {next}");
+    DispatchQueue::main().exec_async(move || dialogs::notice(&message));
+}
+
 pub fn download_failed(reason: &str) {
     changed();
     let visible = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.window.isVisible()));
