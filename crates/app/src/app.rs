@@ -19,10 +19,10 @@ use crate::hotkey;
 use crate::i18n::{self, Strings};
 use crate::import;
 use crate::media::probe;
-use crate::media::{optimize, plan};
+use crate::media::{optimize, plan, thumb};
 use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{FolderId, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
-use crate::paths::{DirKind, Paths};
+use crate::paths::{DirKind, Paths, Visibility};
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
 use crate::platform::spaces::{self, SurfaceKey};
@@ -156,6 +156,27 @@ impl PauseReason {
 
     pub fn text(&self, strings: &Strings) -> String {
         return strings.format("Paused: %@", &[i18n::Arg::Text(strings.format(self.key, &self.args()))]);
+    }
+}
+
+fn discard_media(paths: &Paths, item: &Item) {
+    let file = std::path::Path::new(&item.path);
+    let managed = [Visibility::Public, Visibility::Private]
+        .into_iter()
+        .any(|visibility| file.parent() == Some(paths.dir_for(DirKind::Wallpapers, visibility).as_path()));
+    if managed {
+        remove_quietly(file);
+    }
+    for visibility in [Visibility::Public, Visibility::Private] {
+        remove_quietly(&thumb::file(&paths.dir_for(DirKind::Thumbs, visibility), item.id));
+    }
+}
+
+fn remove_quietly(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(%error, path = %path.display(), "cannot delete removed wallpaper file"),
     }
 }
 
@@ -1377,6 +1398,10 @@ impl App {
     fn remove_items(&mut self, ids: &[String]) -> usize {
         let parsed: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
         let before = self.library.items.len();
+        for item in self.library.items.iter().filter(|item| parsed.contains(&item.id)) {
+            self.optimize.cancel(item.id);
+            discard_media(&self.paths, item);
+        }
         self.library.items.retain(|item| !parsed.contains(&item.id));
         self.library.placement.default.item = clear_if_removed(self.library.placement.default.item, &parsed);
         for assignment in self.library.placement.spaces.values_mut() {

@@ -74,7 +74,7 @@ pub fn confirm_delete(mtm: MainThreadMarker) {
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
     alert.setMessageText(&ns(&format!("Remove “{title}” from the library?")));
-    alert.setInformativeText(&ns("The original file stays where it is."));
+    alert.setInformativeText(&ns("LiveWall deletes its copy. Your original file isn’t affected."));
     let remove = alert.addButtonWithTitle(&ns("Remove"));
     remove.setHasDestructiveAction(true);
     alert.addButtonWithTitle(&ns("Cancel"));
