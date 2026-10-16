@@ -624,6 +624,8 @@ mod keys {
     pub const COMMA: u16 = 43;
     pub const PERIOD: u16 = 47;
     pub const GRAVE: u16 = 50;
+    pub const DELETE: u16 = 51;
+    pub const FORWARD_DELETE: u16 = 117;
     pub const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
 }
 
@@ -752,6 +754,7 @@ impl WallView {
             keys::COMMA => crate::ui::frame(-1),
             keys::PERIOD => crate::ui::frame(1),
             keys::GRAVE => actions::place(self.target(), Scope::All),
+            keys::DELETE | keys::FORWARD_DELETE => crate::ui::dialogs::confirm_delete(self.mtm(), self.target()),
             _ => match keys::DIGITS.iter().position(|digit| *digit == code) {
                 Some(space) => actions::place(self.target(), Scope::Space(space)),
                 None => return false,

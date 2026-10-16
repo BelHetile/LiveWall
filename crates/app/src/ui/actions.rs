@@ -185,7 +185,7 @@ define_class!(
 
         #[unsafe(method(delete:))]
         fn delete(&self, _sender: Option<&AnyObject>) {
-            dialogs::confirm_delete(self.mtm());
+            dialogs::confirm_delete(self.mtm(), None);
         }
     }
 

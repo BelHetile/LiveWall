@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::app;
 use crate::ui::widgets::{self, ns};
-use crate::ui::{UI, later, selected_id, submit};
+use crate::ui::{UI, later, submit};
 
 const NAME_WIDTH: f64 = 260.0;
 pub const PRIVATE_HIDE_TAG: isize = 1;
@@ -67,10 +67,11 @@ pub fn consent_sheet(url: String, message: &str) {
     });
 }
 
-pub fn confirm_delete(mtm: MainThreadMarker) {
-    let Some(title) = UI.with_borrow(|ui| {
+pub fn confirm_delete(mtm: MainThreadMarker, index: Option<usize>) {
+    let Some((id, title)) = UI.with_borrow(|ui| {
         let ui = ui.as_ref()?;
-        return ui.selected.and_then(|index| ui.library.items.get(index)).map(|item| item.title.clone());
+        let index = index.or(ui.selected)?;
+        return ui.library.items.get(index).map(|item| (item.id, item.title.clone()));
     }) else {
         return;
     };
@@ -81,10 +82,8 @@ pub fn confirm_delete(mtm: MainThreadMarker) {
     let remove = alert.addButtonWithTitle(&ns("Remove"));
     remove.setHasDestructiveAction(true);
     alert.addButtonWithTitle(&ns("Cancel"));
-    sheet(&alert, |response| {
-        if response == NSAlertFirstButtonReturn
-            && let Some(id) = selected_id()
-        {
+    sheet(&alert, move |response| {
+        if response == NSAlertFirstButtonReturn {
             let request = Request::LibraryRemove { ids: vec![id.to_string()] };
             submit(move |app| Some(app.dispatch(&request)));
         }
