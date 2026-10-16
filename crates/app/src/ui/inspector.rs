@@ -20,10 +20,12 @@ use proto::{FillMode, Geometry};
 
 use crate::cf::file_url;
 use crate::geometry::{self, Size};
+use crate::i18n::{text, trf};
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::palette::Theme;
+use crate::ui::settings::{Bind, RecorderView};
 use crate::ui::state::{Filter, Scope, TAG_ALL, TAG_RESET, folder_glyph, markers};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
@@ -32,9 +34,9 @@ use crate::ui::widgets::{self, NumberField, Units, Weight};
 
 const WIDTH: CGFloat = 340.0;
 const INSET: CGFloat = 20.0;
-const LOCK_WIDTH: CGFloat = 118.0;
-const VOLUME_WIDTH: CGFloat = 136.0;
-const SLIDER_WIDTH: CGFloat = 164.0;
+const LOCK_WIDTH: CGFloat = 136.0;
+const VOLUME_WIDTH: CGFloat = 108.0;
+const SLIDER_WIDTH: CGFloat = 138.0;
 const VALUE_WIDTH: CGFloat = 50.0;
 pub const VOLUME: isize = 1;
 pub const SPEED: isize = 2;
@@ -42,15 +44,17 @@ pub const HORIZONTAL: isize = 3;
 pub const VERTICAL: isize = 4;
 pub const ZOOM: isize = 5;
 pub const SCRUB: isize = 6;
+pub const ROTATE_LEFT: isize = 7;
+const ROTATE_RIGHT: isize = 8;
 pub const FRAME_TO_LOCK: &str = "Set This Frame as Lock Screen";
 const MODES: [&str; 5] = ["Fill", "Fit", "Stretch", "Center", "Custom"];
 pub const FILLS: [FillMode; 5] = [FillMode::Fill, FillMode::Fit, FillMode::Stretch, FillMode::Center, FillMode::Custom];
 
-type Shown = (ItemId, PathBuf, bool, bool);
+type Shown = (ItemId, PathBuf, Option<std::time::SystemTime>, bool, bool);
 
 fn shown_key(library: &Library, selected: Option<usize>) -> Option<Shown> {
     let item = library.items.get(selected?)?;
-    return Some((item.id, item.path.clone(), item.progress.is_some(), item.playable));
+    return Some((item.id, item.path.clone(), item.modified, item.progress.is_some(), item.playable));
 }
 
 type Offset = (Retained<NSSlider>, Retained<NumberField>);
@@ -83,6 +87,8 @@ struct Controls {
     destination: Retained<NSPopUpButton>,
     folder: Retained<NSPopUpButton>,
     reset: Retained<NSButton>,
+    recorder: Retained<RecorderView>,
+    scope: Retained<NSPopUpButton>,
 }
 
 pub struct Inspector {
@@ -172,7 +178,7 @@ impl Inspector {
             widgets::reveal(&controls.markers, !refs.is_empty());
         }
         let scope = self.target.unwrap_or(filter.scope);
-        let title = format!("On {}", scope.title());
+        let title = trf("On %@", &[text(scope.title())]);
         let menu = scope_menu(mtm, library, scope, &title, sel!(target:), target);
         if self.target.is_some() {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -222,6 +228,7 @@ impl Inspector {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     fn show(&mut self, library: &Library, theme: &Theme, selected: Option<usize>, target: &AnyObject) {
         let mtm = self.scroll.mtm();
         widgets::fade(&self.content);
@@ -259,12 +266,12 @@ impl Inspector {
         transport.setCustomSpacing_afterView(4.0, &time);
         transport.setHidden(!video);
 
-        let title = widgets::label(mtm, &item.title, 15.0, &Weight::Semibold, &NSColor::labelColor());
+        let title = widgets::raw_label(mtm, &item.title, 15.0, &Weight::Semibold, &NSColor::labelColor());
         title.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
-        title.setToolTip(Some(&widgets::ns(&item.title)));
+        title.setToolTip(Some(&widgets::raw(&item.title)));
         let (primary, secondary) = facts(item);
-        let meta = widgets::label(mtm, &primary, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-        let more = widgets::label(mtm, &secondary, 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
+        let meta = widgets::raw_label(mtm, &primary, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
+        let more = widgets::raw_label(mtm, &secondary, 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
         let marker_stack = widgets::stack(mtm, &[], false, 5.0);
         let header = widgets::stack(mtm, &[&title, &meta, &more, &marker_stack], true, 2.0);
         header.setAlignment(NSLayoutAttribute::Leading);
@@ -277,7 +284,13 @@ impl Inspector {
         let (actions, destination) = actions(mtm, theme, video, item, target);
         let (playback, mute, volume, volume_value, speed, speed_value) = playback(mtm, theme, target);
         let (placement, modes, offsets) = placement(mtm, theme, target);
+        let (shortcut, recorder, hotkey_scope) = shortcut(mtm, item.id, target);
         let (library_row, folder) = library_row(mtm, target);
+        for tag in [ROTATE_LEFT, ROTATE_RIGHT] {
+            if let Some(button) = library_row.viewWithTag(tag) {
+                button.setHidden(item.kind == ItemKind::Gif);
+            }
+        }
         let reset = reset_button(mtm, target);
 
         let mut sections: Vec<Retained<NSView>> = vec![preview.clone()];
@@ -292,6 +305,8 @@ impl Inspector {
         sections.extend([
             widgets::divider(mtm, theme),
             widgets::view(&placement),
+            widgets::divider(mtm, theme),
+            widgets::view(&shortcut),
             widgets::divider(mtm, theme),
             widgets::view(&library_row),
             widgets::view(&reset),
@@ -327,6 +342,15 @@ impl Inspector {
             destination,
             folder,
             reset,
+            recorder,
+            scope: hotkey_scope,
+        });
+    }
+
+    /// The shortcut scope picked in the inspector, used when a new shortcut is recorded.
+    pub fn scope(&self) -> proto::HotkeyScope {
+        return self.controls.as_ref().map_or_else(proto::HotkeyScope::default, |controls| {
+            return scope_at(controls.scope.indexOfSelectedItem());
         });
     }
 
@@ -386,6 +410,14 @@ impl Inspector {
             value_field.setEnabled(enabled);
             widgets::alpha(value_field, if enabled { 1.0 } else { 0.4 });
         }
+        controls.recorder.rebind_to(Bind::Item(item.id));
+        controls.recorder.show(item.hotkey.as_ref());
+        let tip = match &item.hotkey_problem {
+            Some(problem) => widgets::raw(&crate::i18n::trf("Not active: %@", &[text(problem.clone())])),
+            None => widgets::ns("Click, then press a shortcut. ⌫ clears it, ⎋ cancels."),
+        };
+        controls.recorder.setToolTip(Some(&tip));
+        controls.scope.selectItemAtIndex(scope_index(item.hotkey_scope));
         controls.reset.setEnabled(item.changed);
         widgets::alpha(&controls.reset, if item.changed { 1.0 } else { 0.45 });
         if let Some((player, _)) = &self.player {
@@ -594,7 +626,7 @@ fn playback(mtm: MainThreadMarker, theme: &Theme, target: &AnyObject) -> Playbac
     let speed_box = widgets::stack(mtm, &[&speed, &speed_value], false, 6.0);
     let volume_row = widgets::row(mtm, "Volume", &volume_box);
     let speed_row = widgets::row(mtm, "Speed", &speed_box);
-    let section = widgets::section(mtm, "PLAYBACK", &[&volume_row, &speed_row]);
+    let section = widgets::section(mtm, "Playback", &[&volume_row, &speed_row]);
     return (section, mute, volume, volume_value, speed, speed_value);
 }
 
@@ -615,13 +647,14 @@ fn placement(
     };
     modes.setSelectedSegmentBezelColor(Some(&theme.accent));
     modes.setSegmentDistribution(objc2_app_kit::NSSegmentDistribution::FillEqually);
+    modes.setFont(Some(&widgets::font(11.0, &Weight::Regular)));
     modes.setControlSize(NSControlSize::Small);
     let offsets = [
         (slider(mtm, 0.0, -100.0, 100.0, HORIZONTAL, theme, target), field(mtm, HORIZONTAL, target)),
         (slider(mtm, 0.0, -100.0, 100.0, VERTICAL, theme, target), field(mtm, VERTICAL, target)),
         (slider(mtm, 1.0, 1.0, 4.0, ZOOM, theme, target), field(mtm, ZOOM, target)),
     ];
-    let rows: Vec<Retained<NSStackView>> = ["Horizontal", "Vertical", "Zoom"]
+    let rows: Vec<Retained<NSStackView>> = ["Horizontal", "Vertical", "Scale"]
         .iter()
         .zip(&offsets)
         .map(|(name, (control, value))| {
@@ -633,8 +666,60 @@ fn placement(
     gap.heightAnchor().constraintEqualToConstant(2.0).setActive(true);
     let mut views: Vec<&NSView> = vec![&modes, &gap];
     views.extend(rows.iter().map(|row| &***row));
-    let section = widgets::section(mtm, "PLACEMENT", &views);
+    let section = widgets::section(mtm, "Placement", &views);
     return (section, modes, offsets);
+}
+
+const SCOPES: [(proto::HotkeyScope, &str); 3] = [
+    (proto::HotkeyScope::Desktop, "Desktop"),
+    (proto::HotkeyScope::Lock, "Lock Screen"),
+    (proto::HotkeyScope::Both, "Desktop and Lock Screen"),
+];
+
+fn scope_index(scope: proto::HotkeyScope) -> isize {
+    return SCOPES
+        .iter()
+        .position(|(candidate, _)| *candidate == scope)
+        .and_then(|index| isize::try_from(index).ok())
+        .unwrap_or(0);
+}
+
+pub fn scope_at(index: isize) -> proto::HotkeyScope {
+    return usize::try_from(index)
+        .ok()
+        .and_then(|index| SCOPES.get(index))
+        .map_or_else(proto::HotkeyScope::default, |(scope, _)| *scope);
+}
+
+fn shortcut(
+    mtm: MainThreadMarker,
+    item: ItemId,
+    target: &AnyObject,
+) -> (Retained<NSStackView>, Retained<RecorderView>, Retained<NSPopUpButton>) {
+    let recorder = RecorderView::new(mtm, Bind::Item(item));
+    let scope = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+    let titles: Vec<Retained<NSString>> = SCOPES.iter().map(|(_, title)| widgets::ns(title)).collect();
+    scope.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+    scope.setControlSize(NSControlSize::Small);
+    scope.setFont(Some(&widgets::font(12.0, &Weight::Regular)));
+    unsafe {
+        scope.setTarget(Some(target));
+        scope.setAction(Some(sel!(hotkeyScope:)));
+    }
+    let key_row = widgets::row(mtm, "Keys", &recorder);
+    let scope_row = widgets::row(mtm, "Switches", &scope);
+    let hint = widgets::label(
+        mtm,
+        "Press once to switch to it, again to switch back.",
+        11.0,
+        &Weight::Regular,
+        &NSColor::tertiaryLabelColor(),
+    );
+    hint.setMaximumNumberOfLines(2);
+    hint.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
+    hint.setPreferredMaxLayoutWidth(WIDTH - 2.0 * INSET);
+    let section = widgets::section(mtm, "Shortcut", &[&key_row, &scope_row, &hint]);
+    return (section, recorder, scope);
 }
 
 fn reset_button(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSButton> {
@@ -664,16 +749,22 @@ fn library_row(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSStackVi
         1000.0,
         objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
     );
+    let left = widgets::icon_button(mtm, "rotate.left", sel!(rotate:), target);
+    left.setToolTip(Some(&widgets::ns("Rotate 90° Counterclockwise")));
+    left.setTag(ROTATE_LEFT);
+    let rotate = widgets::icon_button(mtm, "rotate.right", sel!(rotate:), target);
+    rotate.setToolTip(Some(&widgets::ns("Rotate 90° Clockwise")));
+    rotate.setTag(ROTATE_RIGHT);
     let delete = widgets::icon_button(mtm, "trash", sel!(delete:), target);
     delete.setContentTintColor(Some(&NSColor::systemRedColor()));
     delete.setToolTip(Some(&widgets::ns("Remove from Library")));
-    let row = widgets::stack(mtm, &[&icon, &folder, &delete], false, 8.0);
+    let row = widgets::stack(mtm, &[&icon, &folder, &left, &rotate, &delete], false, 8.0);
     row.heightAnchor().constraintEqualToConstant(26.0).setActive(true);
     return (row, folder);
 }
 
 fn facts(item: &Item) -> (String, String) {
-    let mut primary = vec![kind_name(item.kind).to_string()];
+    let mut primary = vec![crate::i18n::tr(kind_name(item.kind))];
     if item.width > 0 {
         let size = format!("{} × {}", item.width, item.height);
         primary.push(match resolution(item).filter(|short| short.ends_with('p') || short == "4K") {
@@ -695,7 +786,8 @@ fn facts(item: &Item) -> (String, String) {
     }
     #[allow(clippy::cast_precision_loss)]
     secondary.push(format!("{:.1} MB", item.bytes as f64 / 1_048_576.0));
-    secondary.push(format!("Added {}", item.added.to_zoned(jiff::tz::TimeZone::system()).strftime("%-d %b %Y")));
+    let added = item.added.to_zoned(jiff::tz::TimeZone::system());
+    secondary.push(trf("Added %@", &[text(added.strftime("%-d.%m.%Y").to_string())]));
     return (primary.join(" · "), secondary.join(" · "));
 }
 
@@ -760,10 +852,13 @@ fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>)
     menu.addItem(&unfiled);
     for (index, name) in library.folders.iter().enumerate() {
         let item = NSMenuItem::new(mtm);
-        item.setTitle(&widgets::ns(name));
+        item.setTitle(&widgets::raw(name));
         item.setTag(isize::try_from(index).unwrap_or(TAG_ALL));
         item.setEnabled(!library.sealed(index));
-        if let Some(image) = folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)) {
+        let image = library
+            .folder_image(index)
+            .or_else(|| folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)));
+        if let Some(image) = image {
             item.setImage(Some(&image));
         }
         menu.addItem(&item);

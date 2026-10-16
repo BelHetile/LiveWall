@@ -255,11 +255,62 @@ fn every_verb() {
     assert_eq!(patched["data"]["tools"]["install_consent"], serde_json::json!(true), "nested merge: {patched}");
     assert_eq!(patched["data"]["rotate_minutes"], serde_json::json!(30), "unrelated field clobbered: {patched}");
 
+    rotations_icons_and_shortcuts(&sandbox, &socket, &id);
+
     let login = lwctl_run(&socket, &["login-item", "set", "false"]);
     assert!(matches!(login.status.code(), Some(0 | 1)), "login-item set exit: {:?}", login.status.code());
 
     ok_json(&socket, &["quit"]);
     sandbox.reap();
+}
+
+/// Rotation, folder icons, wallpaper shortcuts and the private-desktop setting.
+fn rotations_icons_and_shortcuts(sandbox: &Sandbox, socket: &Path, id: &str) {
+    let rotated = ok_json(socket, &["rotate", id]);
+    assert!(
+        rotated["data"]["path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).extension().is_some_and(|extension| extension == "png")),
+        "rotate: {rotated}"
+    );
+    ok_json(socket, &["rotate", id, "--turns", "3"]);
+    err(socket, &["rotate", MISSING]);
+
+    let iconic = ok_json(socket, &["folder", "create", "Icons"]);
+    let iconic = iconic["data"]["id"].as_str().expect("folder id").to_string();
+    ok_json(socket, &["folder", "icon", &iconic, "symbol:star.fill"]);
+    let listed = ok_json(socket, &["library", "list"]);
+    assert_eq!(listed["data"]["folders"][0]["icon"], serde_json::json!("symbol:star.fill"), "folder icon: {listed}");
+    err(socket, &["folder", "icon", &iconic, "image:../escape.png"]);
+    err(socket, &["folder", "icon", &iconic, "image:missing.png"]);
+    err(socket, &["folder", "icon", MISSING, "symbol:star.fill"]);
+    ok_json(socket, &["folder", "icon", &iconic]);
+
+    let second = sandbox.write_png_named("second.png").to_string_lossy().into_owned();
+    let other = ok_json(socket, &["library", "add", &second]);
+    let other = other["data"]["results"][0]["id"].as_str().expect("item id").to_string();
+    let bound = ok_json(socket, &["item-hotkey", id, "ctrl+opt+shift+f17", "--scope", "both"]);
+    assert_eq!(bound["data"]["scope"], serde_json::json!("both"), "item hotkey: {bound}");
+    let moved = ok_json(socket, &["item-hotkey", &other, "ctrl+opt+shift+f17"]);
+    assert!(moved["data"]["moved"].is_string(), "the combination moves to the new wallpaper: {moved}");
+    let listed = ok_json(socket, &["library", "list"]);
+    let hotkey_of = |item: &str| {
+        let items = listed["data"]["items"].as_array().cloned().unwrap_or_default();
+        return items
+            .into_iter()
+            .find(|entry| entry["id"] == serde_json::json!(item))
+            .map(|entry| entry["hotkey"].clone());
+    };
+    assert_eq!(hotkey_of(id), Some(serde_json::Value::Null), "old owner cleared: {listed}");
+    assert!(hotkey_of(&other).is_some_and(|hotkey| hotkey.is_object()), "new owner bound: {listed}");
+    err(socket, &["hotkeys", "set", "next", "ctrl+opt+shift+f17"]);
+    err(socket, &["item-hotkey", id, "ctrl+opt+cmd+right"]);
+    err(socket, &["item-hotkey", MISSING, "ctrl+opt+shift+f18"]);
+    ok_json(socket, &["item-hotkey", &other]);
+
+    ok_json(socket, &["settings", "set", r#"{"privacy":{"hide_desktop":true}}"#]);
+    let patched = ok_json(socket, &["settings", "get"]);
+    assert_eq!(patched["data"]["privacy"]["hide_desktop"], serde_json::json!(true), "privacy patch: {patched}");
 }
 
 fn second_instance_exits() {

@@ -70,7 +70,8 @@ pub struct Playback {
     pub muted: bool,
     pub stop_after: u32,
     pub verdict: rules::Verdict,
-    pub unlocked: bool,
+    /// Private wallpapers stay on the desktop: unlocked, or locked with `hide_desktop` off.
+    pub reveal: bool,
     pub silenced: Option<ItemId>,
 }
 
@@ -122,14 +123,16 @@ impl Engine {
         playback: &Playback,
         transition: Option<&transition::ResolvedTransition>,
     ) {
-        self.apply_assignments(library, transition.is_some(), playback.unlocked);
+        self.apply_assignments(library, transition.is_some(), playback.reveal);
         self.apply_frames(library);
         self.begin_transitions(transition);
         self.update_playback(library, playback);
     }
 
     pub fn hide_private(&mut self, library: &Library, playback: &Playback) {
-        self.finish_transitions_matching(|active| library.is_private_id(active.old));
+        if !playback.reveal {
+            self.finish_transitions_matching(|active| library.is_private_id(active.old));
+        }
         self.reapply(library, playback, None);
     }
 
@@ -511,6 +514,7 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: None,
         };
         assert_eq!(item.geometry(), proto::Geometry::default());
         item.modes.insert(proto::FillMode::Custom, proto::Geometry { x: 0.5, y: 0.0, zoom: 2.0 });

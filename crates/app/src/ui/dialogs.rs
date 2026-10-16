@@ -5,8 +5,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlStateValueOn, NSLayoutAttribute,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSTextField,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAlertThirdButtonReturn, NSButton, NSButtonType,
+    NSControlStateValueOn, NSLayoutAttribute, NSMenu, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton,
+    NSSavePanel, NSTextField, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSString};
@@ -14,7 +15,8 @@ use proto::Request;
 use uuid::Uuid;
 
 use crate::app;
-use crate::ui::widgets::{self, ns};
+use crate::i18n::{Arg, text, tr, trf};
+use crate::ui::widgets::{self, ns, raw};
 use crate::ui::{UI, later, submit};
 
 const NAME_WIDTH: f64 = 260.0;
@@ -51,8 +53,9 @@ pub fn consent_sheet(url: String, message: &str) {
     };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns("Install download tools?"));
-    alert.setInformativeText(&ns(&format!(
-        "{message}. LiveWall can download yt-dlp, ffmpeg and deno into its own folder."
+    alert.setInformativeText(&raw(&trf(
+        "%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.",
+        &[text(message)],
     )));
     alert.addButtonWithTitle(&ns("Install and Download"));
     alert.addButtonWithTitle(&ns("Cancel"));
@@ -77,7 +80,7 @@ pub fn confirm_delete(mtm: MainThreadMarker, index: Option<usize>) {
     };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&format!("Remove “{title}” from the library?")));
+    alert.setMessageText(&raw(&trf("Remove “%@” from the library?", &[text(title)])));
     alert.setInformativeText(&ns("LiveWall deletes its copy. Your original file isn’t affected."));
     let remove = alert.addButtonWithTitle(&ns("Remove"));
     remove.setHasDestructiveAction(true);
@@ -100,7 +103,7 @@ pub fn rename_folder(mtm: MainThreadMarker, id: Uuid) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns("Rename Folder"));
     let field = widgets::input(mtm, "Folder name", NAME_WIDTH);
-    field.setStringValue(&ns(&name));
+    field.setStringValue(&raw(&name));
     alert.setAccessoryView(Some(&field));
     alert.addButtonWithTitle(&ns("Rename"));
     alert.addButtonWithTitle(&ns("Cancel"));
@@ -125,14 +128,14 @@ pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
     };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&format!("Delete the folder “{name}”?")));
+    alert.setMessageText(&raw(&trf("Delete the folder “%@”?", &[text(name)])));
     let moved = match count {
-        0 => String::from("The folder is empty."),
-        1 => String::from("The wallpaper inside moves to Unfiled."),
-        count => format!("The {count} wallpapers inside move to Unfiled."),
+        0 => tr("The folder is empty."),
+        1 => tr("The wallpaper inside moves to Unfiled."),
+        count => trf("The %ld wallpapers inside move to Unfiled.", &[Arg::Int(i64::try_from(count).unwrap_or(0))]),
     };
-    let info = if locked && count > 0 { format!("{moved} They become public.") } else { moved };
-    alert.setInformativeText(&ns(&info));
+    let info = if locked && count > 0 { format!("{moved} {}", tr("They become public.")) } else { moved };
+    alert.setInformativeText(&raw(&info));
     let delete = alert.addButtonWithTitle(&ns("Delete"));
     delete.setHasDestructiveAction(true);
     alert.addButtonWithTitle(&ns("Cancel"));
@@ -195,6 +198,310 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
                 ui.refresh(mtm);
             }
         });
+    });
+}
+
+pub const STYLE_EXTENSION: &str = "livewall-style";
+
+const SYMBOLS: [&str; 32] = [
+    "folder.fill",
+    "star.fill",
+    "heart.fill",
+    "flame.fill",
+    "leaf.fill",
+    "moon.fill",
+    "sun.max.fill",
+    "cloud.fill",
+    "sparkles",
+    "bolt.fill",
+    "drop.fill",
+    "snowflake",
+    "mountain.2.fill",
+    "tree.fill",
+    "pawprint.fill",
+    "fish.fill",
+    "gamecontroller.fill",
+    "film.fill",
+    "music.note",
+    "photo.fill",
+    "paintpalette.fill",
+    "camera.fill",
+    "globe.europe.africa.fill",
+    "car.fill",
+    "airplane",
+    "house.fill",
+    "person.fill",
+    "eye.fill",
+    "lock.fill",
+    "crown.fill",
+    "theatermasks.fill",
+    "atom",
+];
+const ICONS_PER_ROW: usize = 8;
+const ICON_BUTTON: f64 = 34.0;
+/// Picker buttons carry `PICK_TAG + index`; `pickIcon:` ends the picker with `PICK_RESPONSE + index`.
+pub const PICK_TAG: isize = 1000;
+pub const PICK_RESPONSE: isize = 5000;
+/// `removeIcon:` ends the picker with this so it opens again without the removed icon.
+pub const REOPEN_RESPONSE: isize = 4000;
+
+thread_local! {
+    static PICKING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn picked(tag: isize) -> Option<String> {
+    let index = usize::try_from(tag.checked_sub(PICK_TAG)?).ok()?;
+    return PICKING.with_borrow(|icons| icons.get(index).cloned());
+}
+
+fn icon_grid(
+    mtm: MainThreadMarker,
+    icons: &[String],
+    first: usize,
+    current: Option<&str>,
+    icons_dir: &Path,
+    removable: bool,
+) -> Retained<NSView> {
+    let target = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.actions.clone()));
+    let buttons: Vec<Retained<NSButton>> = icons
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, icon)| {
+            let image = crate::ui::view::icon_image(icon, icons_dir, 20.0)?;
+            let button = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &image,
+                    target.as_deref().map(|target| target as &AnyObject),
+                    Some(sel!(pickIcon:)),
+                    mtm,
+                )
+            };
+            button.setTag(PICK_TAG + isize::try_from(first + offset).unwrap_or(0));
+            button.setButtonType(NSButtonType::PushOnPushOff);
+            button.setState(isize::from(current == Some(icon.as_str())));
+            button.widthAnchor().constraintEqualToConstant(ICON_BUTTON).setActive(true);
+            button.heightAnchor().constraintEqualToConstant(ICON_BUTTON).setActive(true);
+            if removable {
+                let menu = NSMenu::new(mtm);
+                let remove = widgets::menu_item(
+                    mtm,
+                    "Remove Icon",
+                    sel!(removeIcon:),
+                    target.as_deref().map(|target| target as &AnyObject),
+                    button.tag(),
+                    None,
+                );
+                menu.addItem(&remove);
+                unsafe { button.setMenu(Some(&menu)) };
+            }
+            return Some(button);
+        })
+        .collect();
+    let rows: Vec<Retained<objc2_app_kit::NSStackView>> = buttons
+        .chunks(ICONS_PER_ROW)
+        .map(|chunk| {
+            let refs: Vec<&NSView> = chunk.iter().map(|button| &****button).collect();
+            return widgets::stack(mtm, &refs, false, 6.0);
+        })
+        .collect();
+    let refs: Vec<&NSView> = rows.iter().map(|row| &***row).collect();
+    let grid = widgets::stack(mtm, &refs, true, 6.0);
+    grid.setAlignment(NSLayoutAttribute::Leading);
+    return widgets::view(&grid);
+}
+
+/// Lets the user pick a folder icon: an SF Symbol, one of their own images, a new image, or none.
+pub fn icon_picker(mtm: MainThreadMarker, folder: Uuid) {
+    let Some((current, mine, icons_dir)) = app::with(|app| {
+        let current =
+            app.library().folders.iter().find(|entry| entry.id == folder).and_then(|entry| entry.icon.clone());
+        return (current, app.custom_icons(), app.paths().icons_dir());
+    }) else {
+        return;
+    };
+    let symbols: Vec<String> = SYMBOLS.iter().map(|name| format!("{}{name}", crate::model::SYMBOL_PREFIX)).collect();
+    let candidates: Vec<String> = symbols.iter().chain(&mine).cloned().collect();
+    PICKING.with_borrow_mut(|icons| icons.clone_from(&candidates));
+
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns("Folder Icon"));
+    let symbols_label = widgets::label(
+        mtm,
+        "Symbols",
+        11.0,
+        &widgets::Weight::Semibold,
+        &objc2_app_kit::NSColor::secondaryLabelColor(),
+    );
+    let symbol_grid = icon_grid(mtm, &symbols, 0, current.as_deref(), &icons_dir, false);
+    let mine_label = widgets::label(
+        mtm,
+        "My Icons",
+        11.0,
+        &widgets::Weight::Semibold,
+        &objc2_app_kit::NSColor::secondaryLabelColor(),
+    );
+    let mine_view: Retained<NSView> = if mine.is_empty() {
+        widgets::view(&widgets::label(
+            mtm,
+            "Add your own PNG, JPEG or HEIC images with Choose Image….",
+            11.0,
+            &widgets::Weight::Regular,
+            &objc2_app_kit::NSColor::tertiaryLabelColor(),
+        ))
+    } else {
+        icon_grid(mtm, &mine, symbols.len(), current.as_deref(), &icons_dir, true)
+    };
+    let hint = (!mine.is_empty()).then(|| {
+        let count = i64::try_from(mine.len()).unwrap_or(0);
+        return widgets::raw_label(
+            mtm,
+            &crate::i18n::trp("%ld icon(s) · right-click to remove", count, &[]),
+            11.0,
+            &widgets::Weight::Regular,
+            &objc2_app_kit::NSColor::tertiaryLabelColor(),
+        );
+    });
+    let mut views: Vec<&NSView> = vec![&symbols_label, &symbol_grid, &mine_label, &mine_view];
+    if let Some(hint) = &hint {
+        views.push(hint);
+    }
+    let accessory = widgets::stack(mtm, &views, true, 8.0);
+    accessory.setAlignment(NSLayoutAttribute::Leading);
+    accessory.setCustomSpacing_afterView(14.0, &symbol_grid);
+    accessory.setFrameSize(accessory.fittingSize());
+    alert.setAccessoryView(Some(&accessory));
+    alert.addButtonWithTitle(&ns("Choose Image…"));
+    alert.addButtonWithTitle(&ns("Cancel"));
+    if current.is_some() {
+        alert.addButtonWithTitle(&ns("Reset"));
+    }
+    let response = alert.runModal();
+    let choice = match response {
+        code if code >= PICK_RESPONSE => PICKING.with_borrow(|icons| {
+            usize::try_from(code - PICK_RESPONSE).ok().and_then(|index| icons.get(index).cloned())
+        }),
+        REOPEN_RESPONSE => {
+            later(move |_, mtm| icon_picker(mtm, folder));
+            return;
+        }
+        code if code == NSAlertFirstButtonReturn => match choose_icon_image(mtm) {
+            Some(Ok(icon)) => Some(icon),
+            Some(Err(message)) => {
+                notice(&message);
+                return;
+            }
+            None => return,
+        },
+        code if code == NSAlertThirdButtonReturn => None,
+        _ => return,
+    };
+    let request = Request::FolderIcon { id: folder.to_string(), icon: choice };
+    submit(move |app| Some(app.dispatch(&request)));
+}
+
+fn choose_icon_image(mtm: MainThreadMarker) -> Option<Result<String, String>> {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setPrompt(Some(&ns("Choose")));
+    if panel.runModal() != NSModalResponseOK {
+        return None;
+    }
+    let path = panel.URL().and_then(|url| url.path())?.to_string();
+    return app::with(|app| app.import_icon(Path::new(&path)));
+}
+
+/// Asks for a name and saves the current palette as a style.
+pub fn save_style(mtm: MainThreadMarker) {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns("Save Style"));
+    alert.setInformativeText(&ns("The current accent and canvas colours are saved under this name."));
+    let field = widgets::input(mtm, "Style name", NAME_WIDTH);
+    field.setStringValue(&ns("My Style"));
+    alert.setAccessoryView(Some(&field));
+    alert.addButtonWithTitle(&ns("Save"));
+    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.window().setInitialFirstResponder(Some(&field));
+    let response = alert.runModal();
+    let name = field.stringValue().to_string();
+    if response != NSAlertFirstButtonReturn {
+        return;
+    }
+    later(move |ui, _| {
+        let palette = ui.look.palette();
+        match crate::model::Style::new(&name, &palette.accent.to_hex(), &palette.canvas.to_hex()) {
+            Ok(style) => {
+                app::with(|app| app.save_style(style, &crate::ui::palette::reserved_names()));
+            }
+            Err(message) => later(move |_, _| notice(&message)),
+        }
+    });
+}
+
+pub fn import_style(mtm: MainThreadMarker) {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(true);
+    panel.setPrompt(Some(&ns("Import")));
+    panel.setMessage(Some(&ns("Choose .livewall-style or .json files")));
+    if panel.runModal() != NSModalResponseOK {
+        return;
+    }
+    let urls = panel.URLs();
+    let files: Vec<String> = (0..urls.count())
+        .filter_map(|position| urls.objectAtIndex(position).path())
+        .map(|path| path.to_string())
+        .collect();
+    later(move |_, _| {
+        for file in files {
+            let response = match std::fs::read_to_string(&file) {
+                Ok(text) => app::with(|app| app.import_styles(&text, &crate::ui::palette::reserved_names())),
+                Err(error) => Some(proto::Response::err(proto::ErrorCode::Invalid, error.to_string())),
+            };
+            if let Some(response) = response {
+                crate::ui::report(&response);
+            }
+        }
+    });
+}
+
+pub fn export_style(mtm: MainThreadMarker) {
+    let Some((name, palette)) = UI.with_borrow(|ui| {
+        let ui = ui.as_ref()?;
+        return ui.look.themes.get(ui.look.theme).map(|(name, palette)| (name.clone(), *palette));
+    }) else {
+        return;
+    };
+    let shown = tr(&name);
+    let Ok(style) = crate::model::Style::new(&shown, &palette.accent.to_hex(), &palette.canvas.to_hex()) else {
+        return;
+    };
+    let panel = NSSavePanel::savePanel(mtm);
+    panel.setNameFieldStringValue(&raw(&format!("{shown}.{STYLE_EXTENSION}")));
+    panel.setPrompt(Some(&ns("Export")));
+    if panel.runModal() != NSModalResponseOK {
+        return;
+    }
+    let Some(path) = panel.URL().and_then(|url| url.path()) else {
+        return;
+    };
+    if let Err(error) = std::fs::write(path.to_string(), style.export()) {
+        notice(&trf("Could not export the style: %@", &[text(error.to_string())]));
+    }
+}
+
+pub fn delete_style() {
+    later(|ui, _| {
+        if !ui.look.is_saved(ui.look.theme) {
+            return;
+        }
+        let Some((name, _)) = ui.look.themes.get(ui.look.theme).cloned() else {
+            return;
+        };
+        let fallback = crate::ui::palette::reserved_names()[0];
+        app::with(|app| app.delete_style(&name, fallback));
     });
 }
 

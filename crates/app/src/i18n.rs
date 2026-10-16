@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use plist::Value;
 
@@ -63,6 +65,48 @@ impl Strings {
         }
         return substitute(&resolved, &all);
     }
+}
+
+static ENGLISH: OnceLock<Strings> = OnceLock::new();
+static RUSSIAN: OnceLock<Strings> = OnceLock::new();
+static ACTIVE: AtomicU8 = AtomicU8::new(0);
+
+pub fn table(language: Language) -> &'static Strings {
+    let cell = match language {
+        Language::En => &ENGLISH,
+        Language::Ru => &RUSSIAN,
+    };
+    return cell.get_or_init(|| Strings::new(language));
+}
+
+pub fn set_active(language: Language) {
+    ACTIVE.store(
+        match language {
+            Language::En => 0,
+            Language::Ru => 1,
+        },
+        Ordering::SeqCst,
+    );
+}
+
+pub fn active() -> Language {
+    return if ACTIVE.load(Ordering::SeqCst) == 1 { Language::Ru } else { Language::En };
+}
+
+pub fn tr(key: &str) -> String {
+    return table(active()).get(key);
+}
+
+pub fn trf(key: &str, args: &[Arg]) -> String {
+    return table(active()).format(key, args);
+}
+
+pub fn trp(key: &str, count: i64, args: &[Arg]) -> String {
+    return table(active()).plural(key, count, args);
+}
+
+pub fn text(value: impl Into<String>) -> Arg {
+    return Arg::Text(value.into());
 }
 
 pub fn select_language(setting: Option<Language>, preferred: &[String]) -> Language {
@@ -298,6 +342,79 @@ mod tests {
         assert_eq!(select_language(None, &["fr-FR".into(), "ru-RU".into()]), Language::Ru);
         assert_eq!(select_language(None, &["fr-FR".into()]), Language::En);
         assert_eq!(select_language(None, &[]), Language::En);
+    }
+
+    const UI_SOURCES: [(&str, &str); 14] = [
+        ("app.rs", include_str!("app.rs")),
+        ("ui/actions.rs", include_str!("ui/actions.rs")),
+        ("ui/dialogs.rs", include_str!("ui/dialogs.rs")),
+        ("ui/inspector.rs", include_str!("ui/inspector.rs")),
+        ("ui/menus.rs", include_str!("ui/menus.rs")),
+        ("ui/mod.rs", include_str!("ui/mod.rs")),
+        ("ui/palette.rs", include_str!("ui/palette.rs")),
+        ("ui/settings.rs", include_str!("ui/settings.rs")),
+        ("ui/state.rs", include_str!("ui/state.rs")),
+        ("ui/toolbar.rs", include_str!("ui/toolbar.rs")),
+        ("ui/view.rs", include_str!("ui/view.rs")),
+        ("ui/wall.rs", include_str!("ui/wall.rs")),
+        ("ui/widgets.rs", include_str!("ui/widgets.rs")),
+        ("ui/windows.rs", include_str!("ui/windows.rs")),
+    ];
+
+    /// Not interface text: format patterns and names that read the same in every language.
+    const UNTRANSLATED: [&str; 1] = ["%-d.%m.%Y"];
+
+    fn literals(source: &str) -> Vec<String> {
+        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        let mut found = Vec::new();
+        for line in code.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || line.contains("tracing::") || line.contains("expect(") {
+                continue;
+            }
+            let mut rest = line;
+            while let Some(start) = rest.find('"') {
+                let after = &rest[start + 1..];
+                let Some(end) = after.find('"') else { break };
+                let literal = &after[..end];
+                rest = &after[end + 1..];
+                let interface = literal.chars().next().is_some_and(|first| first.is_ascii_uppercase() || first == '%')
+                    && literal.chars().any(|character| character.is_ascii_lowercase())
+                    && !literal.contains('\\')
+                    && !["NS", "CG", "CA", "AV", "LW_", "LIVEWALL", "SMOKE"].iter().any(|p| literal.starts_with(p));
+                if interface && !UNTRANSLATED.contains(&literal) {
+                    found.push(literal.to_string());
+                }
+            }
+        }
+        return found;
+    }
+
+    #[test]
+    fn every_interface_string_has_a_russian_translation() {
+        let russian = parse_strings(RU_STRINGS);
+        let plurals = parse_stringsdict(RU_STRINGSDICT);
+        let missing: Vec<String> = UI_SOURCES
+            .iter()
+            .flat_map(|(file, source)| literals(source).into_iter().map(move |literal| format!("{file}: {literal}")))
+            .filter(|entry| {
+                let key = entry.split_once(": ").map_or("", |(_, key)| key);
+                return !russian.contains_key(key) && !plurals.contains_key(key);
+            })
+            .collect();
+        assert!(missing.is_empty(), "untranslated interface strings:\n{}", missing.join("\n"));
+    }
+
+    #[test]
+    fn active_language_drives_the_global_lookup() {
+        set_active(Language::Ru);
+        assert_eq!(active(), Language::Ru);
+        assert_eq!(tr("Set as Wallpaper"), "Сделать обоями");
+        assert_eq!(trf("Desktop %ld", &[Arg::Int(2)]), "Рабочий стол 2");
+        assert_eq!(tr("my wallpaper.mp4"), "my wallpaper.mp4");
+        set_active(Language::En);
+        assert_eq!(tr("Set as Wallpaper"), "Set as Wallpaper");
+        assert_eq!(trf("Desktop %ld", &[Arg::Int(2)]), "Desktop 2");
     }
 
     #[test]

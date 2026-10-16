@@ -13,8 +13,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
     AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVAssetWriter, AVAssetWriterInput,
-    AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus, AVFileTypeMPEG4, AVMediaTypeAudio, AVMediaTypeVideo,
-    AVURLAsset,
+    AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus, AVFileTypeMPEG4, AVFileTypeQuickTimeMovie,
+    AVMediaTypeAudio, AVMediaTypeVideo, AVURLAsset,
 };
 use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType, CGAffineTransform, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGBitmapContextCreate, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
@@ -38,12 +38,12 @@ use objc2_video_toolbox::{
 };
 
 use crate::cf::{cf_f64, cf_file_url, downcast_dict, file_url, ns_string, object};
-use crate::media::TranscodeError;
 use crate::media::av::{CM_TIMESCALE, format_description, image_size, load_track, thumbnail_options};
 use crate::media::plan::{
     AAC_BITRATE, AAC_CHANNELS, AAC_SAMPLE_RATE, Audio, GIF_DEFAULT_DELAY, GIF_MIN_DELAY, GifPlan, VideoPlan, bitrate,
     even, scale_dims,
 };
+use crate::media::{TranscodeError, orient};
 
 const AAC: u32 = u32::from_be_bytes(*b"aac ");
 const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
@@ -73,6 +73,103 @@ pub fn run(task: &Task, progress: &Progress, cancel: &Arc<AtomicBool>) -> Result
         Task::Video(plan) => with_fallback(plan.hevc, |codec| encode_video(plan, codec, progress, cancel)),
         Task::Gif(plan) => with_fallback(true, |codec| encode_gif(plan, codec, progress, cancel)),
     };
+}
+
+/// Rewrites a video with its samples untouched and its picture turned by `turns` clockwise quarter turns: only the
+/// track transform changes, so nothing is decoded or recompressed.
+pub fn reorient_video(input: &Path, output: &Path, turns: u8) -> Result<(), TranscodeError> {
+    let _ = std::fs::remove_file(output);
+    let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&file_url(input), None) };
+    let media = unsafe { AVMediaTypeVideo }.expect("video media type");
+    let track = load_track(&asset, media).ok().flatten().ok_or(TranscodeError::NoVideo)?;
+    let reader = unsafe { AVAssetReader::initWithAsset_error(AVAssetReader::alloc(), &asset) }
+        .map_err(|error| ns_error(&error))?;
+    let video_out = unsafe {
+        AVAssetReaderTrackOutput::initWithTrack_outputSettings(AVAssetReaderTrackOutput::alloc(), &track, None)
+    };
+    unsafe { video_out.setAlwaysCopiesSampleData(false) };
+    let hint = format_description(&track);
+    let video_in = unsafe {
+        AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings_sourceFormatHint(media, None, hint.as_deref())
+    };
+    let size = unsafe { track.naturalSize() };
+    let transform = orient::turn(unsafe { track.preferredTransform() }, size.width.abs(), size.height.abs(), turns);
+    unsafe {
+        video_in.setTransform(transform);
+        video_in.setExpectsMediaDataInRealTime(false);
+    }
+    let writer = unsafe {
+        AVAssetWriter::initWithURL_fileType_error(
+            AVAssetWriter::alloc(),
+            &file_url(output),
+            AVFileTypeQuickTimeMovie.expect("movie file type"),
+        )
+    }
+    .map_err(|error| ns_error(&error))?;
+    if !unsafe { reader.canAddOutput(&video_out) } || !unsafe { writer.canAddInput(&video_in) } {
+        return Err(TranscodeError::Failed("cannot copy this video".to_string()));
+    }
+    unsafe {
+        reader.addOutput(&video_out);
+        writer.addInput(&video_in);
+    }
+    let audio = audio_setup(&asset, Audio::Copy)
+        .filter(|(audio_out, audio_in)| unsafe { reader.canAddOutput(audio_out) && writer.canAddInput(audio_in) });
+    if let Some((audio_out, audio_in)) = &audio {
+        unsafe {
+            audio_in.setExpectsMediaDataInRealTime(false);
+            reader.addOutput(audio_out);
+            writer.addInput(audio_in);
+        }
+    }
+    if !unsafe { reader.startReading() } {
+        return Err(reader_error(&reader));
+    }
+    if !unsafe { writer.startWriting() } {
+        unsafe { reader.cancelReading() };
+        return Err(writer_error(&writer));
+    }
+    unsafe { writer.startSessionAtSourceTime(CMTime::new(0, CM_TIMESCALE)) };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let mut pending = 0usize;
+    let mut queues = Vec::new();
+    for (output_track, input_track) in std::iter::once((&video_out, &video_in))
+        .chain(audio.as_ref().map(|(audio_out, audio_in)| (audio_out, audio_in)))
+    {
+        let queue = DispatchQueue::new("livewall.reorient", None);
+        let block = pump_audio(output_track, input_track, &cancel, done_tx.clone());
+        unsafe { input_track.requestMediaDataWhenReadyOnQueue_usingBlock(&queue, &block) };
+        queues.push(queue);
+        pending += 1;
+    }
+    drop(done_tx);
+    while pending > 0 {
+        match done_rx.recv_timeout(POLL) {
+            Ok(()) => pending -= 1,
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                if unsafe { reader.status() } == AVAssetReaderStatus::Failed
+                    || unsafe { writer.status() } == AVAssetWriterStatus::Failed
+                {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+    let failed = unsafe { reader.status() } == AVAssetReaderStatus::Failed
+        || unsafe { writer.status() } == AVAssetWriterStatus::Failed;
+    if failed || !finish_writing(&writer) {
+        let error = if unsafe { reader.status() } == AVAssetReaderStatus::Failed {
+            reader_error(&reader)
+        } else {
+            writer_error(&writer)
+        };
+        unsafe { writer.cancelWriting() };
+        let _ = std::fs::remove_file(output);
+        return Err(error);
+    }
+    return Ok(());
 }
 
 fn with_fallback(
@@ -163,7 +260,7 @@ impl Pipeline {
         let transform = unsafe { track.preferredTransform() };
         let (width, height) = stored_dims(plan.width, plan.height, transform);
         let video_in = video_input(plan, codec, (width, height), &hdr_metadata(&track));
-        unsafe { video_in.setTransform(transform) };
+        unsafe { video_in.setTransform(orient::fit(transform, f64::from(width), f64::from(height))) };
         if !unsafe { writer.canAddInput(&video_in) } {
             return Err(TranscodeError::Failed("the video encoder is not available".to_string()));
         }

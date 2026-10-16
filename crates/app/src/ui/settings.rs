@@ -16,6 +16,7 @@ use proto::HotkeyAction;
 use serde_json::{Value, json};
 
 use crate::hotkey;
+use crate::i18n::{Arg, trf};
 use crate::ui::palette::{Look, Rgb, Theme};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
@@ -44,6 +45,7 @@ const LOCK_SCREEN: isize = 18;
 const LOCK_DISPLAY: isize = 19;
 const LOCK_IDLE: isize = 22;
 const IDLE_AFTER: isize = 23;
+const HIDE_DESKTOP: isize = 24;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
 pub const ACCENT: isize = 1;
@@ -92,6 +94,7 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
         (LOCK_SCREEN, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
         (LOCK_DISPLAY, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_display": on } })),
         (LOCK_IDLE, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_idle": on } })),
+        (HIDE_DESKTOP, Input::Flag(on)) => patch(json!({ "privacy": { "hide_desktop": on } })),
         (ROTATE, Input::Flag(on)) => patch(json!({ "auto_rotate": on })),
         (PAUSE, Input::Flag(on)) => {
             let mut map = serde_json::Map::new();
@@ -129,8 +132,15 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
     };
 }
 
+/// What a shortcut recorder binds: a global action or one wallpaper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bind {
+    Action(HotkeyAction),
+    Item(crate::model::ItemId),
+}
+
 pub struct RecorderIvars {
-    action: HotkeyAction,
+    bind: Cell<Bind>,
     label: Retained<NSTextField>,
     recording: Cell<bool>,
 }
@@ -139,7 +149,7 @@ define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[ivars = RecorderIvars]
-    struct RecorderView;
+    pub struct RecorderView;
 
     impl RecorderView {
         #[unsafe(method(acceptsFirstResponder))]
@@ -184,10 +194,11 @@ define_class!(
 );
 
 impl RecorderView {
-    fn new(mtm: MainThreadMarker, action: HotkeyAction) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, bind: Bind) -> Retained<Self> {
         let label = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
         label.setAlignment(NSTextAlignment::Center);
-        let this = Self::alloc(mtm).set_ivars(RecorderIvars { action, label, recording: Cell::new(false) });
+        let this =
+            Self::alloc(mtm).set_ivars(RecorderIvars { bind: Cell::new(bind), label, recording: Cell::new(false) });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
         if let Some(layer) = this.layer() {
@@ -206,7 +217,11 @@ impl RecorderView {
         return this;
     }
 
-    fn show(&self, combo: Option<&proto::KeyCombo>) {
+    pub fn rebind_to(&self, bind: Bind) {
+        self.ivars().bind.set(bind);
+    }
+
+    pub fn show(&self, combo: Option<&proto::KeyCombo>) {
         if self.ivars().recording.get() {
             return;
         }
@@ -256,12 +271,12 @@ impl RecorderView {
     }
 
     fn key(&self, event: &NSEvent) {
-        let action = self.ivars().action;
+        let bind = self.ivars().bind.get();
         let code = u32::from(event.keyCode());
         match code {
             ESCAPE => return self.finish(),
             DELETE | FORWARD_DELETE => {
-                let _ = crate::ui::rebind(action, None);
+                let _ = crate::ui::rebind(bind, None);
                 return self.finish();
             }
             _ => {}
@@ -281,7 +296,7 @@ impl RecorderView {
         .map(|(_, part)| part)
         .collect();
         parts.push(name);
-        match crate::ui::rebind(action, Some(parts.join("+"))) {
+        match crate::ui::rebind(bind, Some(parts.join("+"))) {
             Ok(()) => self.finish(),
             Err(message) => self.paint(&message, &NSColor::systemRedColor(), Some(&NSColor::systemRedColor())),
         }
@@ -289,16 +304,7 @@ impl RecorderView {
 }
 
 pub fn action_title(action: HotkeyAction) -> &'static str {
-    return match action {
-        HotkeyAction::Next => "Next Wallpaper",
-        HotkeyAction::Previous => "Previous Wallpaper",
-        HotkeyAction::VolumeUp => "Volume Up",
-        HotkeyAction::VolumeDown => "Volume Down",
-        HotkeyAction::TogglePause => "Play / Pause",
-        HotkeyAction::ToggleMute => "Mute",
-        HotkeyAction::Random => "Random Wallpaper",
-        HotkeyAction::Lock => "Lock Private Folders",
-    };
+    return crate::hotkey::title(action);
 }
 
 pub struct SwatchIvars {
@@ -326,6 +332,7 @@ pub struct Settings {
     swatches: Vec<Retained<SwatchView>>,
     accent: Retained<NSColorWell>,
     canvas: Retained<NSColorWell>,
+    delete_style: Retained<objc2_app_kit::NSButton>,
     switches: Vec<Retained<NSSwitch>>,
     popups: Vec<Retained<NSPopUpButton>>,
     knobs: Vec<Knob>,
@@ -357,7 +364,7 @@ impl Settings {
         let (playback, rotate, transition, knobs, more_switches, more_popups) = playback(mtm, target);
         switches.extend(more_switches);
         popups.extend(more_popups);
-        let (appearance, mode, swatches, accent, canvas) = appearance(mtm, look, target);
+        let (appearance, mode, swatches, accent, canvas, delete_style) = appearance(mtm, look, target);
         let (shortcuts, recorders) = shortcuts(mtm, target);
         let Locking { page: privacy, idle, switches: lock_switches, popups: lock_popups } = locking(mtm, target);
         switches.extend(lock_switches);
@@ -403,6 +410,7 @@ impl Settings {
             swatches,
             accent,
             canvas,
+            delete_style,
             switches,
             popups,
             knobs,
@@ -425,6 +433,10 @@ impl Settings {
         self.window.makeFirstResponder(None);
     }
 
+    pub fn tab(&self) -> isize {
+        return self.tabs.selectedTabViewItemIndex();
+    }
+
     pub fn close(&self) {
         if let Some(parent) = self.window.sheetParent() {
             parent.endSheet(&self.window);
@@ -443,6 +455,7 @@ impl Settings {
         let custom = look.theme == look.custom_index();
         self.accent.setEnabled(custom);
         self.canvas.setEnabled(custom);
+        self.delete_style.setEnabled(look.is_saved(look.theme));
     }
 
     pub fn sync(&self, values: &Value) {
@@ -471,6 +484,7 @@ impl Settings {
                 LOCK_SCREEN => locks("lock_on_screen_lock"),
                 LOCK_DISPLAY => locks("lock_on_display"),
                 LOCK_IDLE => locks("lock_on_idle"),
+                HIDE_DESKTOP => locks("hide_desktop"),
                 _ => continue,
             };
             switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
@@ -491,7 +505,7 @@ impl Settings {
                     popup,
                     IDLE_MINUTES.len(),
                     IDLE_MINUTES.iter().position(|(_, value)| *value == idle_minutes),
-                    &format!("{idle_minutes} Minutes"),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(idle_minutes))]),
                 ),
                 LANGUAGE => {
                     show_choice(popup, LANGUAGES.len(), LANGUAGES.iter().position(|(_, code)| *code == language), "?");
@@ -506,14 +520,14 @@ impl Settings {
                     popup,
                     RELEASES.len(),
                     RELEASES.iter().position(|(_, value)| *value == release),
-                    &format!("After {release} Seconds"),
+                    &trf("After %ld Seconds", &[Arg::Int(i64::from(release))]),
                 ),
                 STYLE => show_choice(popup, STYLES.len(), style, "Fade"),
                 EVERY => show_choice(
                     popup,
                     INTERVALS.len(),
                     INTERVALS.iter().position(|(_, value)| *value == interval && *value > 0),
-                    &format!("{interval} Minutes"),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(interval))]),
                 ),
                 _ => {}
             }
@@ -557,7 +571,9 @@ impl Settings {
 
     pub fn sync_shortcuts(&self, hotkeys: &proto::Hotkeys) {
         for recorder in &self.recorders {
-            recorder.show(hotkeys.get(recorder.ivars().action));
+            if let Bind::Action(action) = recorder.ivars().bind.get() {
+                recorder.show(hotkeys.get(action));
+            }
         }
     }
 
@@ -844,9 +860,12 @@ fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
 
 fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Vec<Retained<RecorderView>>) {
     let recorders: Vec<Retained<RecorderView>> =
-        HotkeyAction::ALL.iter().map(|action| RecorderView::new(mtm, *action)).collect();
-    let rows: Vec<Retained<NSView>> =
-        recorders.iter().map(|recorder| line(mtm, action_title(recorder.ivars().action), None, recorder)).collect();
+        HotkeyAction::ALL.iter().map(|action| RecorderView::new(mtm, Bind::Action(*action))).collect();
+    let rows: Vec<Retained<NSView>> = HotkeyAction::ALL
+        .iter()
+        .zip(&recorders)
+        .map(|(action, recorder)| line(mtm, action_title(*action), None, recorder))
+        .collect();
     let global = form(mtm, "Global", &rows);
     let restore = widgets::compact(mtm, "Restore Defaults", Some(sel!(restoreShortcuts:)), Some(target));
     let hint = widgets::label(
@@ -882,6 +901,17 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
             line(mtm, "Inactive For", None, &after),
         ],
     );
+    let hide = switch(mtm, HIDE_DESKTOP, target);
+    let desktop = form(
+        mtm,
+        "While Locked",
+        &[line(
+            mtm,
+            "Take Private Wallpapers off the Desktop",
+            Some("Off: the desktop keeps playing them; the library, menu bar and lock screen still hide them"),
+            &hide,
+        )],
+    );
     let hint = widgets::label(
         mtm,
         "Always locked at launch and quit. Unlocking needs Touch ID or your password.",
@@ -890,9 +920,9 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
         &NSColor::secondaryLabelColor(),
     );
     return Locking {
-        page: page(mtm, &[&automatic, &hint]),
+        page: page(mtm, &[&automatic, &desktop, &hint]),
         idle: vec![widgets::view(&after)],
-        switches: vec![screen, display, idle],
+        switches: vec![screen, display, idle, hide],
         popups: vec![after],
     };
 }
@@ -903,7 +933,10 @@ type AppearancePage = (
     Vec<Retained<SwatchView>>,
     Retained<NSColorWell>,
     Retained<NSColorWell>,
+    Retained<objc2_app_kit::NSButton>,
 );
+
+const STYLES_PER_ROW: usize = 7;
 
 fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> AppearancePage {
     let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| widgets::ns(title)).collect();
@@ -922,9 +955,37 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
         .enumerate()
         .map(|(index, (name, palette))| swatch(mtm, index, name, &Theme::new(*palette)))
         .collect();
-    let refs: Vec<&NSView> = swatches.iter().map(|view| &***view).collect();
-    let row = widgets::stack(mtm, &refs, false, 14.0);
-    row.setEdgeInsets(widgets::insets(14.0, 12.0, 12.0, 12.0));
+    let swatch_row = |indices: &[usize]| {
+        let refs: Vec<&NSView> = indices.iter().filter_map(|index| swatches.get(*index)).map(|view| &***view).collect();
+        let row = widgets::stack(mtm, &refs, false, 14.0);
+        row.setEdgeInsets(widgets::insets(14.0, 12.0, 12.0, 12.0));
+        return widgets::view(&row);
+    };
+    let mut built_in: Vec<usize> = (0..look.themes.len()).filter(|index| !look.is_saved(*index)).collect();
+    built_in.sort_by_key(|index| *index == look.custom_index());
+    let row = swatch_row(&built_in);
+    let saved: Vec<usize> = (0..look.themes.len()).filter(|index| look.is_saved(*index)).collect();
+    let mut style_rows: Vec<Retained<NSView>> = saved.chunks(STYLES_PER_ROW).map(swatch_row).collect();
+    if style_rows.is_empty() {
+        let empty = widgets::label(
+            mtm,
+            "Save the Custom colours as a style, or import a .livewall-style file.",
+            11.0,
+            &Weight::Regular,
+            &NSColor::secondaryLabelColor(),
+        );
+        let holder = widgets::stack(mtm, &[&empty], false, 0.0);
+        holder.setEdgeInsets(widgets::insets(12.0, 12.0, 12.0, 12.0));
+        style_rows.push(widgets::view(&holder));
+    }
+    let save = widgets::compact(mtm, "Save as Style…", Some(sel!(saveStyle:)), Some(target));
+    let import = widgets::compact(mtm, "Import…", Some(sel!(importStyle:)), Some(target));
+    let export = widgets::compact(mtm, "Export…", Some(sel!(exportStyle:)), Some(target));
+    let delete = widgets::compact(mtm, "Delete Style", Some(sel!(deleteStyle:)), Some(target));
+    let gap = widgets::spacer(mtm);
+    let tools = widgets::stack(mtm, &[&save, &import, &export, &gap, &delete], false, 8.0);
+    tools.setEdgeInsets(widgets::insets(8.0, 12.0, 8.0, 12.0));
+    style_rows.push(widgets::view(&tools));
     mode.setSelectedSegmentBezelColor(Some(&look.colors.accent));
     let well = |tag: isize| {
         let well = NSColorWell::colorWellWithStyle(NSColorWellStyle::Minimal, mtm);
@@ -944,12 +1005,13 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
         mtm,
         "Theme",
         &[
-            widgets::view(&row),
+            row,
             line(mtm, "Accent", Some("Selection, buttons and sliders"), &accent),
             line(mtm, "Canvas", Some("Tint behind the wallpaper wall"), &canvas),
         ],
     );
-    return (page(mtm, &[&window, &theme]), mode, swatches, accent, canvas);
+    let mine = form(mtm, "My Styles", &style_rows);
+    return (page(mtm, &[&window, &theme, &mine]), mode, swatches, accent, canvas, delete);
 }
 
 fn swatch(mtm: MainThreadMarker, index: usize, name: &str, theme: &Theme) -> Retained<SwatchView> {

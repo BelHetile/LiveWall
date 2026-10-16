@@ -6,30 +6,33 @@ use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSButton, NSColor, NSEvent, NSImage, NSImageView, NSLayoutConstraint,
     NSLineBreakMode, NSMenu, NSMenuItem, NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSStackView, NSTextField,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemGroup, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier,
-    NSToolbarToggleInspectorItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
+    NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
+    NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier, NSToolbarItemVisibilityPriorityHigh,
+    NSToolbarItemVisibilityPriorityLow, NSToolbarItemVisibilityPriorityUser, NSToolbarToggleInspectorItemIdentifier,
+    NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
 use crate::app::{PlayState, Sound};
+use crate::i18n::{Arg, text, tr, trf};
 use crate::ui::palette::Look;
 use crate::ui::state::{
-    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER,
-    TAG_RENAME_FOLDER, TAG_UNLOCK_FOLDER, folder_glyph, lock_tip, privacy_title, showing,
+    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_ICON_FOLDER, TAG_LOCK_FOLDER,
+    TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_UNLOCK_FOLDER, desktop_name, folder_glyph, lock_tip, privacy_title, showing,
 };
 use crate::ui::view::{Library, Status};
 use crate::ui::widgets::{self, Weight};
 
-const PILL_WIDTH: CGFloat = 148.0;
+const PILL_WIDTH: CGFloat = 126.0;
 const PILL_HEIGHT: CGFloat = 26.0;
-const SCOPE_WIDTH: CGFloat = 128.0;
-const FOLDER_WIDTH: CGFloat = 136.0;
-const SEARCH_WIDTH: CGFloat = 120.0;
-const ADD_WIDTH: CGFloat = 76.0;
-const STATUS_TEXT_WIDTH: CGFloat = 150.0;
+const SCOPE_WIDTH: CGFloat = 176.0;
+const FOLDER_WIDTH: CGFloat = 150.0;
+const SEARCH_WIDTH: CGFloat = 132.0;
+const ADD_WIDTH: CGFloat = 36.0;
+const STATUS_TEXT_WIDTH: CGFloat = 118.0;
 
 pub struct PillIvars {
     index: Cell<Option<usize>>,
@@ -148,6 +151,7 @@ struct Pill {
 }
 
 impl Toolbar {
+    #[allow(clippy::too_many_lines)]
     pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
         let scope = popup(mtm, SCOPE_WIDTH);
         let folder = popup(mtm, FOLDER_WIDTH);
@@ -175,8 +179,9 @@ impl Toolbar {
         search.centerYAnchor().constraintEqualToAnchor(&search_box.centerYAnchor()).setActive(true);
         search_box.widthAnchor().constraintEqualToConstant(SEARCH_WIDTH).setActive(true);
         search_box.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
-        let add = widgets::button(mtm, "Add", Some("plus"), sel!(showAdd:), target);
-        add.setFont(Some(&widgets::font(13.0, &Weight::Semibold)));
+        // An accent "+" circle: with the inspector collapsed, the items after the tracking separator only get
+        // room for a few icons, and a titled button pushed Settings into the overflow menu.
+        let add = widgets::button(mtm, "", Some("plus"), sel!(showAdd:), target);
         add.setToolTip(Some(&widgets::ns("Add wallpapers from files, a folder or a video link")));
         add.widthAnchor().constraintEqualToConstant(ADD_WIDTH).setActive(true);
         let settings = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &widgets::ns("settings"));
@@ -197,7 +202,13 @@ impl Toolbar {
         let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, 4.0);
         row.setEdgeInsets(widgets::insets(0.0, 4.0, 0.0, 4.0));
         let showing = view_item(mtm, "showing", "Now Showing", &row);
+        showing.setVisibilityPriority(NSToolbarItemVisibilityPriorityLow);
         let status = StatusBadge::new(mtm);
+        let search_item = view_item(mtm, "search", "Search", &search_box);
+        search_item.setVisibilityPriority(NSToolbarItemVisibilityPriorityHigh);
+        let add_item = view_item(mtm, "add", "Add", &add);
+        add_item.setVisibilityPriority(NSToolbarItemVisibilityPriorityHigh);
+        settings.setVisibilityPriority(NSToolbarItemVisibilityPriorityHigh);
 
         let items: Vec<Retained<NSToolbarItem>> = vec![
             view_item(mtm, "scope", "Desktop", &scope),
@@ -206,12 +217,14 @@ impl Toolbar {
             status.toolbar_item(mtm),
             Retained::into_super(sort.clone()),
             Retained::into_super(layout.clone()),
-            view_item(mtm, "search", "Search", &search_box),
-            view_item(mtm, "add", "Add", &add),
+            search_item,
+            add_item,
             settings,
         ];
         let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
         let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
+        // Everything after the tracking separator sits above the inspector, so the library side keeps its room.
+        let tracking = unsafe { NSToolbarInspectorTrackingSeparatorItemIdentifier };
         let order: Vec<Retained<NSString>> = vec![
             widgets::ns("scope"),
             widgets::ns("folder"),
@@ -221,6 +234,7 @@ impl Toolbar {
             flexible.copy(),
             widgets::ns("sort"),
             widgets::ns("layout"),
+            tracking.copy(),
             widgets::ns("search"),
             widgets::ns("add"),
             widgets::ns("settings"),
@@ -259,8 +273,8 @@ impl Toolbar {
             self.scope_title.borrow_mut().clone_from(&title);
         }
         self.scope.setMenu(Some(&scope_menu(mtm, library, filter.scope, &title, sel!(scope:), target)));
-        let folder_title =
-            filter.folder.and_then(|index| library.folders.get(index)).map_or("All Wallpapers", |name| name);
+        let all = tr("All Wallpapers");
+        let folder_title = filter.folder.and_then(|index| library.folders.get(index)).map_or(all.as_str(), |name| name);
         if self.folder_title.borrow().as_str() != folder_title {
             widgets::fade(&self.folder);
             *self.folder_title.borrow_mut() = folder_title.to_string();
@@ -274,7 +288,10 @@ impl Toolbar {
         let item =
             summary.main.map(|index| &library.items[index]).map(|entry| (entry.title.clone(), entry.image.as_deref()));
         let tip = if summary.others > 0 {
-            format!("{} · {} different wallpapers", filter.scope.title(), summary.others + 1)
+            trf(
+                "%@ · %ld different wallpapers",
+                &[text(filter.scope.title()), Arg::Int(i64::try_from(summary.others + 1).unwrap_or(0))],
+            )
         } else {
             filter.scope.title()
         };
@@ -317,20 +334,21 @@ impl StatusBadge {
     fn toolbar_item(&self, mtm: MainThreadMarker) -> Retained<NSToolbarItem> {
         let item = view_item(mtm, "status", "Playback", &self.view);
         item.setBordered(false);
+        item.setVisibilityPriority(NSToolbarItemVisibilityPriorityLow);
         return item;
     }
 
     fn update(&self, status: Option<&Status>) {
-        let (light, text, tip) = match status {
-            None => (Light::Off, "Nothing playing".to_string(), "No wallpaper on this desktop".to_string()),
+        let (light, label, tip) = match status {
+            None => (Light::Off, tr("Nothing playing"), tr("No wallpaper on this desktop")),
             Some(status) => describe(status),
         };
         self.icon.setContentTintColor(Some(&light.color()));
-        if self.text.stringValue().to_string() != text {
+        if self.text.stringValue().to_string() != label {
             widgets::fade(&self.text);
-            self.text.setStringValue(&widgets::ns(&text));
+            self.text.setStringValue(&widgets::raw(&label));
         }
-        self.view.setToolTip(Some(&widgets::ns(&tip)));
+        self.view.setToolTip(Some(&widgets::raw(&tip)));
         let sound = status.and_then(|status| status.sound);
         self.sound.setHidden(sound.is_none());
         if let Some(sound) = sound {
@@ -379,27 +397,40 @@ impl Light {
 
 fn describe(status: &Status) -> (Light, String, String) {
     let reason = status.reason.as_ref();
-    let brief = |word: &str| reason.map_or_else(|| word.to_string(), |(brief, _)| format!("{word} · {brief}"));
+    let brief = |word: &str| {
+        let word = tr(word);
+        return reason.map_or_else(|| word.clone(), |(brief, _)| format!("{word} · {}", tr(brief)));
+    };
     let full = reason.map_or_else(String::new, |(_, full)| full.clone());
     return match status.state {
-        PlayState::Still => (Light::Green, "Image".to_string(), "This desktop shows a still image".to_string()),
-        PlayState::Playing => {
-            (Light::Green, "Playing".to_string(), "The wallpaper on this desktop is playing".to_string())
-        }
-        PlayState::Paused if full.is_empty() => (Light::Yellow, brief("Paused"), "Paused".to_string()),
-        PlayState::Paused => (Light::Yellow, brief("Paused"), format!("Paused: {full}")),
+        PlayState::Still => (Light::Green, tr("Image"), tr("This desktop shows a still image")),
+        PlayState::Playing => (Light::Green, tr("Playing"), tr("The wallpaper on this desktop is playing")),
+        PlayState::Paused if full.is_empty() => (Light::Yellow, brief("Paused"), tr("Paused")),
+        PlayState::Paused => (Light::Yellow, brief("Paused"), trf("Paused: %@", &[text(full)])),
         PlayState::Unloaded => {
-            let reason = if full.is_empty() { String::new() } else { format!("Paused: {full}. ") };
+            let reason =
+                if full.is_empty() { String::new() } else { format!("{}. ", trf("Paused: %@", &[text(full)])) };
             (
                 Light::Red,
                 brief("Unloaded"),
-                format!("{reason}Unloaded to free memory; the desktop shows the paused frame."),
+                format!("{reason}{}", tr("Unloaded to free memory; the desktop shows the paused frame.")),
             )
         }
     };
 }
 
 impl Toolbar {
+    /// `AppKit` makes the inspector toggle itself once the toolbar is on a window; keep it out of the overflow menu
+    /// when the inspector is collapsed and the items after the tracking separator have little room.
+    pub fn keep_toggle_visible(&self) {
+        let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
+        for item in self.bar.items().to_vec() {
+            if *item.itemIdentifier() == *toggle {
+                item.setVisibilityPriority(NSToolbarItemVisibilityPriorityUser);
+            }
+        }
+    }
+
     pub fn add_parts(&self) -> (Retained<NSButton>, Retained<NSMenu>) {
         return (self.add.clone(), self.add_menu.clone());
     }
@@ -416,10 +447,14 @@ pub fn drop_down(button: &NSButton, menu: &NSMenu) {
 
 fn popup(mtm: MainThreadMarker, width: CGFloat) -> Retained<NSPopUpButton> {
     let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
-    popup.setBezelStyle(objc2_app_kit::NSBezelStyle::Glass);
+    if !widgets::liquid_glass() {
+        popup.setBezelStyle(objc2_app_kit::NSBezelStyle::Push);
+    }
+    popup.setBordered(!widgets::liquid_glass());
     popup.setControlSize(objc2_app_kit::NSControlSize::Large);
     popup.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
-    popup.widthAnchor().constraintEqualToConstant(width).setActive(true);
+    popup.widthAnchor().constraintLessThanOrEqualToConstant(width).setActive(true);
+    popup.widthAnchor().constraintGreaterThanOrEqualToConstant(width * 0.6).setActive(true);
     return popup;
 }
 
@@ -453,9 +488,12 @@ fn desktops_menu(mtm: MainThreadMarker, library: &Library, summary: &Showing, ta
     let mut items = Vec::new();
     for &(space, item) in &summary.desktops {
         let wallpaper = item.map(|index| &library.items[index]);
-        let title = format!("Desktop {} — {}", space + 1, wallpaper.map_or("None", |entry| entry.title.as_str()));
+        let none = tr("None");
+        let title =
+            format!("{} — {}", desktop_name(space), wallpaper.map_or(none.as_str(), |entry| entry.title.as_str()));
         let tag = item.and_then(|index| isize::try_from(index).ok()).unwrap_or(TAG_ALL);
         let entry = entry(mtm, &title, sel!(reveal:), tag, false, target);
+        entry.setTitle(&widgets::raw(&title));
         entry.setEnabled(item.is_some());
         if let Some(image) = wallpaper.and_then(|entry| entry.image.as_ref()) {
             let thumb: Retained<NSImage> = image.copy();
@@ -544,7 +582,7 @@ impl Pill {
         }
         widgets::fade(&self.title);
         let color = if name.is_some() { NSColor::labelColor() } else { NSColor::tertiaryLabelColor() };
-        self.title.setStringValue(&widgets::ns(name.as_deref().unwrap_or(caption)));
+        self.title.setStringValue(&name.as_deref().map_or_else(|| widgets::ns(caption), widgets::raw));
         self.title.setTextColor(Some(&color));
         let expanded = others > 0;
         self.badge.setStringValue(&widgets::ns(&format!("+{others}")));
@@ -579,7 +617,7 @@ fn entry(
 
 fn title_entry(mtm: MainThreadMarker, title: &str, icon: &str) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
-    item.setTitle(&widgets::ns(title));
+    item.setTitle(&widgets::raw(title));
     if let Some(image) = widgets::symbol(icon, 12.0) {
         item.setImage(Some(&image));
     }
@@ -618,7 +656,7 @@ pub fn scope_menu(
     ];
     for space in 0..library.desktops {
         let scope = Scope::Space(space);
-        items.push(entry(mtm, &format!("Desktop {}", space + 1), action, scope.tag(), current == scope, target));
+        items.push(entry(mtm, &desktop_name(space), action, scope.tag(), current == scope, target));
     }
     return menu(mtm, &items);
 }
@@ -631,15 +669,20 @@ fn folder_menu(
     target: &AnyObject,
 ) -> Retained<NSMenu> {
     let action = sel!(folder:);
-    let mut items = vec![
-        title_entry(mtm, title, "folder"),
-        entry(mtm, "All Wallpapers", action, TAG_ALL, current.is_none(), target),
-        separator(mtm),
-    ];
+    let heading = title_entry(mtm, title, "folder");
+    if let Some(image) = current.and_then(|index| library.folder_image(index)) {
+        heading.setImage(Some(&image));
+    }
+    let mut items =
+        vec![heading, entry(mtm, "All Wallpapers", action, TAG_ALL, current.is_none(), target), separator(mtm)];
     for (index, name) in library.folders.iter().enumerate() {
         let tag = isize::try_from(index).unwrap_or(TAG_ALL);
         let item = entry(mtm, name, action, tag, current == Some(index), target);
+        item.setTitle(&widgets::raw(name));
         widgets::lock_mark(&item, folder_glyph(library, index), current == Some(index));
+        if let Some(image) = library.folder_image(index) {
+            item.setImage(Some(&image));
+        }
         items.push(item);
     }
     items.push(separator(mtm));
@@ -659,7 +702,9 @@ fn privacy_entries(
     if let Some((name, lock)) = selected {
         let action = sel!(folderLock:);
         items.push(separator(mtm));
-        items.push(header(mtm, name));
+        let title = header(mtm, name);
+        title.setTitle(&widgets::raw(name));
+        items.push(title);
         if lock.locked {
             items.push(entry(mtm, "Remove Lock", action, TAG_UNLOCK_FOLDER, false, target));
             items.push(entry(mtm, "Hide When Locked", action, TAG_HIDE_FOLDER, lock.hidden, target));
@@ -667,6 +712,7 @@ fn privacy_entries(
             items.push(entry(mtm, "Lock Folder", action, TAG_LOCK_FOLDER, false, target));
         }
         items.push(entry(mtm, "Rename Folder…", action, TAG_RENAME_FOLDER, false, target));
+        items.push(entry(mtm, "Change Icon…", action, TAG_ICON_FOLDER, false, target));
         items.push(entry(mtm, "Delete Folder…", action, TAG_DELETE_FOLDER, false, target));
     }
     if library.has_locked {

@@ -15,7 +15,7 @@ use crate::media::thumb;
 use crate::model::{self, ItemId, ItemKind};
 use crate::paths::DirKind;
 use crate::ui::state::Scope;
-use crate::ui::widgets::ns;
+use crate::ui::widgets;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -48,6 +48,10 @@ pub struct Item {
     pub codec: Option<String>,
     pub duration: f64,
     pub bytes: u64,
+    pub modified: Option<SystemTime>,
+    pub hotkey: Option<proto::KeyCombo>,
+    pub hotkey_scope: proto::HotkeyScope,
+    pub hotkey_problem: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +110,8 @@ pub struct Library {
     pub lock: Option<Lock>,
     pub folders: Vec<String>,
     pub folder_ids: Vec<Uuid>,
+    pub icons: Vec<Option<String>>,
+    pub icons_dir: PathBuf,
     pub locks: Vec<FolderLock>,
     pub unlocked: bool,
     pub has_locked: bool,
@@ -164,6 +170,12 @@ impl Library {
         return self.items.iter().position(|item| item.id == id);
     }
 
+    /// The folder's own icon at menu size, if it has one.
+    pub fn folder_image(&self, folder: usize) -> Option<Retained<NSImage>> {
+        let icon = self.icons.get(folder)?.as_deref()?;
+        return icon_image(icon, &self.icons_dir, MENU_ICON);
+    }
+
     pub fn sealed(&self, folder: usize) -> bool {
         return !self.unlocked && self.locks.get(folder).is_some_and(|lock| lock.locked);
     }
@@ -207,10 +219,26 @@ impl Thumbs {
     }
 }
 
-fn load(file: &std::path::Path) -> Option<Retained<NSImage>> {
-    return NSImage::initWithContentsOfFile(NSImage::alloc(), &ns(&file.to_string_lossy()));
+const MENU_ICON: f64 = 16.0;
+
+/// Draws a folder icon value (`symbol:` or `image:`) at `size` points.
+pub fn icon_image(icon: &str, icons_dir: &std::path::Path, size: f64) -> Option<Retained<NSImage>> {
+    let image = match model::Icon::parse(icon)? {
+        model::Icon::Symbol(name) => widgets::symbol(name, size * 0.8)?,
+        model::Icon::Image(file) => load(&icons_dir.join(file))?,
+    };
+    if image.isTemplate() {
+        return Some(image);
+    }
+    image.setSize(objc2_foundation::NSSize::new(size, size));
+    return Some(image);
 }
 
+fn load(file: &std::path::Path) -> Option<Retained<NSImage>> {
+    return NSImage::initWithContentsOfFile(NSImage::alloc(), &widgets::raw(&file.to_string_lossy()));
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     let model = app.library();
     let defaults = app.settings();
@@ -254,6 +282,10 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
                 codec: item.codec.clone(),
                 duration: item.duration,
                 bytes: fs::metadata(&item.path).map_or(0, |meta| meta.len()),
+                modified: fs::metadata(&item.path).and_then(|meta| meta.modified()).ok(),
+                hotkey: item.hotkey.as_ref().map(|bound| bound.combo.clone()),
+                hotkey_scope: item.hotkey.as_ref().map_or_else(proto::HotkeyScope::default, |bound| bound.scope),
+                hotkey_problem: app.item_hotkey_failure(item.id).map(ToString::to_string),
             };
         })
         .collect();
@@ -262,7 +294,13 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     let placement = &model.placement;
     let position = |id: Option<ItemId>, space: Option<&str>| {
         let id = id?;
-        let shown = if unlocked || !model.is_private_id(id) { id } else { model.replacement(space)? };
+        let shown = if unlocked || !model.is_private_id(id) {
+            id
+        } else if app.reveals_desktop() {
+            return None;
+        } else {
+            model.replacement(space)?
+        };
         return items.iter().position(|item| item.id == shown);
     };
     let mut assignments: Vec<(Target, usize)> = Vec::new();
@@ -290,7 +328,7 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         .collect();
     let status = app.wallpaper_status().map(|status| Status {
         state: status.state,
-        reason: status.reason.map(|reason| (reason.brief(), reason.english())),
+        reason: status.reason.map(|reason| (reason.brief(), reason.localized())),
         sound: status.sound,
     });
 
@@ -299,6 +337,8 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         lock,
         folders: folders.iter().map(|folder| folder.name.clone()).collect(),
         folder_ids,
+        icons: folders.iter().map(|folder| folder.icon.clone()).collect(),
+        icons_dir: app.paths().icons_dir(),
         locks: folders.iter().map(|folder| FolderLock { locked: folder.locked, hidden: folder.hidden }).collect(),
         unlocked,
         has_locked: model.folders.iter().any(|folder| folder.locked),

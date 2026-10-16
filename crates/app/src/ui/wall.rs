@@ -19,6 +19,7 @@ use objc2_quartz_core::{
     kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut, kCATransitionFade,
 };
 
+use crate::i18n::{Arg, text, tr, trf};
 use crate::model::{ItemId, ItemKind};
 use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
@@ -72,16 +73,16 @@ fn overall(downloads: &[Download]) -> f64 {
 
 fn download_line(download: &Download) -> String {
     return match download.stage {
-        Stage::Preparing => "Getting video info…".to_string(),
-        Stage::Merging => "Merging video and audio…".to_string(),
-        Stage::Importing => "Adding to library…".to_string(),
+        Stage::Preparing => tr("Getting video info…"),
+        Stage::Merging => tr("Merging video and audio…"),
+        Stage::Importing => tr("Adding to library…"),
         Stage::Downloading => {
-            let mut parts = vec![format!("Downloading {:.0}%", download.percent * 100.0)];
+            let mut parts = vec![trf("Downloading %@", &[text(format!("{:.0}%", download.percent * 100.0))])];
             if let Some(speed) = download.speed.filter(|speed| *speed > 0.0) {
                 parts.push(format!("{:.1} MB/s", speed / 1_048_576.0));
             }
             if let Some(eta) = download.eta.filter(|eta| eta.is_finite() && *eta >= 0.0) {
-                parts.push(format!("{} left", clock(eta)));
+                parts.push(trf("%@ left", &[text(clock(eta))]));
             }
             parts.join(" · ")
         }
@@ -205,8 +206,8 @@ impl TileView {
         let chips = widgets::stack(mtm, &chip_refs, false, 5.0);
         chips.setWantsLayer(true);
 
-        let name = widgets::label(mtm, &item.title, 13.0, &Weight::Medium, &NSColor::labelColor());
-        let meta = widgets::label(mtm, &meta_line(item), 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
+        let name = widgets::raw_label(mtm, &item.title, 13.0, &Weight::Medium, &NSColor::labelColor());
+        let meta = widgets::raw_label(mtm, &meta_line(item), 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
 
         let this = Self::alloc(mtm).set_ivars(TileIvars {
             index: Cell::new(index),
@@ -396,8 +397,8 @@ impl TileView {
         if let Some(thumb) = &item.image {
             unsafe { ivars.image.setContents(Some(thumb)) };
         }
-        ivars.name.setStringValue(&widgets::ns(&item.title));
-        ivars.meta.setStringValue(&widgets::ns(&meta_line(item)));
+        ivars.name.setStringValue(&widgets::raw(&item.title));
+        ivars.meta.setStringValue(&widgets::raw(&meta_line(item)));
         ivars.progress.set(item.progress);
         self.paint_progress();
         let marker_list = markers(library, index, scope);
@@ -513,7 +514,7 @@ pub fn kind_name(kind: ItemKind) -> &'static str {
 }
 
 pub fn meta_line(item: &Item) -> String {
-    let mut parts = vec![kind_name(item.kind).to_string()];
+    let mut parts = vec![tr(kind_name(item.kind))];
     parts.extend(resolution(item));
     if item.kind == ItemKind::Video && item.duration > 0.0 {
         parts.push(duration(item.duration));
@@ -888,10 +889,13 @@ impl WallView {
         let text = match downloads {
             [] => None,
             [only] => Some(download_line(only)),
-            many => Some(format!("Downloading {} videos · {:.0}%", many.len(), overall(many) * 100.0)),
+            many => Some(trf(
+                "Downloading %ld videos · %@",
+                &[Arg::Int(i64::try_from(many.len()).unwrap_or(0)), text(format!("{:.0}%", overall(many) * 100.0))],
+            )),
         };
         if let Some(text) = &text {
-            ivars.status_text.setStringValue(&widgets::ns(text));
+            ivars.status_text.setStringValue(&widgets::raw(text));
             let width = STATUS_WIDTH * overall(downloads).clamp(0.0, 1.0);
             ivars.status_fill.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
         }

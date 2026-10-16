@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use proto::{FillMode, Geometry, Hotkeys, Transition};
+use proto::{FillMode, Geometry, HotkeyScope, Hotkeys, KeyCombo, Transition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -71,6 +71,16 @@ pub struct Item {
     pub needs_optimize: bool,
     #[serde(default)]
     pub optimize_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<ItemHotkey>,
+}
+
+/// A shortcut that switches to one wallpaper and back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemHotkey {
+    pub combo: KeyCombo,
+    #[serde(default)]
+    pub scope: HotkeyScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +93,39 @@ pub struct Folder {
     pub locked: bool,
     #[serde(default)]
     pub hidden: bool,
+}
+
+/// A folder icon: an SF Symbol, or a PNG the user added to the icons folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon<'a> {
+    Symbol(&'a str),
+    Image(&'a str),
+}
+
+pub const SYMBOL_PREFIX: &str = "symbol:";
+pub const IMAGE_PREFIX: &str = "image:";
+
+impl<'a> Icon<'a> {
+    pub fn parse(value: &'a str) -> Option<Self> {
+        if let Some(name) = value.strip_prefix(SYMBOL_PREFIX) {
+            let valid = !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '.');
+            return valid.then_some(Self::Symbol(name));
+        }
+        if let Some(file) = value.strip_prefix(IMAGE_PREFIX) {
+            let valid = !file.is_empty()
+                && !file.starts_with('.')
+                && std::path::Path::new(file).extension().is_some_and(|extension| extension == "png")
+                && file
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+            return valid.then_some(Self::Image(file));
+        }
+        return None;
+    }
 }
 
 impl Item {
@@ -165,6 +208,26 @@ impl Library {
         return self.folders.iter().any(|folder| folder.id == id);
     }
 
+    pub fn set_folder_icon(&mut self, id: FolderId, icon: Option<String>) -> bool {
+        let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
+            return false;
+        };
+        folder.icon = icon;
+        return true;
+    }
+
+    /// Forgets an icon file everywhere it is used.
+    pub fn drop_icon(&mut self, icon: &str) -> usize {
+        let mut cleared = 0;
+        for folder in &mut self.folders {
+            if folder.icon.as_deref() == Some(icon) {
+                folder.icon = None;
+                cleared += 1;
+            }
+        }
+        return cleared;
+    }
+
     pub fn rename_folder(&mut self, id: FolderId, name: String) -> bool {
         let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
             return false;
@@ -232,11 +295,20 @@ pub struct Privacy {
     pub lock_on_display: bool,
     pub lock_on_idle: bool,
     pub idle_minutes: u32,
+    /// Locking also takes private wallpapers off the desktop. Off: locking only hides them in the library,
+    /// the menu bar and the lock screen, and the desktop keeps playing them.
+    pub hide_desktop: bool,
 }
 
 impl Default for Privacy {
     fn default() -> Self {
-        return Self { lock_on_screen_lock: true, lock_on_display: true, lock_on_idle: false, idle_minutes: 15 };
+        return Self {
+            lock_on_screen_lock: true,
+            lock_on_display: true,
+            lock_on_idle: false,
+            idle_minutes: 15,
+            hide_desktop: false,
+        };
     }
 }
 
@@ -249,6 +321,16 @@ pub enum AppearanceMode {
     Dark,
 }
 
+/// A colour style the user saved, imported or shares as a `.livewall-style` file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Style {
+    pub name: String,
+    pub accent: String,
+    pub canvas: String,
+}
+
+pub const STYLE_FORMAT: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -257,6 +339,85 @@ pub struct Appearance {
     pub accent: String,
     pub canvas: String,
     pub list: bool,
+    pub styles: Vec<Style>,
+}
+
+impl Style {
+    pub fn new(name: &str, accent: &str, canvas: &str) -> Result<Self, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a style needs a name".to_string());
+        }
+        let colour = |value: &str| {
+            let hex = value.trim().trim_start_matches('#');
+            if hex.len() == 6 && hex.chars().all(|character| character.is_ascii_hexdigit()) {
+                return Ok(format!("#{}", hex.to_ascii_uppercase()));
+            }
+            return Err(format!("“{value}” is not a #RRGGBB colour"));
+        };
+        return Ok(Self { name: name.chars().take(40).collect(), accent: colour(accent)?, canvas: colour(canvas)? });
+    }
+
+    /// The file a style is shared as.
+    pub fn export(&self) -> String {
+        let value = serde_json::json!({
+            "livewall_style": STYLE_FORMAT,
+            "name": self.name,
+            "accent": self.accent,
+            "canvas": self.canvas,
+        });
+        return serde_json::to_string_pretty(&value).unwrap_or_default();
+    }
+
+    /// Reads one style, a `{"styles": [...]}` bundle or a bare list of styles.
+    pub fn import(text: &str) -> Result<Vec<Self>, String> {
+        let value: Value = serde_json::from_str(text).map_err(|_| "the file is not a LiveWall style".to_string())?;
+        let entries: Vec<Value> = match &value {
+            Value::Array(list) => list.clone(),
+            Value::Object(map) if map.contains_key("styles") => {
+                map.get("styles").and_then(Value::as_array).cloned().unwrap_or_default()
+            }
+            Value::Object(_) => vec![value.clone()],
+            _ => Vec::new(),
+        };
+        let field = |entry: &Value, key: &str| entry.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        let styles = entries
+            .iter()
+            .map(|entry| Self::new(&field(entry, "name"), &field(entry, "accent"), &field(entry, "canvas")))
+            .collect::<Result<Vec<_>, _>>()?;
+        if styles.is_empty() {
+            return Err("the file has no styles".to_string());
+        }
+        return Ok(styles);
+    }
+}
+
+impl Appearance {
+    /// Adds a style under a name no other style (built-in or saved) uses and returns that name.
+    pub fn add_style(&mut self, mut style: Style, taken: &[&str]) -> String {
+        let base = style.name.clone();
+        let used = |name: &str, styles: &[Style]| {
+            return taken.iter().any(|other| other.eq_ignore_ascii_case(name))
+                || styles.iter().any(|other| other.name.eq_ignore_ascii_case(name));
+        };
+        let mut counter = 2;
+        while used(&style.name, &self.styles) {
+            style.name = format!("{base} {counter}");
+            counter += 1;
+        }
+        let name = style.name.clone();
+        self.styles.push(style);
+        return name;
+    }
+
+    pub fn remove_style(&mut self, name: &str, fallback: &str) -> bool {
+        let before = self.styles.len();
+        self.styles.retain(|style| style.name != name);
+        if self.theme == name {
+            self.theme = fallback.to_string();
+        }
+        return self.styles.len() != before;
+    }
 }
 
 impl Default for Appearance {
@@ -267,6 +428,7 @@ impl Default for Appearance {
             accent: "#866A8C".to_string(),
             canvas: "#947C8E".to_string(),
             list: false,
+            styles: Vec::new(),
         };
     }
 }
@@ -463,6 +625,7 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: None,
         };
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");
@@ -494,6 +657,7 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: None,
         };
     }
 
@@ -597,6 +761,98 @@ mod tests {
         assert_eq!(settings, before);
         assert!(apply_patch(&mut settings, &serde_json::json!("not an object")).is_err());
         assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn styles_normalise_colours_and_reject_bad_input() {
+        let style = Style::new("  Night  ", "1a2b3c", "#FFEEDD").expect("style");
+        assert_eq!(style, Style { name: "Night".into(), accent: "#1A2B3C".into(), canvas: "#FFEEDD".into() });
+        assert!(Style::new("", "#000000", "#000000").is_err());
+        assert!(Style::new("x", "#12345", "#000000").is_err());
+        assert!(Style::new("x", "#000000", "red").is_err());
+        assert_eq!(Style::new(&"n".repeat(80), "#000000", "#000000").expect("long").name.len(), 40);
+    }
+
+    #[test]
+    fn styles_export_and_import_in_every_shape() {
+        let style = Style::new("Dusk", "#112233", "#445566").expect("style");
+        assert_eq!(Style::import(&style.export()).expect("own file"), vec![style.clone()]);
+        let bundle = r##"{"styles":[{"name":"A","accent":"#000000","canvas":"#FFFFFF"},{"name":"B","accent":"#111111","canvas":"#222222"}]}"##;
+        assert_eq!(Style::import(bundle).expect("bundle").len(), 2);
+        let list = r##"[{"name":"C","accent":"#333333","canvas":"#444444"}]"##;
+        assert_eq!(Style::import(list).expect("list")[0].name, "C");
+        assert!(Style::import("not json").is_err());
+        assert!(Style::import("[]").is_err());
+        assert!(Style::import(r##"{"name":"D","accent":"#nothex","canvas":"#000000"}"##).is_err());
+    }
+
+    #[test]
+    fn saved_styles_get_free_names_and_removal_falls_back() {
+        let mut appearance = Appearance::default();
+        let style = |name: &str| Style::new(name, "#000000", "#FFFFFF").expect("style");
+        assert_eq!(appearance.add_style(style("Mine"), &["Violet", "Custom"]), "Mine");
+        assert_eq!(appearance.add_style(style("mine"), &["Violet", "Custom"]), "mine 2");
+        assert_eq!(appearance.add_style(style("Violet"), &["Violet", "Custom"]), "Violet 2");
+        assert_eq!(appearance.styles.len(), 3);
+        appearance.theme = "Mine".into();
+        assert!(appearance.remove_style("Mine", "Violet"));
+        assert_eq!(appearance.theme, "Violet");
+        assert!(!appearance.remove_style("Mine", "Violet"));
+        let settings: Settings = serde_json::from_str(r#"{"appearance":{"theme":"Ocean"}}"#).expect("older settings");
+        assert!(settings.appearance.styles.is_empty());
+    }
+
+    #[test]
+    fn item_hotkeys_round_trip_and_older_items_have_none() {
+        let mut item = sample_item();
+        item.hotkey = Some(ItemHotkey {
+            combo: KeyCombo::new("1", vec![proto::Modifier::Control, proto::Modifier::Option]),
+            scope: HotkeyScope::Both,
+        });
+        let text = serde_json::to_string(&item).expect("serialize");
+        assert!(text.contains("\"scope\":\"both\""), "{text}");
+        let back: Item = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, item);
+        let mut plain = sample_item();
+        plain.hotkey = None;
+        let text = serde_json::to_string(&plain).expect("serialize");
+        assert!(!text.contains("hotkey"), "no key is written for wallpapers without a shortcut");
+        let legacy: Item = serde_json::from_str(&text).expect("legacy");
+        assert!(legacy.hotkey.is_none());
+        let scoped: ItemHotkey =
+            serde_json::from_str(r#"{"combo":{"key":"2","modifiers":["control"]}}"#).expect("no scope");
+        assert_eq!(scoped.scope, HotkeyScope::Desktop);
+    }
+
+    #[test]
+    fn folder_icons_parse_safely() {
+        assert_eq!(Icon::parse("symbol:star.fill"), Some(Icon::Symbol("star.fill")));
+        assert_eq!(Icon::parse("image:3F2A-b_c.png"), Some(Icon::Image("3F2A-b_c.png")));
+        for bad in [
+            "",
+            "star.fill",
+            "symbol:",
+            "symbol:Star",
+            "symbol:a b",
+            "image:../x.png",
+            "image:a/b.png",
+            "image:.png",
+            "image:x.jpg",
+        ] {
+            assert_eq!(Icon::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn folder_icons_are_set_and_dropped() {
+        let mut library = Library::default();
+        let first = library.create_folder("A".into());
+        let second = library.create_folder("B".into());
+        assert!(library.set_folder_icon(first, Some("image:x.png".into())));
+        assert!(library.set_folder_icon(second, Some("image:x.png".into())));
+        assert!(!library.set_folder_icon(Uuid::new_v4(), None));
+        assert_eq!(library.drop_icon("image:x.png"), 2);
+        assert!(library.folders.iter().all(|folder| folder.icon.is_none()));
     }
 
     #[test]

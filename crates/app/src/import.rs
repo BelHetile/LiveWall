@@ -161,6 +161,7 @@ async fn import_one(
         playable: prepared.probe.decodable,
         needs_optimize: prepared.needs_optimize,
         optimize_reason: reason_text(&prepared.verdict),
+        hotkey: None,
     };
     return Ok(ImportedItem { item, result });
 }

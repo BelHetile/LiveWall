@@ -78,15 +78,21 @@ cd LiveWall
 - **Lock screen:** the macOS desktop picture follows the wallpaper as a still frame, so the lock screen and
   Mission Control match. Pick the frame in the inspector, or choose a separate lock screen wallpaper. Your own
   desktop picture comes back when LiveWall quits, even after a crash.
-- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library, the menu bar and
-  the desktop until you unlock with Touch ID (or your Mac password). They lock again when the screen locks, the
-  display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is hidden too. This keeps
-  wallpapers away from casual glances; the files are not encrypted.
+- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library, the menu bar and the
+  lock screen until you unlock with Touch ID (or your Mac password); a private wallpaper already on the desktop
+  keeps playing, unless *Settings → Privacy → Take Private Wallpapers off the Desktop* is on. They lock again
+  when the screen locks, the display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is
+  hidden too. This keeps wallpapers away from casual glances; the files are not encrypted.
+- **Folder icons:** pick an SF Symbol or one of your own images for a folder (*Change Icon…* in the folder menu).
+- **Rotation of the picture:** turn a video or image by 90° from the inspector or the context menu when a file
+  carries the wrong orientation; videos are rewritten without re-encoding. Photo orientation (EXIF) is honoured.
 - **Rotation:** change the wallpaper on a timer, in order or shuffled.
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
-  while the library window is open.
-- **Appearance:** light, dark or system; six color themes plus a custom accent.
-- **Languages:** the menu bar item and messages are in English and Russian; the library window is in English.
+  while the library window is open. Any wallpaper can have its own shortcut that switches the desktop, the lock
+  screen or both to it and back again — also for wallpapers in locked folders.
+- **Appearance:** light, dark or system; six color themes plus a custom accent. Save your own styles, and import
+  or export them as `.livewall-style` files.
+- **Languages:** the whole app is in English and Russian; switching the language in Settings applies at once.
 - **Command line:** `lwctl` controls the running app (see below).
 
 ## Hotkeys
@@ -120,7 +126,9 @@ ln -s /Applications/LiveWall.app/Contents/MacOS/lwctl /usr/local/bin/lwctl
 pause  resume  toggle-pause  mute  unmute  next  previous  random  lock
 status  current  quit  spaces  windows  desktop  rules
 library {list,add [--folder ID],remove,rename,move}
-folder {create,rename,delete,lock}
+folder {create,rename,delete,lock,icon ID [symbol:NAME|image:FILE]}
+rotate ID [--turns 1|2|3]
+item-hotkey ID [COMBO] [--scope desktop|lock|both]
 apply [--item ID] [--target default|space] [--target-id ID]
 set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
 set-item ID [--volume N --speed N --muted BOOL --still-time N]

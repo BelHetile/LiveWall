@@ -27,6 +27,7 @@ use proto::{Request, Response, ResponseBody};
 use serde_json::{Value, json};
 
 use crate::app::{self, App};
+use crate::i18n::{text, tr, trf};
 use crate::model::ItemId;
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::actions::Actions;
@@ -104,6 +105,15 @@ impl Ui {
         }
         let look = Look::new(&appearance);
         let restyle = self.look.differs(&look);
+        let styles_changed = self.look.names() != look.names();
+        if styles_changed && let Some(settings) = self.settings.take() {
+            let tab = settings.window.isVisible().then(|| settings.tab());
+            settings.close();
+            settings.window.orderOut(None);
+            if let Some(tab) = tab {
+                later(move |ui, mtm| ui.show_settings(mtm, Some(tab)));
+            }
+        }
         if restyle {
             self.look = look;
             self.restyle(mtm);
@@ -299,7 +309,7 @@ pub fn av1_notice(titles: &[String], converting: bool) {
     } else {
         "Use Optimize for This Mac to convert it to HEVC."
     };
-    let message = format!("This Mac’s chip can’t decode AV1 video: {names}. {next}");
+    let message = format!("{} {}", trf("This Mac’s chip can’t decode AV1 video: %@.", &[text(names)]), tr(next));
     DispatchQueue::main().exec_async(move || dialogs::notice(&message));
 }
 
@@ -307,7 +317,7 @@ pub fn download_failed(reason: &str) {
     changed();
     let visible = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.window.isVisible()));
     if visible {
-        dialogs::notice(&format!("Couldn’t download the video: {reason}"));
+        dialogs::notice(&trf("Couldn’t download the video: %@", &[text(reason)]));
     }
 }
 
@@ -400,10 +410,25 @@ pub fn frame(count: isize) {
     });
 }
 
-pub fn rebind(action: proto::HotkeyAction, combo: Option<String>) -> Result<(), String> {
-    let response = app::with(|app| app.set_hotkey(action, combo)).ok_or_else(|| "LiveWall is busy".to_string())?;
+pub fn rebind(bind: settings::Bind, combo: Option<String>) -> Result<(), String> {
+    let response = match bind {
+        settings::Bind::Action(action) => app::with(|app| app.set_hotkey(action, combo)),
+        settings::Bind::Item(item) => {
+            let scope = UI.with(|ui| {
+                ui.try_borrow().ok().and_then(|ui| ui.as_ref().map(|ui| ui.inspector.scope())).unwrap_or_default()
+            });
+            app::with(|app| app.set_item_hotkey(item, combo.as_deref(), scope))
+        }
+    }
+    .ok_or_else(|| "LiveWall is busy".to_string())?;
     return match response.body {
-        ResponseBody::Ok { .. } => Ok(()),
+        ResponseBody::Ok { data } => {
+            if let Some(moved) = data.get("moved").and_then(Value::as_str) {
+                let moved = moved.to_string();
+                DispatchQueue::main().exec_async(move || dialogs::notice(&moved));
+            }
+            Ok(())
+        }
         ResponseBody::Err(body) => Err(body.message),
     };
 }
@@ -510,8 +535,9 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let window = windows::main_window(mtm, &split);
     window.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
     let toolbar = Toolbar::new(mtm, &actions);
-    toolbar.search.setStringValue(&ns(&filter.query));
+    toolbar.search.setStringValue(&widgets::raw(&filter.query));
     window.setToolbar(Some(&toolbar.bar));
+    toolbar.keep_toggle_visible();
     window.center();
 
     let selected = env("LW_UI_SELECT").and_then(|title| library.items.iter().position(|item| item.title == title));
@@ -562,6 +588,54 @@ pub fn launched() {
         {
             tracing::warn!(%error, %path, "cannot write window number");
         }
+    });
+}
+
+/// Rebuilds the library window, its toolbar, the main menu and the settings sheet in the active language,
+/// keeping the window frame, the filter, the selection and the open settings tab.
+pub fn relocalize() {
+    DispatchQueue::main().exec_async(|| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(mut old) = UI.with(|ui| ui.try_borrow_mut().ok().and_then(|mut slot| slot.take())) else {
+            return;
+        };
+        let visible = old.window.isVisible();
+        let frame = old.window.frame();
+        let tab = old.settings.as_ref().filter(|settings| settings.window.isVisible()).map(settings::Settings::tab);
+        let selected = old.selected.and_then(|index| old.library.items.get(index)).map(|item| item.id);
+        let folder = old.filter.folder.and_then(|index| old.library.folder_ids.get(index)).copied();
+        let (scope, sort, kind, query) = (old.filter.scope, old.filter.sort, old.filter.kind, old.filter.query.clone());
+        old.end_sheets();
+        if let Some(settings) = &old.settings {
+            settings.window.orderOut(None);
+        }
+        old.inspector.stop_listening();
+        old.window.orderOut(None);
+        drop(old);
+        if let Err(error) = install(mtm) {
+            tracing::warn!(%error, "cannot rebuild the library window");
+            return;
+        }
+        update(|ui, mtm| {
+            ui.window.setFrame_display(frame, false);
+            ui.filter.scope = scope;
+            ui.filter.sort = sort;
+            ui.filter.kind = kind;
+            ui.filter.query.clone_from(&query);
+            ui.toolbar.search.setStringValue(&widgets::raw(&query));
+            ui.filter.folder = folder.and_then(|id| ui.library.folder_ids.iter().position(|other| *other == id));
+            ui.selected = selected.and_then(|id| ui.library.position(id));
+            ui.inspector_item.setCollapsed(ui.selected.is_none());
+            ui.refresh(mtm);
+            if visible {
+                ui.open(mtm);
+            }
+            if let Some(tab) = tab {
+                ui.show_settings(mtm, Some(tab));
+            }
+        });
     });
 }
 

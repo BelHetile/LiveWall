@@ -1,3 +1,4 @@
+use crate::i18n::{Arg, text, tr, trf};
 use crate::model::ItemKind;
 use crate::ui::view::{Library, Target};
 use crate::ui::wall::duration;
@@ -10,10 +11,15 @@ pub const TAG_UNLOCK_FOLDER: isize = 2;
 pub const TAG_HIDE_FOLDER: isize = 3;
 pub const TAG_RENAME_FOLDER: isize = 4;
 pub const TAG_DELETE_FOLDER: isize = 5;
+pub const TAG_ICON_FOLDER: isize = 6;
 
 pub fn folder_glyph(library: &Library, folder: usize) -> Option<&'static str> {
     let lock = library.locks.get(folder)?;
     return lock.locked.then_some(if library.unlocked { "lock.open.fill" } else { "lock.fill" });
+}
+
+pub fn desktop_name(space: usize) -> String {
+    return trf("Desktop %ld", &[Arg::Int(i64::try_from(space + 1).unwrap_or(0))]);
 }
 
 pub fn privacy_title(unlocked: bool) -> &'static str {
@@ -29,8 +35,8 @@ pub enum Scope {
 impl Scope {
     pub fn title(self) -> String {
         return match self {
-            Scope::All => "All Desktops".to_string(),
-            Scope::Space(space) => format!("Desktop {}", space + 1),
+            Scope::All => tr("All Desktops"),
+            Scope::Space(space) => desktop_name(space),
         };
     }
 
@@ -147,17 +153,17 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
             })
             .collect();
         let all = mine.contains(&Target::All);
-        let short = if all { "All".to_string() } else { spaces.join(", ") };
+        let short = if all { tr("All") } else { spaces.join(", ") };
         let long = match (all, spaces.len()) {
-            (true, _) => "All Desktops".to_string(),
-            (false, 1) => format!("Desktop {short}"),
-            (false, _) => format!("Desktops {short}"),
+            (true, _) => tr("All Desktops"),
+            (false, 1) => trf("Desktop %@", &[text(short.clone())]),
+            (false, _) => trf("Desktops %@", &[text(short.clone())]),
         };
         let active = mine.iter().any(|target| showing.contains(target));
         out.push(Marker { icon: "display", text: short, tip: long, active });
     }
     if targets.contains(&Target::Lock) {
-        out.push(Marker { icon: "lock.fill", text: "Lock".to_string(), tip: lock_tip(library), active: false });
+        out.push(Marker { icon: "lock.fill", text: tr("Lock"), tip: lock_tip(library), active: false });
     }
     return out;
 }
@@ -167,5 +173,5 @@ pub fn lock_tip(library: &Library) -> String {
         .lock
         .as_ref()
         .filter(|lock| lock.time > 0.0)
-        .map_or_else(|| "Lock Screen".to_string(), |lock| format!("Lock Screen · Frame at {}", duration(lock.time)));
+        .map_or_else(|| tr("Lock Screen"), |lock| trf("Lock Screen · Frame at %@", &[text(duration(lock.time))]));
 }

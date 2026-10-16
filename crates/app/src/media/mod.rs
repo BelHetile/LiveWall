@@ -2,6 +2,7 @@ pub mod apple;
 pub mod av;
 pub mod ffmpeg;
 pub mod optimize;
+pub mod orient;
 pub mod plan;
 pub mod probe;
 pub mod thumb;

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use proto::{
-    ApplyTarget, FillMode, Geometry, HotkeyAction, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
-    TransitionKind,
+    ApplyTarget, FillMode, Geometry, HotkeyAction, HotkeyScope, MAX_LINE, Request, RequestEnvelope, Response,
+    ResponseBody, TransitionKind,
 };
 use serde_json::Value;
 
@@ -127,6 +127,20 @@ enum Command {
         id: String,
     },
     Downloads,
+    /// Turn a wallpaper clockwise by quarter turns
+    Rotate {
+        id: String,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
+        turns: u8,
+    },
+    /// Bind a shortcut that switches to a wallpaper; omit the combo to clear it
+    ItemHotkey {
+        item: String,
+        #[arg(help = "Combo such as ctrl+opt+1; omit to clear the binding")]
+        combo: Option<String>,
+        #[arg(long, value_enum, default_value_t = HotkeyScope::Desktop)]
+        scope: HotkeyScope,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +184,11 @@ enum FolderCommand {
         locked: Option<bool>,
         #[arg(long, action = clap::ArgAction::Set)]
         hidden: Option<bool>,
+    },
+    /// Set a folder icon: symbol:<SF Symbol name> or image:<file>; omit to reset
+    Icon {
+        id: String,
+        icon: Option<String>,
     },
 }
 
@@ -373,6 +392,7 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Rename { id, name } => Request::FolderRename { id, name },
             FolderCommand::Delete { id } => Request::FolderDelete { id },
             FolderCommand::Lock { id, locked, hidden } => Request::FolderLock { id, locked, hidden },
+            FolderCommand::Icon { id, icon } => Request::FolderIcon { id, icon },
         },
         Command::Apply { item, target, transition } => {
             Request::Apply { item, target: target.build()?, transition: transition.build()? }
@@ -409,6 +429,8 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::OptimizeStatus { id } => Request::OptimizeStatus { id },
         Command::OptimizeCancel { id } => Request::OptimizeCancel { id },
         Command::Downloads => Request::Downloads,
+        Command::Rotate { id, turns } => Request::Rotate { id, turns },
+        Command::ItemHotkey { item, combo, scope } => Request::ItemHotkey { item, combo, scope },
     };
     return Ok(request);
 }

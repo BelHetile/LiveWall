@@ -124,6 +124,15 @@ impl Theme {
     }
 }
 
+pub const CUSTOM: &str = "Custom";
+
+/// Names a saved style cannot take.
+pub fn reserved_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = Palette::BUILT_IN.iter().map(|(name, _)| *name).collect();
+    names.push(CUSTOM);
+    return names;
+}
+
 pub struct Look {
     pub mode: usize,
     pub theme: usize,
@@ -137,9 +146,14 @@ impl Look {
     pub fn new(appearance: &Appearance) -> Self {
         let mut themes: Vec<(String, Palette)> =
             Palette::BUILT_IN.iter().map(|(name, palette)| ((*name).to_string(), *palette)).collect();
+        for style in &appearance.styles {
+            if let (Some(accent), Some(canvas)) = (Rgb::parse(&style.accent), Rgb::parse(&style.canvas)) {
+                themes.push((style.name.clone(), Palette::custom(accent, canvas)));
+            }
+        }
         let accent = Rgb::parse(&appearance.accent).unwrap_or(Rgb::hex(0x0086_6A8C));
         let canvas = Rgb::parse(&appearance.canvas).unwrap_or(Rgb::hex(0x0094_7C8E));
-        themes.push(("Custom".to_string(), Palette::custom(accent, canvas)));
+        themes.push((CUSTOM.to_string(), Palette::custom(accent, canvas)));
         let selected = themes.iter().position(|(name, _)| name.eq_ignore_ascii_case(&appearance.theme)).unwrap_or(0);
         let mode = match appearance.mode {
             AppearanceMode::System => 0,
@@ -153,11 +167,21 @@ impl Look {
     pub fn differs(&self, other: &Self) -> bool {
         return self.mode != other.mode
             || self.theme != other.theme
+            || self.names() != other.names()
             || self.themes.iter().map(|(_, palette)| palette).ne(other.themes.iter().map(|(_, palette)| palette));
     }
 
     pub fn custom_index(&self) -> usize {
         return self.themes.len() - 1;
+    }
+
+    /// Saved styles sit between the built-in themes and the editable Custom slot.
+    pub fn is_saved(&self, index: usize) -> bool {
+        return index >= Palette::BUILT_IN.len() && index < self.custom_index();
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        return self.themes.iter().map(|(name, _)| name.as_str()).collect();
     }
 
     pub fn palette(&self) -> Palette {
@@ -177,4 +201,29 @@ fn dynamic(light: Retained<NSColor>, dark: Retained<NSColor>) -> Retained<NSColo
         return NonNull::from(&**chosen);
     });
     return unsafe { NSColor::colorWithName_dynamicProvider(None, &block) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Style;
+
+    #[test]
+    fn saved_styles_sit_between_the_built_ins_and_custom() {
+        let mut appearance = Appearance::default();
+        appearance.styles.push(Style::new("Mine", "#102030", "#405060").expect("style"));
+        appearance.styles.push(Style { name: "Broken".into(), accent: "oops".into(), canvas: "#000000".into() });
+        appearance.theme = "mine".into();
+        let look = Look::new(&appearance);
+        let names = look.names();
+        assert_eq!(names.len(), Palette::BUILT_IN.len() + 2, "unreadable styles are skipped");
+        assert_eq!(names[Palette::BUILT_IN.len()], "Mine");
+        assert_eq!(names[look.custom_index()], CUSTOM);
+        assert_eq!(look.theme, Palette::BUILT_IN.len(), "themes match case-insensitively");
+        assert!(look.is_saved(look.theme));
+        assert!(!look.is_saved(0) && !look.is_saved(look.custom_index()));
+        assert_eq!(look.palette().accent, Rgb::parse("#102030").expect("hex"));
+        assert!(look.differs(&Look::new(&Appearance::default())));
+        assert!(reserved_names().contains(&"Violet") && reserved_names().contains(&CUSTOM));
+    }
 }

@@ -4,6 +4,30 @@ All notable changes to LiveWall are listed here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- The library window, inspector, settings and dialogs are translated into Russian, and changing the language in
+  Settings rebuilds them at once (the menu bar item follows immediately too).
+- Your own styles: save the Custom colours under a name, delete them, and import or export `.livewall-style` files.
+- Folder icons: an SF Symbol or your own image (PNG, JPEG, HEIC…) per folder; `lwctl folder icon`.
+- A shortcut for any wallpaper: the first press switches the desktop, the lock screen or both to it, the next
+  press switches back; a combination another wallpaper used moves over. `lwctl item-hotkey`.
+- Rotate a video or image by 90° from the inspector, the context menu or `lwctl rotate`; videos are rewritten
+  without re-encoding.
+- Settings → Privacy → *Take Private Wallpapers off the Desktop*.
+
+### Fixed
+- Locking a private folder no longer swaps the wallpaper on the desktop; rotation waits while a private wallpaper
+  is showing on a locked desktop, so it is still there after unlocking.
+- Photos with an EXIF orientation showed on their side on the desktop; images now load upright and report their
+  real width and height.
+- Optimizing a rotated video copied the source's translation into the smaller output, shifting the picture.
+- Liquid Glass: the toolbar no longer pushes Add, Search and Settings into the overflow menu, the main button
+  keeps a readable title when the window is inactive, and long Russian labels fit.
+- macOS 15: glass-only calls (border shape, tint prominence) are skipped instead of being sent to controls that
+  don't have them.
+
 ## [2.0.0] - 2026-10-16
 
 LiveWall is now a native Rust app for Apple Silicon Macs on macOS 15 or newer. It starts with an empty library.

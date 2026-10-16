@@ -170,7 +170,13 @@ impl Weight {
     }
 }
 
+/// Interface text: looked up in the active language's table, so every literal passed here is translated.
 pub fn ns(text: &str) -> Retained<NSString> {
+    return NSString::from_str(&crate::i18n::tr(text));
+}
+
+/// User content (titles, folder names, paths, queries) that must never be translated.
+pub fn raw(text: &str) -> Retained<NSString> {
     return NSString::from_str(text);
 }
 
@@ -198,6 +204,18 @@ pub fn label(
     return field;
 }
 
+pub fn raw_label(
+    mtm: MainThreadMarker,
+    text: &str,
+    size: CGFloat,
+    weight: &Weight,
+    color: &NSColor,
+) -> Retained<NSTextField> {
+    let field = label(mtm, "", size, weight, color);
+    field.setStringValue(&raw(text));
+    return field;
+}
+
 pub fn input(mtm: MainThreadMarker, placeholder: &str, width: CGFloat) -> Retained<NSTextField> {
     let field = NSTextField::textFieldWithString(&ns(""), mtm);
     field.setPlaceholderString(Some(&ns(placeholder)));
@@ -222,7 +240,7 @@ pub fn styled(text: &str, font: &NSFont, color: &NSColor) -> Retained<NSAttribut
 }
 
 pub fn symbol(name: &str, size: CGFloat) -> Option<Retained<NSImage>> {
-    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(name), None)?;
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&raw(name), None)?;
     let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(size, unsafe { NSFontWeightMedium });
     return image.imageWithSymbolConfiguration(&config);
 }
@@ -309,9 +327,11 @@ pub fn spacer(mtm: MainThreadMarker) -> Retained<NSView> {
     return view;
 }
 
+const ROW_NAME_WIDTH: CGFloat = 92.0;
+
 pub fn row(mtm: MainThreadMarker, title: &str, control: &NSView) -> Retained<NSStackView> {
     let name = label(mtm, title, 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    name.widthAnchor().constraintEqualToConstant(72.0).setActive(true);
+    name.widthAnchor().constraintEqualToConstant(ROW_NAME_WIDTH).setActive(true);
     let gap = spacer(mtm);
     let row = stack(mtm, &[&name, &gap, control], false, 8.0);
     row.setDistribution(NSStackViewDistribution::Fill);
@@ -320,7 +340,8 @@ pub fn row(mtm: MainThreadMarker, title: &str, control: &NSView) -> Retained<NSS
 }
 
 pub fn section(mtm: MainThreadMarker, title: &str, rows: &[&NSView]) -> Retained<NSStackView> {
-    let header = label(mtm, title, 11.0, &Weight::Semibold, &NSColor::tertiaryLabelColor());
+    let header =
+        raw_label(mtm, &crate::i18n::tr(title).to_uppercase(), 11.0, &Weight::Semibold, &NSColor::tertiaryLabelColor());
     let mut views: Vec<&NSView> = vec![&header];
     views.extend_from_slice(rows);
     let section = stack(mtm, &views, true, 2.0);
@@ -371,8 +392,25 @@ pub fn card(mtm: MainThreadMarker, fill: &NSColor, radius: CGFloat) -> Retained<
     return card;
 }
 
+/// Liquid Glass (macOS 26 and newer): `NSGlassEffectView`, the glass bezel, border shapes and tint prominence.
+pub fn liquid_glass() -> bool {
+    return AnyClass::get(c"NSGlassEffectView").is_some();
+}
+
+/// Glass bezel with a capsule border where the system has it, the regular rounded bezel before macOS 26.
+pub fn glass_bezel(button: &NSButton) {
+    if !liquid_glass() {
+        button.setBezelStyle(NSBezelStyle::Push);
+        return;
+    }
+    button.setBezelStyle(NSBezelStyle::Glass);
+    if button.respondsToSelector(sel!(setBorderShape:)) {
+        button.setBorderShape(NSControlBorderShape::Capsule);
+    }
+}
+
 pub fn glass(mtm: MainThreadMarker, content: &NSView, radius: CGFloat, tint: Option<&NSColor>) -> Retained<NSView> {
-    if AnyClass::get(c"NSGlassEffectView").is_some() {
+    if liquid_glass() {
         let glass = NSGlassEffectView::new(mtm);
         glass.setCornerRadius(radius);
         glass.setTintColor(tint);
@@ -410,8 +448,7 @@ pub fn button(
     target: &AnyObject,
 ) -> Retained<NSButton> {
     let button = unsafe { NSButton::buttonWithTitle_target_action(&ns(title), Some(target), Some(action), mtm) };
-    button.setBezelStyle(NSBezelStyle::Glass);
-    button.setBorderShape(NSControlBorderShape::Capsule);
+    glass_bezel(&button);
     button.setControlSize(NSControlSize::Large);
     if let Some(image) = icon.and_then(|name| symbol(name, 13.0)) {
         button.setImage(Some(&image));
@@ -426,16 +463,20 @@ pub fn button(
 
 pub fn secondary(button: &NSButton) {
     button.setBordered(true);
-    button.setBezelStyle(NSBezelStyle::Glass);
-    button.setBorderShape(NSControlBorderShape::Capsule);
+    glass_bezel(button);
     button.setControlSize(NSControlSize::Regular);
     button.setFont(Some(&font(12.0, &Weight::Regular)));
     button.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
 }
 
+/// The accent-filled main action. The title and symbol keep the system colours: with Liquid Glass an inactive window
+/// drops the tint, and a hard-coded light-on-accent (or dark-on-accent) title turned unreadable on the clear glass.
 pub fn prominent(button: &NSButton, theme: &Theme) {
     button.setBezelColor(Some(&theme.accent_fill));
-    button.setTintProminence(NSTintProminence::Primary);
+    if liquid_glass() && button.respondsToSelector(sel!(setTintProminence:)) {
+        button.setTintProminence(NSTintProminence::Primary);
+        return;
+    }
     button.setContentTintColor(Some(&theme.accent_text));
     let current = button.font().unwrap_or_else(|| font(13.0, &Weight::Regular));
     button.setAttributedTitle(&styled(&button.title().to_string(), &current, &theme.accent_text));

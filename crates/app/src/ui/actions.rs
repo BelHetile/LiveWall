@@ -13,8 +13,8 @@ use crate::app::{self, Event, post};
 use crate::model::ItemId;
 use crate::ui::settings::{self, Change, Input};
 use crate::ui::state::{
-    KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_RESET,
-    TAG_UNLOCK_FOLDER, privacy_title,
+    KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_ICON_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER,
+    TAG_RESET, TAG_UNLOCK_FOLDER, privacy_title,
 };
 use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
@@ -68,6 +68,7 @@ define_class!(
             let (locked, hidden) = match tag {
                 TAG_RENAME_FOLDER => return dialogs::rename_folder(self.mtm(), id),
                 TAG_DELETE_FOLDER => return dialogs::delete_folder(self.mtm(), id),
+                TAG_ICON_FOLDER => return dialogs::icon_picker(self.mtm(), id),
                 TAG_LOCK_FOLDER => (Some(true), None),
                 TAG_UNLOCK_FOLDER => (Some(false), None),
                 _ => (None, Some(!lock.hidden)),
@@ -270,6 +271,56 @@ define_class!(
             configure(sender.tag(), &Input::Index(index));
         }
 
+        #[unsafe(method(hotkeyScope:))]
+        fn hotkey_scope(&self, sender: &NSPopUpButton) {
+            let scope = inspector::scope_at(sender.indexOfSelectedItem());
+            let Some((id, combo)) = UI.with_borrow(|ui| {
+                let ui = ui.as_ref()?;
+                let item = ui.selected.and_then(|index| ui.library.items.get(index))?;
+                return Some((item.id, item.hotkey.clone()));
+            }) else {
+                return;
+            };
+            if let Some(combo) = combo {
+                let text = crate::hotkey::format(&combo);
+                submit(move |app| Some(app.set_item_hotkey(id, Some(&text), scope)));
+            }
+        }
+
+        #[unsafe(method(pickIcon:))]
+        fn pick_icon(&self, sender: &NSButton) {
+            let index = sender.tag() - dialogs::PICK_TAG;
+            NSApplication::sharedApplication(self.mtm()).stopModalWithCode(dialogs::PICK_RESPONSE + index);
+        }
+
+        #[unsafe(method(removeIcon:))]
+        fn remove_icon(&self, sender: &NSMenuItem) {
+            if let Some(icon) = dialogs::picked(sender.tag()) {
+                app::with(|app| app.remove_icon(&icon));
+            }
+            NSApplication::sharedApplication(self.mtm()).stopModalWithCode(dialogs::REOPEN_RESPONSE);
+        }
+
+        #[unsafe(method(saveStyle:))]
+        fn save_style(&self, _sender: Option<&AnyObject>) {
+            dialogs::save_style(self.mtm());
+        }
+
+        #[unsafe(method(importStyle:))]
+        fn import_style(&self, _sender: Option<&AnyObject>) {
+            dialogs::import_style(self.mtm());
+        }
+
+        #[unsafe(method(exportStyle:))]
+        fn export_style(&self, _sender: Option<&AnyObject>) {
+            dialogs::export_style(self.mtm());
+        }
+
+        #[unsafe(method(deleteStyle:))]
+        fn delete_style(&self, _sender: Option<&AnyObject>) {
+            dialogs::delete_style();
+        }
+
         #[unsafe(method(customColor:))]
         fn custom_color(&self, _sender: Option<&AnyObject>) {
             later(|ui, _| {
@@ -324,6 +375,20 @@ define_class!(
         fn reset_settings(&self, _sender: Option<&AnyObject>) {
             if let Some(id) = selected_id() {
                 submit(move |app| Some(app.reset_item(id)));
+            }
+        }
+
+        #[unsafe(method(rotate:))]
+        fn rotate(&self, sender: Option<&AnyObject>) {
+            let back = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>().map(NSMenuItem::tag).or_else(|| {
+                sender.downcast_ref::<NSButton>().map(|button| button.tag())
+            })) == Some(inspector::ROTATE_LEFT);
+            if let Some(id) = selected_id() {
+                let request = Request::Rotate { id: id.to_string(), turns: if back { 3 } else { 1 } };
+                submit(move |app| {
+                    app.submit(request);
+                    return None;
+                });
             }
         }
 
@@ -448,6 +513,11 @@ impl Actions {
 
 fn validate(item: &NSMenuItem) -> bool {
     let action = item.action();
+    if action == Some(sel!(folderLock:)) && item.tag() == TAG_ICON_FOLDER {
+        return UI.with(|ui| {
+            ui.try_borrow().ok().is_some_and(|ui| ui.as_ref().is_some_and(|ui| ui.filter.folder.is_some()))
+        });
+    }
     if action == Some(sel!(moveTo:)) || action == Some(sel!(moveFolder:)) {
         return usize::try_from(item.tag()).map_or(true, |folder| !sealed(folder));
     }

@@ -6,6 +6,7 @@ use proto::{HotkeyAction, KeyCombo};
 
 use crate::app::{Event, post};
 use crate::hotkey;
+use crate::model::ItemId;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -115,6 +116,8 @@ unsafe extern "C" fn event_handler(_call: *mut c_void, event: *mut c_void, _user
         }
         if let Some(action) = hotkey::action_from_id(id.id) {
             post(Event::Hotkey(action));
+        } else if id.id >= hotkey::ITEM_BASE {
+            post(Event::ItemHotkey(id.id));
         }
         0
     };
@@ -125,6 +128,8 @@ pub struct Hotkeys {
     handler: *mut c_void,
     refs: BTreeMap<HotkeyAction, *mut c_void>,
     combos: BTreeMap<HotkeyAction, KeyCombo>,
+    items: BTreeMap<ItemId, (u32, *mut c_void, KeyCombo)>,
+    next_item: u32,
 }
 
 impl Hotkeys {
@@ -147,7 +152,14 @@ impl Hotkeys {
                 handler = ptr::null_mut();
             }
         }
-        return Self { target, handler, refs: BTreeMap::new(), combos: BTreeMap::new() };
+        return Self {
+            target,
+            handler,
+            refs: BTreeMap::new(),
+            combos: BTreeMap::new(),
+            items: BTreeMap::new(),
+            next_item: hotkey::ITEM_BASE,
+        };
     }
 
     pub fn register(&mut self, action: HotkeyAction, combo: &KeyCombo) -> Result<(), RegisterError> {
@@ -185,11 +197,60 @@ impl Hotkeys {
     pub fn is_registered(&self, action: HotkeyAction) -> bool {
         return self.refs.contains_key(&action);
     }
+
+    pub fn register_item(&mut self, item: ItemId, combo: &KeyCombo) -> Result<(), RegisterError> {
+        if let Some((_, _, current)) = self.items.get(&item)
+            && hotkey::same(current, combo)
+        {
+            return Ok(());
+        }
+        let Some(code) = hotkey::keycode(&combo.key) else {
+            return Err(RegisterError::Failed(PARAM_ERR));
+        };
+        let number = self.items.get(&item).map_or_else(
+            || {
+                let number = self.next_item;
+                self.next_item += 1;
+                number
+            },
+            |(number, _, _)| *number,
+        );
+        let id = EventHotKeyId { signature: SIGNATURE, id: number };
+        let mut reference: *mut c_void = ptr::null_mut();
+        let mask = hotkey::modifier_mask(&combo.modifiers);
+        let status = unsafe {
+            RegisterEventHotKey(code, mask, id, self.target, HOTKEY_EXCLUSIVE, ptr::from_mut(&mut reference))
+        };
+        if status != 0 {
+            return Err(RegisterError::from_status(status));
+        }
+        if let Some((_, old, _)) = self.items.insert(item, (number, reference, combo.clone())) {
+            unsafe { UnregisterEventHotKey(old) };
+        }
+        return Ok(());
+    }
+
+    pub fn unregister_item(&mut self, item: ItemId) {
+        if let Some((_, reference, _)) = self.items.remove(&item) {
+            unsafe { UnregisterEventHotKey(reference) };
+        }
+    }
+
+    pub fn item_for(&self, id: u32) -> Option<ItemId> {
+        return self.items.iter().find(|(_, (number, _, _))| *number == id).map(|(item, _)| *item);
+    }
+
+    pub fn registered_items(&self) -> Vec<ItemId> {
+        return self.items.keys().copied().collect();
+    }
 }
 
 impl Drop for Hotkeys {
     fn drop(&mut self) {
         for reference in std::mem::take(&mut self.refs).into_values() {
+            unsafe { UnregisterEventHotKey(reference) };
+        }
+        for (_, reference, _) in std::mem::take(&mut self.items).into_values() {
             unsafe { UnregisterEventHotKey(reference) };
         }
         if !self.handler.is_null() {

@@ -38,6 +38,7 @@ mod privacy;
 pub use privacy::{visible_folders, visible_items};
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
+const ICON_PX: usize = 128;
 const VOLUME_STEP: f32 = 0.1;
 const IDLE_POLL_SECONDS: f64 = 10.0;
 const UNLOCK_REASON: &str = "Unlock private wallpaper folders";
@@ -78,9 +79,11 @@ pub enum Event {
     CoverTick { item: ItemId },
     TransitionDone { key: SurfaceKey },
     Hotkey(HotkeyAction),
+    ItemHotkey(u32),
     Menu(MenuAction),
     ImportDone { report: import::Report, folder: Option<FolderId>, reply: oneshot::Sender<Response> },
     OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
+    RotateDone { item: ItemId, result: Result<(String, probe::Probe), String>, reply: oneshot::Sender<Response> },
     DownloadImported { job: String, items: Vec<Item> },
     DownloadResolved,
     DownloadFailed { reason: String },
@@ -120,6 +123,11 @@ pub struct App {
     preparing_downloads: usize,
     shown_status: Option<WallpaperStatus>,
     previewing: Option<ItemId>,
+    rotating: std::collections::HashSet<ItemId>,
+    item_hotkey_failures: std::collections::BTreeMap<ItemId, String>,
+    /// What a wallpaper shortcut switches back to: the desktop's and the lock screen's previous wallpaper.
+    hotkey_back: Option<ItemId>,
+    lock_back: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +189,10 @@ impl PauseReason {
         return self.arg.iter().cloned().map(i18n::Arg::Text).collect();
     }
 
+    pub fn localized(&self) -> String {
+        return i18n::trf(self.key, &self.args());
+    }
+
     pub fn english(&self) -> String {
         return i18n::substitute(self.key, &self.args());
     }
@@ -229,13 +241,15 @@ impl App {
         settings.launch_at_login = matches!(system::login_item_status(), LoginItemStatus::Enabled);
         let warnings = library_warning.into_iter().chain(settings_warning).collect();
 
-        let strings = Strings::new(i18n::select_language(settings.language, &system::preferred_languages()));
+        let language = i18n::select_language(settings.language, &system::preferred_languages());
+        i18n::set_active(language);
+        let strings = Strings::new(language);
         let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
         let unlocked = test_unlocked();
         let menu = Menu::install(
             mtm,
             &MenuState {
-                title: current_title(&library, unlocked),
+                title: current_title(&library, unlocked, &settings.privacy),
                 paused: false,
                 status: None,
                 muted: settings.muted,
@@ -278,8 +292,13 @@ impl App {
             preparing_downloads: 0,
             shown_status: None,
             previewing: None,
+            rotating: std::collections::HashSet::new(),
+            item_hotkey_failures: std::collections::BTreeMap::new(),
+            hotkey_back: None,
+            lock_back: None,
             paths: paths.clone(),
         };
+        app.register_item_hotkeys();
         app.sync(false);
         app.refresh_rules();
         app.sync_idle_timer();
@@ -292,12 +311,21 @@ impl App {
             Event::Quit => self.shutdown(),
             Event::Request(request, reply) => self.request(request, reply),
             Event::Hotkey(action) => self.run_hotkey(action),
+            Event::ItemHotkey(id) => {
+                if let Some(item) = self.hotkeys.item_for(id) {
+                    self.toggle_item(item);
+                }
+            }
             Event::Menu(action) => self.run_menu(action),
             Event::ImportDone { report, folder, reply } => {
                 let response = self.finish_import(&report, folder);
                 let _ = reply.send(response);
             }
             Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
+            Event::RotateDone { item, result, reply } => {
+                let response = self.finish_rotate(item, result);
+                let _ = reply.send(response);
+            }
             Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
             Event::DownloadResolved => {
                 self.preparing_downloads = self.preparing_downloads.saturating_sub(1);
@@ -420,6 +448,7 @@ impl App {
             Request::Tools => self.start_tools(reply),
             Request::ToolsInstall { tool, consent } => self.start_tools_install(&tool, consent, reply),
             Request::Download { url, consent } => self.start_download(url, consent, reply),
+            Request::Rotate { id, turns } => self.start_rotate(&id, turns, reply),
             other => {
                 let response = self.dispatch(&other);
                 let _ = reply.send(response);
@@ -569,6 +598,87 @@ impl App {
         }
         self.persist_library();
         self.reapply();
+    }
+
+    fn start_rotate(&mut self, id: &str, turns: u8, reply: oneshot::Sender<Response>) {
+        let request = Request::Rotate { id: id.to_string(), turns };
+        if let Some(denied) = self.deny(&request) {
+            let _ = reply.send(denied);
+            return;
+        }
+        let item = match parse_item(id) {
+            Ok(item) => item,
+            Err(response) => {
+                let _ = reply.send(response);
+                return;
+            }
+        };
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
+            let _ = reply.send(Response::err(ErrorCode::NotFound, NO_SUCH_ITEM));
+            return;
+        };
+        if !(1..=3).contains(&turns) {
+            let _ = reply.send(Response::err(ErrorCode::Invalid, "turns must be 1, 2 or 3"));
+            return;
+        }
+        if entry.kind == ItemKind::Gif {
+            let _ = reply.send(Response::err(ErrorCode::Media, "GIFs can’t be rotated"));
+            return;
+        }
+        if self.optimizing_item(item) || !self.rotating.insert(item) {
+            let _ = reply.send(Response::err(ErrorCode::Busy, "this wallpaper is being converted"));
+            return;
+        }
+        let (input, kind) = (PathBuf::from(&entry.path), entry.kind);
+        self.handle.spawn(async move {
+            let task = tokio::task::spawn_blocking(move || {
+                let target = crate::media::orient::rotate_file(&input, kind, turns)?;
+                let probed = probe::inspect(&target, kind);
+                return Ok((target.to_string_lossy().into_owned(), probed));
+            });
+            let result = task.await.unwrap_or_else(|_| Err("rotation failed".to_string()));
+            post(Event::RotateDone { item, result, reply });
+        });
+    }
+
+    fn finish_rotate(&mut self, item: ItemId, result: Result<(String, probe::Probe), String>) -> Response {
+        self.rotating.remove(&item);
+        let (path, probed) = match result {
+            Ok(done) => done,
+            Err(reason) => {
+                tracing::warn!(%item, %reason, "rotate failed");
+                return Response::err(ErrorCode::Media, reason);
+            }
+        };
+        let thumbs = self.library.items.iter().find(|entry| entry.id == item).map(|entry| {
+            return self.paths.dir_for(DirKind::Thumbs, self.library.visibility(entry));
+        });
+        let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) else {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
+        };
+        entry.path.clone_from(&path);
+        entry.width = probed.width;
+        entry.height = probed.height;
+        if let Some(thumbs) = thumbs {
+            remove_quietly(&thumb::file(&thumbs, item));
+        }
+        let snapshot = entry.clone();
+        self.engine.forget(item);
+        self.persist_library();
+        self.reapply();
+        self.ensure_thumbnail(&snapshot);
+        return ok(&serde_json::json!({ "item": item.to_string(), "path": path }));
+    }
+
+    fn optimizing_item(&self, item: ItemId) -> bool {
+        return matches!(
+            self.optimize.status(item),
+            Some(optimize::JobState::Queued | optimize::JobState::Running { .. })
+        );
+    }
+
+    pub fn is_rotating(&self, item: ItemId) -> bool {
+        return self.rotating.contains(&item);
     }
 
     fn start_probe(&mut self, path: String, reply: oneshot::Sender<Response>) {
@@ -736,7 +846,7 @@ impl App {
     fn showing_item(&self) -> Option<ItemId> {
         let (spaces, current) = self.desktops();
         let space = spaces.into_iter().nth(current)?;
-        return self.library.resolve(Some(&space), self.unlocked);
+        return self.library.resolve(Some(&space), self.reveals_desktop());
     }
 
     fn run_menu(&mut self, action: MenuAction) {
@@ -777,7 +887,7 @@ impl App {
     fn sync_menu(&self) {
         self.menu.update(
             &MenuState {
-                title: current_title(&self.library, self.unlocked),
+                title: current_title(&self.library, self.unlocked, &self.settings.privacy),
                 paused: self.paused,
                 status: self.pause_reason().map(|reason| reason.text(&self.strings)),
                 muted: self.settings.muted,
@@ -793,9 +903,14 @@ impl App {
             muted: self.settings.muted,
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
-            unlocked: self.unlocked,
+            reveal: self.reveals_desktop(),
             silenced: self.previewing,
         };
+    }
+
+    /// Whether the desktop shows private wallpapers right now.
+    pub fn reveals_desktop(&self) -> bool {
+        return privacy::reveals_desktop(self.unlocked, &self.settings.privacy);
     }
 
     pub fn set_previewing(&mut self, item: Option<ItemId>) {
@@ -1075,6 +1190,9 @@ impl App {
         if !rules::should_rotate(self.settings.auto_rotate, self.paused, &self.verdict, eligible) {
             return;
         }
+        if privacy::holds_private(&self.library, self.unlocked, &self.settings.privacy) {
+            return;
+        }
         let selection = if self.settings.shuffle { Selection::Random } else { Selection::Next };
         let _ = self.select(selection, None);
     }
@@ -1118,6 +1236,90 @@ impl App {
         self.persist_library();
         self.reapply();
         return ok(&serde_json::json!({ "lock": item.to_string(), "time": time }));
+    }
+
+    /// Saves a style under a free name, selects it and returns that name.
+    pub fn save_style(&mut self, style: crate::model::Style, reserved: &[&str]) -> String {
+        let name = self.settings.appearance.add_style(style, reserved);
+        self.settings.appearance.theme.clone_from(&name);
+        self.persist_settings();
+        return name;
+    }
+
+    pub fn import_styles(&mut self, text: &str, reserved: &[&str]) -> Response {
+        let styles = match crate::model::Style::import(text) {
+            Ok(styles) => styles,
+            Err(message) => return Response::err(ErrorCode::Invalid, message),
+        };
+        let names: Vec<String> =
+            styles.into_iter().map(|style| self.settings.appearance.add_style(style, reserved)).collect();
+        if let Some(last) = names.last() {
+            self.settings.appearance.theme.clone_from(last);
+        }
+        self.persist_settings();
+        return ok(&serde_json::json!({ "imported": names }));
+    }
+
+    pub fn delete_style(&mut self, name: &str, fallback: &str) -> bool {
+        let removed = self.settings.appearance.remove_style(name, fallback);
+        if removed {
+            self.persist_settings();
+        }
+        return removed;
+    }
+
+    pub fn set_folder_icon(&mut self, id: FolderId, icon: Option<&str>) -> Response {
+        if let Some(value) = icon {
+            match crate::model::Icon::parse(value) {
+                None => return Response::err(ErrorCode::Invalid, "icon must be symbol:<name> or image:<file>.png"),
+                Some(crate::model::Icon::Image(file)) if !self.paths.icons_dir().join(file).is_file() => {
+                    return Response::err(ErrorCode::NotFound, "no such icon image");
+                }
+                Some(_) => {}
+            }
+        }
+        if !self.library.set_folder_icon(id, icon.map(str::to_string)) {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_FOLDER);
+        }
+        self.persist_library();
+        return ok(&serde_json::json!({ "id": id.to_string(), "icon": icon }));
+    }
+
+    /// Turns one of the user's images into a folder icon and returns its `image:` value.
+    pub fn import_icon(&self, path: &std::path::Path) -> Result<String, String> {
+        let file = format!("{}.png", Uuid::new_v4());
+        crate::media::orient::write_png(path, &self.paths.icons_dir().join(&file), ICON_PX)?;
+        return Ok(format!("{}{file}", crate::model::IMAGE_PREFIX));
+    }
+
+    /// The user's own icons, oldest first.
+    pub fn custom_icons(&self) -> Vec<String> {
+        let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(self.paths.icons_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let value = format!("{}{name}", crate::model::IMAGE_PREFIX);
+                crate::model::Icon::parse(&value)?;
+                let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+                return Some((modified, value));
+            })
+            .collect();
+        files.sort();
+        return files.into_iter().map(|(_, value)| value).collect();
+    }
+
+    pub fn remove_icon(&mut self, icon: &str) {
+        let Some(crate::model::Icon::Image(file)) = crate::model::Icon::parse(icon) else {
+            return;
+        };
+        remove_quietly(&self.paths.icons_dir().join(file));
+        if self.library.drop_icon(icon) > 0 {
+            self.persist_library();
+        } else {
+            crate::ui::changed();
+        }
     }
 
     pub fn reset_item(&mut self, id: ItemId) -> Response {
@@ -1251,7 +1453,10 @@ impl App {
                 self.persist_settings();
                 let language = i18n::select_language(self.settings.language, &system::preferred_languages());
                 if language != previous {
+                    i18n::set_active(language);
                     self.strings = Strings::new(language);
+                    self.sync_menu();
+                    crate::ui::relocalize();
                 }
                 if self.rotation_settings() != rotation {
                     self.restart_rotation();
@@ -1282,7 +1487,12 @@ impl App {
             | Request::Tools
             | Request::ToolsInstall { .. }
             | Request::Probe { .. }
-            | Request::Download { .. } => Response::err(ErrorCode::Internal, "request is handled asynchronously"),
+            | Request::Download { .. }
+            | Request::Rotate { .. } => Response::err(ErrorCode::Internal, "request is handled asynchronously"),
+            Request::FolderIcon { id, icon } => self.set_folder_icon(parse_folder(id)?, icon.as_deref()),
+            Request::ItemHotkey { item, combo, scope } => {
+                self.set_item_hotkey(parse_item(item)?, combo.as_deref(), *scope)
+            }
         });
     }
 
@@ -1349,6 +1559,185 @@ impl App {
                 self.hotkey_failures.insert(action, register_message(error));
             }
         }
+        if recording {
+            for item in self.hotkeys.registered_items() {
+                self.hotkeys.unregister_item(item);
+            }
+        } else {
+            self.register_item_hotkeys();
+        }
+    }
+
+    fn register_item_hotkeys(&mut self) {
+        self.item_hotkey_failures.clear();
+        let bound: Vec<(ItemId, KeyCombo)> = self
+            .library
+            .items
+            .iter()
+            .filter_map(|item| item.hotkey.as_ref().map(|hotkey| (item.id, hotkey.combo.clone())))
+            .collect();
+        for (item, combo) in bound {
+            if let Err(error) = self.hotkeys.register_item(item, &combo) {
+                self.item_hotkey_failures.insert(item, register_message(error));
+            }
+        }
+    }
+
+    pub fn item_hotkey_failure(&self, item: ItemId) -> Option<&str> {
+        return self.item_hotkey_failures.get(&item).map(String::as_str);
+    }
+
+    /// Binds (or with `None` clears) the shortcut of one wallpaper. A combination another wallpaper used moves here.
+    pub fn set_item_hotkey(&mut self, item: ItemId, combo: Option<&str>, scope: proto::HotkeyScope) -> Response {
+        if !self.library.items.iter().any(|entry| entry.id == item) {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
+        }
+        let Some(text) = combo else {
+            self.hotkeys.unregister_item(item);
+            self.item_hotkey_failures.remove(&item);
+            if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) {
+                entry.hotkey = None;
+            }
+            self.persist_library();
+            return ok(&serde_json::json!({ "item": item.to_string(), "combo": null }));
+        };
+        let combo = match hotkey::parse(text) {
+            Ok(combo) => combo,
+            Err(error) => return Response::err(ErrorCode::Invalid, error.to_string()),
+        };
+        if let Err(error) = hotkey::validate_item(&combo, &self.settings.hotkeys) {
+            return Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo));
+        }
+        let previous = self
+            .library
+            .items
+            .iter()
+            .find(|entry| {
+                entry.id != item && entry.hotkey.as_ref().is_some_and(|bound| hotkey::same(&bound.combo, &combo))
+            })
+            .map(|entry| (entry.id, entry.title.clone()));
+        if let Some((other, _)) = &previous {
+            self.hotkeys.unregister_item(*other);
+        }
+        match self.hotkeys.register_item(item, &combo) {
+            Ok(()) => {}
+            Err(RegisterError::TakenByOtherApp) => {
+                if let Some((other, _)) = &previous {
+                    self.register_item_hotkeys_for(*other);
+                }
+                let message = self.strings.format(
+                    "%@ is already used by another app. Press another combination.",
+                    &[i18n::Arg::Text(hotkey::display(&combo))],
+                );
+                return Response::err(ErrorCode::Invalid, message);
+            }
+            Err(error) => return Response::err(ErrorCode::Invalid, register_message(error)),
+        }
+        if let Some((other, _)) = &previous
+            && let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == *other)
+        {
+            entry.hotkey = None;
+        }
+        self.item_hotkey_failures.remove(&item);
+        if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) {
+            entry.hotkey = Some(crate::model::ItemHotkey { combo: combo.clone(), scope });
+        }
+        self.persist_library();
+        let moved = previous.map(|(_, title)| {
+            return self.strings.format(
+                "%@ was moved from “%@”.",
+                &[i18n::Arg::Text(hotkey::display(&combo)), i18n::Arg::Text(title)],
+            );
+        });
+        return ok(&serde_json::json!({
+            "item": item.to_string(),
+            "combo": hotkey::format(&combo),
+            "display": hotkey::display(&combo),
+            "scope": scope,
+            "moved": moved,
+        }));
+    }
+
+    fn register_item_hotkeys_for(&mut self, item: ItemId) {
+        let combo = self.library.items.iter().find(|entry| entry.id == item).and_then(|entry| entry.hotkey.clone());
+        if let Some(bound) = combo
+            && let Err(error) = self.hotkeys.register_item(item, &bound.combo)
+        {
+            self.item_hotkey_failures.insert(item, register_message(error));
+        }
+    }
+
+    /// A wallpaper shortcut: the first press switches to the wallpaper, the next press switches back.
+    /// Works for wallpapers in locked folders too, without unlocking.
+    pub fn toggle_item(&mut self, item: ItemId) {
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == item && entry.playable) else {
+            return;
+        };
+        let scope = entry.hotkey.as_ref().map_or(proto::HotkeyScope::Desktop, |bound| bound.scope);
+        let back = self.showing_raw() == Some(item);
+        let plan = hotkey_toggle(
+            scope,
+            back,
+            self.library.placement.lock.map(|lock| lock.item) == Some(item),
+            self.hotkey_back,
+            self.lock_back,
+        );
+        if let Some(desktop) = plan.desktop {
+            let target = self.hotkey_target();
+            if !back {
+                self.hotkey_back = self.showing_raw().filter(|current| *current != item);
+            }
+            let next = desktop.resolve(item).filter(|id| self.library.items.iter().any(|entry| entry.id == *id));
+            if back && next.is_none() {
+                // Nothing to go back to: the wallpaper stays.
+            } else {
+                self.apply_target(next, &target);
+                self.persist_library();
+                self.reapply();
+                self.restart_rotation();
+            }
+        }
+        if let Some(lock) = plan.lock {
+            match lock {
+                LockMove::Show => {
+                    if self.library.placement.lock.map(|lock| lock.item) != Some(item) {
+                        self.lock_back = self.library.placement.lock;
+                    }
+                    let _ = self.set_lock(Some((item, None)));
+                }
+                LockMove::Restore(previous) => {
+                    let previous = previous.filter(|lock| self.library.items.iter().any(|entry| entry.id == lock.item));
+                    self.lock_back = Some(LockAssignment { item, time: 0.0 });
+                    match previous {
+                        Some(lock) => {
+                            let _ = self.set_lock(Some((lock.item, Some(lock.time))));
+                        }
+                        None => {
+                            let _ = self.set_lock(None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The wallpaper assigned to the current desktop, private or not.
+    fn showing_raw(&self) -> Option<ItemId> {
+        let (spaces, current) = self.desktops();
+        let space = spaces.into_iter().nth(current);
+        return self.library.resolve(space.as_deref(), true);
+    }
+
+    /// Where a wallpaper shortcut puts the wallpaper: the current desktop when it has its own, else every desktop.
+    fn hotkey_target(&self) -> ApplyTarget {
+        let (spaces, current) = self.desktops();
+        return spaces
+            .into_iter()
+            .nth(current)
+            .filter(|space| {
+                self.library.placement.spaces.get(space).is_some_and(|assignment| assignment.item.is_some())
+            })
+            .map_or(ApplyTarget::Default, |space| ApplyTarget::Space { space });
     }
 
     fn bind_hotkey(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) -> Response {
@@ -1368,6 +1757,18 @@ impl App {
         };
         if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
             return Err(Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo)));
+        }
+        if let Some(entry) = self
+            .library
+            .items
+            .iter()
+            .find(|entry| entry.hotkey.as_ref().is_some_and(|bound| hotkey::same(&bound.combo, &combo)))
+        {
+            let message = self.strings.format(
+                "%@ is already used by %@. Press another combination.",
+                &[i18n::Arg::Text(hotkey::display(&combo)), i18n::Arg::Text(format!("“{}”", entry.title))],
+            );
+            return Err(Response::err(ErrorCode::Invalid, message));
         }
         match self.hotkeys.register(action, &combo) {
             Ok(()) => {
@@ -1506,6 +1907,10 @@ impl App {
 
     fn remove_items(&mut self, ids: &[String]) -> usize {
         let parsed: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
+        for item in &parsed {
+            self.hotkeys.unregister_item(*item);
+            self.item_hotkey_failures.remove(item);
+        }
         let before = self.library.items.len();
         for item in self.library.items.iter().filter(|item| parsed.contains(&item.id)) {
             self.optimize.cancel(item.id);
@@ -1565,6 +1970,61 @@ impl App {
     }
 }
 
+/// Where a wallpaper shortcut sends the desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopMove {
+    Show,
+    Back(Option<ItemId>),
+}
+
+impl DesktopMove {
+    fn resolve(self, item: ItemId) -> Option<ItemId> {
+        return match self {
+            DesktopMove::Show => Some(item),
+            DesktopMove::Back(previous) => previous,
+        };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LockMove {
+    Show,
+    Restore(Option<LockAssignment>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Toggle {
+    desktop: Option<DesktopMove>,
+    lock: Option<LockMove>,
+}
+
+/// What one press of a wallpaper shortcut does. `on_desktop` and `on_lock` say whether the wallpaper is already
+/// showing there; for `Both` the desktop decides the direction, as in version 1.
+fn hotkey_toggle(
+    scope: proto::HotkeyScope,
+    on_desktop: bool,
+    on_lock: bool,
+    desktop_back: Option<ItemId>,
+    lock_back: Option<LockAssignment>,
+) -> Toggle {
+    let desktop = || if on_desktop { DesktopMove::Back(desktop_back) } else { DesktopMove::Show };
+    let restore = || LockMove::Restore(lock_back);
+    return match scope {
+        proto::HotkeyScope::Desktop => Toggle { desktop: Some(desktop()), lock: None },
+        proto::HotkeyScope::Lock => {
+            Toggle { desktop: None, lock: Some(if on_lock { restore() } else { LockMove::Show }) }
+        }
+        proto::HotkeyScope::Both => Toggle {
+            desktop: Some(desktop()),
+            lock: match (on_desktop, on_lock) {
+                (false, _) => Some(LockMove::Show),
+                (true, true) => Some(restore()),
+                (true, false) => None,
+            },
+        },
+    };
+}
+
 #[derive(Clone, Copy)]
 enum Selection {
     Next,
@@ -1601,13 +2061,23 @@ fn validation_message(strings: &Strings, error: &hotkey::ValidationError, combo:
             "%@ is already used by %@. Press another combination.",
             &[crate::i18n::Arg::Text(hotkey::display(combo)), crate::i18n::Arg::Text(strings.get(owner))],
         ),
-        _ => error.to_string(),
+        hotkey::ValidationError::Duplicate(action) => strings.format(
+            "%@ is already used by %@. Press another combination.",
+            &[
+                crate::i18n::Arg::Text(hotkey::display(combo)),
+                crate::i18n::Arg::Text(strings.get(hotkey::title(*action))),
+            ],
+        ),
+        hotkey::ValidationError::MissingModifier => strings.get("Needs at least one of ⌘ ⌃ ⌥, or an F-key"),
+        hotkey::ValidationError::UnknownKey(_) => error.to_string(),
     };
 }
 
-fn current_title(library: &Library, unlocked: bool) -> Option<String> {
-    let id = library.resolve(None, unlocked)?;
-    return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
+fn current_title(library: &Library, unlocked: bool, privacy: &crate::model::Privacy) -> Option<String> {
+    return privacy::menu_title(library, unlocked, privacy).map(|title| match title {
+        privacy::Title::Name(name) => name,
+        privacy::Title::Private => i18n::tr("Private wallpaper"),
+    });
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -1792,4 +2262,47 @@ pub fn post(event: Event) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use proto::HotkeyScope;
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn desktop_shortcut_switches_to_the_wallpaper_and_back() {
+        let previous = Uuid::new_v4();
+        let item = Uuid::new_v4();
+        let first = hotkey_toggle(HotkeyScope::Desktop, false, false, None, None);
+        assert_eq!(first, Toggle { desktop: Some(DesktopMove::Show), lock: None });
+        assert_eq!(first.desktop.map(|step| step.resolve(item)), Some(Some(item)));
+        let second = hotkey_toggle(HotkeyScope::Desktop, true, false, Some(previous), None);
+        assert_eq!(second.desktop.map(|step| step.resolve(item)), Some(Some(previous)));
+        let nowhere = hotkey_toggle(HotkeyScope::Desktop, true, false, None, None);
+        assert_eq!(nowhere.desktop.map(|step| step.resolve(item)), Some(None));
+    }
+
+    #[test]
+    fn lock_screen_shortcut_restores_the_previous_lock_screen() {
+        let previous = LockAssignment { item: Uuid::new_v4(), time: 3.0 };
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, false, false, None, None).lock, Some(LockMove::Show));
+        assert_eq!(
+            hotkey_toggle(HotkeyScope::Lock, false, true, None, Some(previous)).lock,
+            Some(LockMove::Restore(Some(previous)))
+        );
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, false, true, None, None).lock, Some(LockMove::Restore(None)));
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, true, true, None, None).desktop, None);
+    }
+
+    #[test]
+    fn both_lets_the_desktop_decide_the_direction() {
+        let toggle = hotkey_toggle(HotkeyScope::Both, false, true, None, None);
+        assert_eq!(toggle, Toggle { desktop: Some(DesktopMove::Show), lock: Some(LockMove::Show) });
+        let back = hotkey_toggle(HotkeyScope::Both, true, true, None, None);
+        assert_eq!(back, Toggle { desktop: Some(DesktopMove::Back(None)), lock: Some(LockMove::Restore(None)) });
+        let mixed = hotkey_toggle(HotkeyScope::Both, true, false, None, None);
+        assert_eq!(mixed.lock, None, "a lock screen showing something else is left alone");
+    }
 }
