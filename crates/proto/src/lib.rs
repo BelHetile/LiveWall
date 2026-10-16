@@ -26,6 +26,7 @@ pub enum ErrorCode {
     ConsentRequired,
     ToolMissing,
     Media,
+    Locked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,10 +94,11 @@ pub enum HotkeyAction {
     Random,
     VolumeUp,
     VolumeDown,
+    Lock,
 }
 
 impl HotkeyAction {
-    pub const ALL: [HotkeyAction; 7] = [
+    pub const ALL: [HotkeyAction; 8] = [
         HotkeyAction::Next,
         HotkeyAction::Previous,
         HotkeyAction::TogglePause,
@@ -104,6 +106,7 @@ impl HotkeyAction {
         HotkeyAction::Random,
         HotkeyAction::VolumeUp,
         HotkeyAction::VolumeDown,
+        HotkeyAction::Lock,
     ];
 }
 
@@ -123,9 +126,15 @@ pub struct Hotkeys {
     pub volume_up: Option<KeyCombo>,
     #[serde(default)]
     pub volume_down: Option<KeyCombo>,
+    #[serde(default = "Hotkeys::default_lock")]
+    pub lock: Option<KeyCombo>,
 }
 
 impl Hotkeys {
+    fn default_lock() -> Option<KeyCombo> {
+        return Self::default().lock;
+    }
+
     pub fn get(&self, action: HotkeyAction) -> Option<&KeyCombo> {
         return match action {
             HotkeyAction::Next => self.next.as_ref(),
@@ -135,6 +144,7 @@ impl Hotkeys {
             HotkeyAction::Random => self.random.as_ref(),
             HotkeyAction::VolumeUp => self.volume_up.as_ref(),
             HotkeyAction::VolumeDown => self.volume_down.as_ref(),
+            HotkeyAction::Lock => self.lock.as_ref(),
         };
     }
 
@@ -147,6 +157,7 @@ impl Hotkeys {
             HotkeyAction::Random => self.random = combo,
             HotkeyAction::VolumeUp => self.volume_up = combo,
             HotkeyAction::VolumeDown => self.volume_down = combo,
+            HotkeyAction::Lock => self.lock = combo,
         }
     }
 }
@@ -161,6 +172,7 @@ impl Default for Hotkeys {
             random: None,
             volume_up: None,
             volume_down: None,
+            lock: None,
         };
         hotkeys.set(HotkeyAction::Next, Some(KeyCombo::default_combo("right")));
         hotkeys.set(HotkeyAction::Previous, Some(KeyCombo::default_combo("left")));
@@ -169,6 +181,7 @@ impl Default for Hotkeys {
         hotkeys.set(HotkeyAction::Random, Some(KeyCombo::default_combo("r")));
         hotkeys.set(HotkeyAction::VolumeUp, Some(KeyCombo::default_combo("up")));
         hotkeys.set(HotkeyAction::VolumeDown, Some(KeyCombo::default_combo("down")));
+        hotkeys.set(HotkeyAction::Lock, Some(KeyCombo::default_combo("x")));
         return hotkeys;
     }
 }
@@ -445,6 +458,12 @@ pub enum Request {
     FolderDelete {
         id: String,
     },
+    FolderLock {
+        id: String,
+        locked: Option<bool>,
+        hidden: Option<bool>,
+    },
+    Lock,
     Apply {
         item: Option<String>,
         target: ApplyTarget,
@@ -621,6 +640,9 @@ mod tests {
             Request::FolderCreate { name: "Folder".into() },
             Request::FolderRename { id: "f".into(), name: "Renamed".into() },
             Request::FolderDelete { id: "f".into() },
+            Request::FolderLock { id: "f".into(), locked: Some(true), hidden: None },
+            Request::FolderLock { id: "f".into(), locked: None, hidden: Some(true) },
+            Request::Lock,
             Request::Apply { item: Some("a".into()), target: ApplyTarget::Default, transition: None },
             Request::Apply {
                 item: Some("a".into()),
@@ -757,6 +779,24 @@ mod tests {
         assert!(hotkeys.pause.is_some());
         assert!(hotkeys.next.is_none());
         assert!(hotkeys.random.is_none());
+    }
+
+    #[test]
+    fn lock_hotkey_defaults_when_missing_and_honors_explicit_null() {
+        let missing: Hotkeys = serde_json::from_str("{}").expect("missing");
+        let combo = missing.lock.expect("default lock combo");
+        assert_eq!(combo.key, "x");
+        assert_eq!(combo.modifiers, vec![Modifier::Control, Modifier::Option, Modifier::Command]);
+        let cleared: Hotkeys = serde_json::from_str(r#"{"lock":null}"#).expect("null");
+        assert!(cleared.lock.is_none());
+        assert_eq!(Hotkeys::default().get(HotkeyAction::Lock), Hotkeys::default_lock().as_ref());
+    }
+
+    #[test]
+    fn locked_error_code_uses_screaming_snake_wire_name() {
+        let encoded = encode(&Response::err(ErrorCode::Locked, "locked"));
+        let text = String::from_utf8(encoded).expect("utf8");
+        assert!(text.contains("\"code\":\"LOCKED\""), "{text}");
     }
 
     #[test]

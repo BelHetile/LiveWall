@@ -52,6 +52,7 @@ enum Command {
     Windows,
     Desktop,
     Rules,
+    Lock,
     #[command(subcommand)]
     Library(LibraryCommand),
     #[command(subcommand)]
@@ -152,9 +153,23 @@ enum LibraryCommand {
 
 #[derive(Subcommand)]
 enum FolderCommand {
-    Create { name: String },
-    Rename { id: String, name: String },
-    Delete { id: String },
+    Create {
+        name: String,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Delete {
+        id: String,
+    },
+    Lock {
+        id: String,
+        #[arg(long, action = clap::ArgAction::Set)]
+        locked: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        hidden: Option<bool>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -195,6 +210,7 @@ enum HotkeyActionArg {
     Random,
     VolumeUp,
     VolumeDown,
+    Lock,
 }
 
 #[derive(clap::Args, Clone)]
@@ -362,6 +378,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Windows => Request::Windows,
         Command::Desktop => Request::Desktop,
         Command::Rules => Request::Rules,
+        Command::Lock => Request::Lock,
         Command::Library(command) => match command {
             LibraryCommand::List => Request::LibraryList,
             LibraryCommand::Add { paths } => Request::LibraryAdd { paths },
@@ -373,6 +390,7 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Create { name } => Request::FolderCreate { name },
             FolderCommand::Rename { id, name } => Request::FolderRename { id, name },
             FolderCommand::Delete { id } => Request::FolderDelete { id },
+            FolderCommand::Lock { id, locked, hidden } => Request::FolderLock { id, locked, hidden },
         },
         Command::Apply { item, target, target_id, transition } => {
             let target = match target {
@@ -582,6 +600,7 @@ impl From<HotkeyActionArg> for HotkeyAction {
             HotkeyActionArg::Random => Self::Random,
             HotkeyActionArg::VolumeUp => Self::VolumeUp,
             HotkeyActionArg::VolumeDown => Self::VolumeDown,
+            HotkeyActionArg::Lock => Self::Lock,
         };
     }
 }

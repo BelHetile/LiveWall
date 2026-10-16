@@ -12,6 +12,7 @@ mod menu;
 mod model;
 mod paths;
 mod platform;
+mod privacy;
 mod process;
 mod rules;
 mod store;

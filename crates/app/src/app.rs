@@ -8,6 +8,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::NSTimer;
+use objc2_local_authentication::LAContext;
 use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
 use serde::Serialize;
 use tokio::sync::oneshot;
@@ -21,13 +22,14 @@ use crate::import;
 use crate::media::optimize;
 use crate::media::probe;
 use crate::menu::{Menu, MenuAction, MenuState};
-use crate::model::{Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
+use crate::model::{FolderId, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
 use crate::paths::Paths;
-use crate::platform::detect;
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
 use crate::platform::spaces::{self, SurfaceKey};
 use crate::platform::system::{self, LoginItemStatus};
+use crate::platform::{auth, detect};
+use crate::privacy;
 use crate::process;
 use crate::rules;
 use crate::store;
@@ -35,6 +37,8 @@ use crate::tools;
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 const VOLUME_STEP: f32 = 0.1;
+const IDLE_POLL_SECONDS: f64 = 10.0;
+const UNLOCK_REASON: &str = "Unlock private wallpaper folders";
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -53,6 +57,8 @@ pub enum Event {
     OcclusionSettled,
     WakeCheck { item: ItemId },
     GeometryTick,
+    IdleTick,
+    UnlockResult { success: bool, epoch: u64 },
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
     StillReady { item: ItemId, path: PathBuf },
@@ -85,6 +91,10 @@ pub struct App {
     snapshot: rules::Snapshot,
     verdict: rules::Verdict,
     geometry_timer: Option<Retained<NSTimer>>,
+    unlocked: bool,
+    unlock_pending: Option<Retained<LAContext>>,
+    unlock_epoch: u64,
+    idle_timer: Option<Retained<NSTimer>>,
     engine: Engine,
     nap: system::AppNap,
     observers: Observers,
@@ -108,10 +118,11 @@ impl App {
         let strings = Strings::new(i18n::select_language(settings.language, &system::preferred_languages()));
         let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
         let muted = settings.muted;
+        let unlocked = cfg!(debug_assertions) && std::env::var_os("LIVEWALL_TEST_UNLOCKED").is_some();
         let menu = Menu::install(
             mtm,
             &MenuState {
-                title: current_title(&library),
+                title: current_title(&library, unlocked),
                 paused: false,
                 muted,
                 launch_at_login: settings.launch_at_login,
@@ -133,6 +144,10 @@ impl App {
             snapshot: rules::Snapshot::default(),
             verdict: rules::Verdict::default(),
             geometry_timer: None,
+            unlocked,
+            unlock_pending: None,
+            unlock_epoch: 0,
+            idle_timer: None,
             library,
             settings,
             engine: Engine::new(mtm, paths),
@@ -149,6 +164,7 @@ impl App {
         };
         app.sync(false);
         app.refresh_rules();
+        app.sync_idle_timer();
         return (app, warnings);
     }
 
@@ -185,6 +201,8 @@ impl App {
                 let response = self.finish_import(&report);
                 let _ = reply.send(response);
             }
+            Event::IdleTick => self.idle_tick(),
+            Event::UnlockResult { success, epoch } => self.finish_unlock(success, epoch),
             Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
             Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
             Event::Reply(request, response) => crate::ui::reply(&request, &response),
@@ -195,21 +213,39 @@ impl App {
 
     fn handle_signal(&mut self, event: &Event) {
         match *event {
-            Event::DisplayChanged => self.sync(false),
+            Event::DisplayChanged => {
+                if self.settings.privacy.lock_on_display && system::online_display_count() > 1 {
+                    self.lock();
+                }
+                self.sync(false);
+            }
             Event::SpacesChanged => self.sync(true),
             Event::AudioChanged => {
                 self.observers.rebind_audio();
                 self.observers.refresh_audio();
             }
             Event::AudioSettled => self.observers.settle_audio(),
-            Event::DisplayAsleep(asleep) => self.display_asleep = asleep,
+            Event::DisplayAsleep(asleep) => {
+                self.display_asleep = asleep;
+                if asleep && self.settings.privacy.lock_on_screen_lock {
+                    self.lock();
+                }
+            }
             Event::LowPowerChanged => self.low_power = system::low_power_mode(),
             Event::ThermalChanged => self.thermal_hot = system::thermal_hot(),
-            Event::ScreensaverChanged(active) => self.screensaver = active,
+            Event::ScreensaverChanged(active) => {
+                self.screensaver = active;
+                if active && self.settings.privacy.lock_on_screen_lock {
+                    self.lock();
+                }
+            }
             Event::OcclusionChanged if !self.engine.on_occlusion_changed() => return,
             Event::OcclusionSettled if !self.engine.on_occlusion_settled() => return,
             Event::ScreenLocked => {
                 self.screen_locked = true;
+                if self.settings.privacy.lock_on_screen_lock {
+                    self.lock();
+                }
                 self.engine.on_lock();
             }
             Event::ScreenUnlocked => {
@@ -431,7 +467,7 @@ impl App {
             item,
             kind: entry.kind,
             input: PathBuf::from(&entry.path),
-            thumbs_dir: self.paths.thumbs_dir(),
+            thumbs_dir: self.paths.thumbs_for(self.library.is_private(entry)),
             ffmpeg,
             fps_limit: self.settings.optimize_fps_limit,
             max_pixels: self.max_display_px(),
@@ -458,6 +494,9 @@ impl App {
         let Ok(uuid) = id.parse::<Uuid>() else {
             return Response::err(ErrorCode::Invalid, "invalid item id");
         };
+        if !self.unlocked && self.library.is_private_id(uuid) {
+            return Response::err(ErrorCode::NotFound, "no optimize job for this item");
+        }
         return match self.optimize.status(uuid) {
             Some(state) => ok(&state.report(uuid)),
             None => Response::err(ErrorCode::NotFound, "no optimize job for this item"),
@@ -500,6 +539,7 @@ impl App {
             }
             HotkeyAction::VolumeUp => self.nudge_volume(VOLUME_STEP),
             HotkeyAction::VolumeDown => self.nudge_volume(-VOLUME_STEP),
+            HotkeyAction::Lock => self.lock(),
         }
     }
 
@@ -514,7 +554,7 @@ impl App {
     fn showing_item(&self) -> Option<ItemId> {
         let (spaces, current) = self.desktops();
         let space = spaces.into_iter().nth(current)?;
-        return resolve_item(&self.library, &SurfaceKey::new(space));
+        return resolve_item(&self.library, &SurfaceKey::new(space), self.unlocked);
     }
 
     fn run_menu(&mut self, action: MenuAction) {
@@ -553,7 +593,7 @@ impl App {
     fn sync_menu(&self) {
         self.menu.update(
             &MenuState {
-                title: current_title(&self.library),
+                title: current_title(&self.library, self.unlocked),
                 paused: self.paused,
                 muted: self.muted,
                 launch_at_login: self.settings.launch_at_login,
@@ -568,6 +608,7 @@ impl App {
             muted: self.muted,
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
+            unlocked: self.unlocked,
         };
     }
 
@@ -703,7 +744,7 @@ impl App {
 
     pub fn ensure_thumbnail(&self, item: &Item) {
         let (id, kind, path, duration) = (item.id, item.kind, item.path.clone(), item.duration);
-        let thumbs = self.paths.thumbs_dir();
+        let thumbs = self.paths.thumbs_for(self.library.is_private(item));
         self.handle.spawn(async move {
             if crate::media::thumb::ensure(id, kind, path, duration, thumbs).await.is_some() {
                 crate::ui::changed();
@@ -722,7 +763,7 @@ impl App {
     }
 
     fn current_item(&self) -> Option<ItemId> {
-        return self.library.placement.default.item;
+        return self.library.resolve(None, self.unlocked);
     }
 
     fn state(&self) -> StateReport {
@@ -774,6 +815,179 @@ impl App {
         return ok(&serde_json::json!({ "applied": item.map(|id| id.to_string()) }));
     }
 
+    pub fn is_unlocked(&self) -> bool {
+        return self.unlocked;
+    }
+
+    pub fn lock(&mut self) {
+        self.unlock_epoch += 1;
+        if let Some(context) = self.unlock_pending.take() {
+            auth::cancel(&context);
+        }
+        if !self.unlocked {
+            return;
+        }
+        self.unlocked = false;
+        let playback = self.playback();
+        self.engine.hide_private(&self.library, &playback);
+        self.sync_idle_timer();
+        self.refresh_power();
+        self.sync_menu();
+        crate::ui::changed();
+    }
+
+    pub fn request_unlock(&mut self) {
+        if self.unlocked || self.unlock_pending.is_some() {
+            return;
+        }
+        self.unlock_epoch += 1;
+        let reason = self.strings.get(UNLOCK_REASON);
+        self.unlock_pending = Some(auth::evaluate(&reason, self.unlock_epoch));
+    }
+
+    fn finish_unlock(&mut self, success: bool, epoch: u64) {
+        if epoch != self.unlock_epoch || self.unlock_pending.take().is_none() || !success {
+            return;
+        }
+        self.unlocked = true;
+        self.reapply();
+        self.sync_idle_timer();
+        self.sync_menu();
+        crate::ui::changed();
+    }
+
+    fn sync_idle_timer(&mut self) {
+        let needed = self.unlocked && self.settings.privacy.lock_on_idle;
+        match (needed, self.idle_timer.is_some()) {
+            (true, false) => {
+                let block = block2::RcBlock::new(|_timer: NonNull<NSTimer>| {
+                    post(Event::IdleTick);
+                });
+                let timer =
+                    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(IDLE_POLL_SECONDS, true, &block) };
+                crate::platform::apply_timer_tolerance(&timer, IDLE_POLL_SECONDS);
+                self.idle_timer = Some(timer);
+            }
+            (false, true) => {
+                if let Some(timer) = self.idle_timer.take() {
+                    timer.invalidate();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn idle_tick(&mut self) {
+        let limit = f64::from(self.settings.privacy.idle_minutes) * 60.0;
+        if self.unlocked && self.settings.privacy.lock_on_idle && system::idle_seconds() >= limit {
+            self.lock();
+        }
+    }
+
+    fn deny(&self, request: &Request) -> Option<Response> {
+        if self.unlocked || !privacy::denies(&self.library, request) {
+            return None;
+        }
+        return Some(Response::err(ErrorCode::Locked, "locked"));
+    }
+
+    fn library_view(&self) -> LibraryView<'_> {
+        return LibraryView {
+            items: privacy::visible_items(&self.library, self.unlocked),
+            folders: privacy::visible_folders(&self.library, self.unlocked),
+        };
+    }
+
+    fn optimizing(&self, item: ItemId) -> bool {
+        return matches!(
+            self.optimize.status(item),
+            Some(optimize::JobState::Queued | optimize::JobState::Running { .. })
+        );
+    }
+
+    fn refresh_visibility(&mut self) {
+        if self.unlocked {
+            self.reapply();
+            return;
+        }
+        let playback = self.playback();
+        self.engine.hide_private(&self.library, &playback);
+        self.engine.refresh_desktop(&self.library, false);
+        self.refresh_power();
+    }
+
+    fn relocate(&mut self, items: &[ItemId], to_private: bool) -> Result<(), Response> {
+        if items.iter().any(|item| self.optimizing(*item)) {
+            return Err(Response::err(ErrorCode::Busy, "optimize is in progress for this item"));
+        }
+        for item in items {
+            self.engine.forget(*item);
+        }
+        let lock = self.library.placement.lock;
+        if let Err(error) = privacy::relocate_many(&self.paths, &mut self.library.items, items, to_private, lock) {
+            self.reapply();
+            return Err(Response::err(ErrorCode::Internal, format!("cannot move media: {error}")));
+        }
+        return Ok(());
+    }
+
+    fn move_to_folder(&mut self, ids: &[ItemId], folder: Option<FolderId>) -> Response {
+        let to_private = self.library.is_locked_folder(folder);
+        let changing: Vec<ItemId> = self
+            .library
+            .items
+            .iter()
+            .filter(|item| ids.contains(&item.id) && self.library.is_private(item) != to_private)
+            .map(|item| item.id)
+            .collect();
+        if let Err(response) = self.relocate(&changing, to_private) {
+            return response;
+        }
+        let moved = self.library.move_items(ids, folder);
+        self.persist_library();
+        self.refresh_visibility();
+        return ok(&serde_json::json!({ "moved": moved }));
+    }
+
+    fn delete_folder(&mut self, id: FolderId) -> Response {
+        if !self.library.has_folder(id) {
+            return Response::err(ErrorCode::NotFound, "no such folder");
+        }
+        if self.library.is_locked_folder(Some(id))
+            && let Err(response) = self.relocate(&self.library.folder_items(id), false)
+        {
+            return response;
+        }
+        let Some(moved) = self.library.delete_folder(id) else {
+            return Response::err(ErrorCode::NotFound, "no such folder");
+        };
+        self.persist_library();
+        self.refresh_visibility();
+        return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
+    }
+
+    pub fn set_folder_lock(&mut self, id: FolderId, locked: Option<bool>, hidden: Option<bool>) -> Response {
+        let Some(folder) = self.library.folders.iter().find(|folder| folder.id == id) else {
+            return Response::err(ErrorCode::NotFound, "no such folder");
+        };
+        let (was_locked, was_hidden) = (folder.locked, folder.hidden);
+        let unlocking = locked == Some(false);
+        let restyling = hidden.is_some_and(|hidden| hidden != was_hidden);
+        if was_locked && !self.unlocked && (unlocking || restyling) {
+            return Response::err(ErrorCode::Locked, "locked");
+        }
+        if let Some(to_private) = locked.filter(|locked| *locked != was_locked) {
+            let members = self.library.folder_items(id);
+            if let Err(response) = self.relocate(&members, to_private) {
+                return response;
+            }
+        }
+        self.library.set_folder_flags(id, locked, hidden);
+        self.persist_library();
+        self.refresh_visibility();
+        return ok(&serde_json::json!({ "id": id.to_string(), "locked": locked, "hidden": hidden }));
+    }
+
     pub fn create_folder(&mut self, name: String, item: Option<ItemId>) -> Uuid {
         let id = self.library.create_folder(name);
         if let Some(item) = item {
@@ -817,6 +1031,9 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn dispatch(&mut self, request: &Request) -> Response {
+        if let Some(denied) = self.deny(request) {
+            return denied;
+        }
         match request {
             Request::Status => {
                 return ok(&StatusReport {
@@ -829,6 +1046,7 @@ impl App {
                     max_pixels: self.max_display_px(),
                     app_nap_token: self.nap.active(),
                     paused_by: self.paused_by(),
+                    locked: !self.unlocked,
                 });
             }
             Request::Pause => return self.set_paused(true),
@@ -837,9 +1055,7 @@ impl App {
             Request::Mute => return self.set_muted(true),
             Request::Unmute => return self.set_muted(false),
             Request::Current => return ok(&self.current_report()),
-            Request::LibraryList => {
-                return ok(&LibraryView { items: &self.library.items, folders: &self.library.folders });
-            }
+            Request::LibraryList => return ok(&self.library_view()),
             Request::LibraryRemove { ids } => {
                 let removed = self.remove_items(ids);
                 self.persist_library();
@@ -866,9 +1082,7 @@ impl App {
                     None => None,
                 };
                 let ids: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
-                let moved = self.library.move_items(&ids, folder);
-                self.persist_library();
-                return ok(&serde_json::json!({ "moved": moved }));
+                return self.move_to_folder(&ids, folder);
             }
             Request::FolderCreate { name } => {
                 let id = self.create_folder(name.clone(), None);
@@ -888,11 +1102,17 @@ impl App {
                 let Ok(id) = id.parse::<Uuid>() else {
                     return Response::err(ErrorCode::Invalid, "invalid folder id");
                 };
-                let Some(moved) = self.library.delete_folder(id) else {
-                    return Response::err(ErrorCode::NotFound, "no such folder");
+                return self.delete_folder(id);
+            }
+            Request::FolderLock { id, locked, hidden } => {
+                let Ok(id) = id.parse::<Uuid>() else {
+                    return Response::err(ErrorCode::Invalid, "invalid folder id");
                 };
-                self.persist_library();
-                return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
+                return self.set_folder_lock(id, *locked, *hidden);
+            }
+            Request::Lock => {
+                self.lock();
+                return ok(&serde_json::json!({ "locked": true }));
             }
             Request::Apply { item, target, transition } => {
                 return self.apply(item.as_deref(), target, false, transition.as_ref());
@@ -949,6 +1169,7 @@ impl App {
                     self.apply_dock();
                 }
                 self.refresh_rules();
+                self.sync_idle_timer();
                 return ok(&self.settings);
             }
             Request::HotkeysGet => return ok(&self.hotkeys_report()),
@@ -1149,21 +1370,32 @@ impl App {
             assignment.item = clear_if_removed(assignment.item, &parsed);
         }
         self.library.placement.lock = self.library.placement.lock.filter(|lock| !parsed.contains(&lock.item));
+        self.library.forget_safe(&parsed);
         return before - self.library.items.len();
     }
 
     fn apply_target(&mut self, item: Option<ItemId>, target: &ApplyTarget) {
         match target {
-            ApplyTarget::Default => self.library.placement.default.item = item,
+            ApplyTarget::Default => {
+                self.library.placement.default.item = item;
+                self.library.remember(None, item);
+            }
             ApplyTarget::Space { space } => {
                 let assignment = self.library.placement.spaces.entry(space.clone()).or_default();
                 assignment.item = item;
+                self.library.remember(Some(space), item);
             }
         }
     }
 
     fn select(&mut self, selection: Selection, transition: Option<&proto::Transition>) -> Response {
-        let ids: Vec<ItemId> = self.library.items.iter().map(|item| item.id).collect();
+        let ids: Vec<ItemId> = self
+            .library
+            .items
+            .iter()
+            .filter(|item| self.unlocked || !self.library.is_private(item))
+            .map(|item| item.id)
+            .collect();
         if ids.is_empty() {
             return Response::err(ErrorCode::NotFound, "library is empty");
         }
@@ -1174,6 +1406,7 @@ impl App {
             Selection::Random => random_index(ids.len(), current),
         };
         self.library.placement.default.item = Some(ids[index]);
+        self.library.remember(None, Some(ids[index]));
         self.persist_library();
         self.reapply_with(transition);
         return ok(&serde_json::json!({ "item": ids[index].to_string() }));
@@ -1220,8 +1453,8 @@ fn validation_message(strings: &Strings, error: &hotkey::ValidationError, combo:
     };
 }
 
-fn current_title(library: &Library) -> Option<String> {
-    let id = library.placement.default.item?;
+fn current_title(library: &Library, unlocked: bool) -> Option<String> {
+    let id = library.resolve(None, unlocked)?;
     return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
 }
 
@@ -1238,6 +1471,7 @@ fn random_index(len: usize, current: Option<usize>) -> usize {
 }
 
 #[derive(Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct StatusReport {
     version: &'static str,
     paused: bool,
@@ -1248,6 +1482,7 @@ struct StatusReport {
     max_pixels: u32,
     app_nap_token: bool,
     paused_by: Vec<String>,
+    locked: bool,
 }
 
 #[derive(Serialize)]
@@ -1295,8 +1530,8 @@ struct CurrentReport {
 
 #[derive(Serialize)]
 struct LibraryView<'a> {
-    items: &'a [Item],
-    folders: &'a [crate::model::Folder],
+    items: Vec<&'a Item>,
+    folders: Vec<&'a crate::model::Folder>,
 }
 
 fn ok<T: Serialize>(value: &T) -> Response {

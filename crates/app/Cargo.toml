@@ -164,6 +164,9 @@ objc2-core-graphics = { workspace = true, features = [
   "CGWindowLevel",
   "CGGeometry",
   "CGDirectDisplay",
+  "CGError",
+  "CGEventSource",
+  "CGEventTypes",
   "CGImage",
   "CGContext",
   "CGColorSpace",
@@ -251,6 +254,11 @@ objc2-video-toolbox = { workspace = true, features = [
   "VTDecompressionSession",
   "VTCompressionProperties",
   "VTUtilities",
+] }
+objc2-local-authentication = { workspace = true, features = [
+  "std",
+  "LAContext",
+  "block2",
 ] }
 plist.workspace = true
 block2.workspace = true

@@ -282,6 +282,7 @@ pub fn action_title(action: HotkeyAction) -> &'static str {
         HotkeyAction::TogglePause => "Play / Pause",
         HotkeyAction::ToggleMute => "Mute",
         HotkeyAction::Random => "Random Wallpaper",
+        HotkeyAction::Lock => "Lock Private Folders",
     };
 }
 

@@ -62,6 +62,7 @@ objc2-image-io = { version = "0.3.2", default-features = false }
 objc2-color-sync = { version = "0.3.2", default-features = false }
 objc2-service-management = { version = "0.3.2", default-features = false }
 objc2-video-toolbox = { version = "0.3.2", default-features = false }
+objc2-local-authentication = { version = "0.3.2", default-features = false }
 semver = "1"
 plist = "1"
 block2 = "0.6"

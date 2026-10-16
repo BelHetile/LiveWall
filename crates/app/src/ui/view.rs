@@ -129,7 +129,7 @@ pub struct Thumbs {
 
 impl Thumbs {
     fn image(&mut self, app: &App, item: &model::Item) -> Option<Retained<NSImage>> {
-        let file = thumb::file(&app.paths().thumbs_dir(), item.id);
+        let file = thumb::file(&app.paths().thumbs_for(app.library().is_private(item)), item.id);
         let Ok(stamp) = fs::metadata(&file).and_then(|meta| meta.modified()) else {
             if self.requested.insert(item.id) {
                 app.ensure_thumbnail(item);
@@ -148,7 +148,7 @@ impl Thumbs {
 
     fn still(&mut self, app: &App, item: &model::Item, time: f32) -> Option<Retained<NSImage>> {
         let key = still::cache_key(&item.path, still::mtime_secs(&item.path), time);
-        let file = still::cache_file(&app.paths().stills_dir(), &key);
+        let file = still::cache_file(&app.paths().stills_for(app.library().is_private(item)), &key);
         if let Some(image) = self.stills.get(&file) {
             return Some(image.clone());
         }

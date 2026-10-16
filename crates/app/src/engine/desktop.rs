@@ -290,27 +290,44 @@ impl Desktop {
         self.applied.clear();
     }
 
+    pub fn revert(&mut self, mtm: MainThreadMarker, spaces: &[String]) {
+        for space in spaces {
+            if self.applied.remove(space).is_none() {
+                continue;
+            }
+            self.pending.remove(space);
+            self.deferred.remove(space);
+            if let Some(original) = self.recorded.get(space) {
+                self.send_original(mtm, original);
+            }
+        }
+    }
+
     fn send_originals(&self, mtm: MainThreadMarker) {
         let originals = restore_list(&self.recorded);
         for original in &originals {
-            match self.mode {
-                Mode::PerSpace => {
-                    let Some(encoded) = &original.config else { continue };
-                    let Some(config) = ffi::decode(encoded) else { continue };
-                    if ffi::is_empty(&config) {
-                        tracing::warn!(space = %original.space, "skipping restore of an empty desktop picture config");
-                        continue;
-                    }
-                    self.api.set(original.display_id, &config, &original.space);
+            self.send_original(mtm, original);
+        }
+        self.await_restore(mtm, &originals);
+    }
+
+    fn send_original(&self, mtm: MainThreadMarker, original: &Original) {
+        match self.mode {
+            Mode::PerSpace => {
+                let Some(encoded) = &original.config else { return };
+                let Some(config) = ffi::decode(encoded) else { return };
+                if ffi::is_empty(&config) {
+                    tracing::warn!(space = %original.space, "skipping restore of an empty desktop picture config");
+                    return;
                 }
-                Mode::Screen => {
-                    if let Some(url) = &original.url {
-                        let _ = ffi::screen_set(mtm, original.display_id, url);
-                    }
+                self.api.set(original.display_id, &config, &original.space);
+            }
+            Mode::Screen => {
+                if let Some(url) = &original.url {
+                    let _ = ffi::screen_set(mtm, original.display_id, url);
                 }
             }
         }
-        self.await_restore(mtm, &originals);
     }
 
     fn await_restore(&self, mtm: MainThreadMarker, originals: &[Original]) {

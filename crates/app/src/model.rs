@@ -79,6 +79,10 @@ pub struct Folder {
     pub name: String,
     #[serde(default)]
     pub icon: Option<String>,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl Item {
@@ -110,6 +114,10 @@ pub struct Placement {
     pub spaces: BTreeMap<String, Assignment>,
     #[serde(default)]
     pub lock: Option<LockAssignment>,
+    #[serde(default)]
+    pub safe_default: Option<ItemId>,
+    #[serde(default)]
+    pub safe: BTreeMap<String, ItemId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,8 +138,87 @@ impl Default for Library {
 impl Library {
     pub fn create_folder(&mut self, name: String) -> FolderId {
         let id = Uuid::new_v4();
-        self.folders.push(Folder { id, name, icon: None });
+        self.folders.push(Folder { id, name, icon: None, locked: false, hidden: false });
         return id;
+    }
+
+    pub fn is_locked_folder(&self, folder: Option<FolderId>) -> bool {
+        return folder.is_some_and(|id| self.folders.iter().any(|candidate| candidate.id == id && candidate.locked));
+    }
+
+    pub fn is_private(&self, item: &Item) -> bool {
+        return self.is_locked_folder(item.folder);
+    }
+
+    pub fn is_private_id(&self, id: ItemId) -> bool {
+        return self.items.iter().find(|item| item.id == id).is_some_and(|item| self.is_private(item));
+    }
+
+    pub fn folder_items(&self, folder: FolderId) -> Vec<ItemId> {
+        return self.items.iter().filter(|item| item.folder == Some(folder)).map(|item| item.id).collect();
+    }
+
+    pub fn set_folder_flags(&mut self, id: FolderId, locked: Option<bool>, hidden: Option<bool>) -> bool {
+        let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
+            return false;
+        };
+        if let Some(locked) = locked {
+            folder.locked = locked;
+        }
+        if let Some(hidden) = hidden {
+            folder.hidden = hidden;
+        }
+        return true;
+    }
+
+    pub fn replacement(&self, space: Option<&str>) -> Option<ItemId> {
+        let remembered = match space {
+            Some(space) => self.placement.safe.get(space).copied(),
+            None => self.placement.safe_default,
+        };
+        let usable = |id: ItemId| {
+            return self
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .is_some_and(|item| item.playable && !self.is_private(item));
+        };
+        return remembered
+            .filter(|id| usable(*id))
+            .or_else(|| self.items.iter().find(|item| item.playable && !self.is_private(item)).map(|item| item.id));
+    }
+
+    pub fn resolve(&self, space: Option<&str>, reveal: bool) -> Option<ItemId> {
+        let scoped = space.and_then(|space| {
+            let item = self.placement.spaces.get(space)?.item?;
+            return Some((item, Some(space)));
+        });
+        let (assigned, key) = scoped.or_else(|| self.placement.default.item.map(|item| (item, None)))?;
+        if reveal || !self.is_private_id(assigned) {
+            return Some(assigned);
+        }
+        return self.replacement(key);
+    }
+
+    pub fn blanked(&self, space: &str) -> bool {
+        return self.resolve(Some(space), false).is_none() && self.resolve(Some(space), true).is_some();
+    }
+
+    pub fn remember(&mut self, space: Option<&str>, item: Option<ItemId>) {
+        let Some(item) = item.filter(|id| !self.is_private_id(*id)) else {
+            return;
+        };
+        match space {
+            Some(space) => {
+                self.placement.safe.insert(space.to_string(), item);
+            }
+            None => self.placement.safe_default = Some(item),
+        }
+    }
+
+    pub fn forget_safe(&mut self, removed: &[ItemId]) {
+        self.placement.safe_default = self.placement.safe_default.filter(|id| !removed.contains(id));
+        self.placement.safe.retain(|_, id| !removed.contains(id));
     }
 
     pub fn rename_item(&mut self, id: ItemId, title: String) -> bool {
@@ -216,6 +303,22 @@ impl Default for Tools {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Privacy {
+    pub lock_on_screen_lock: bool,
+    pub lock_on_display: bool,
+    pub lock_on_idle: bool,
+    pub idle_minutes: u32,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        return Self { lock_on_screen_lock: true, lock_on_display: true, lock_on_idle: false, idle_minutes: 15 };
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum AppearanceMode {
@@ -273,6 +376,7 @@ pub struct Settings {
     pub tools: Tools,
     pub transition: Transition,
     pub appearance: Appearance,
+    pub privacy: Privacy,
 }
 
 impl Default for Settings {
@@ -300,6 +404,7 @@ impl Default for Settings {
             tools: Tools::default(),
             transition: Transition::default(),
             appearance: Appearance::default(),
+            privacy: Privacy::default(),
         };
     }
 }
@@ -307,6 +412,7 @@ impl Default for Settings {
 impl Settings {
     pub(crate) fn normalize(&mut self) {
         self.optimize_fps_limit = self.optimize_fps_limit.clamp(15, 120);
+        self.privacy.idle_minutes = self.privacy.idle_minutes.clamp(1, 1440);
         self.transition.normalize();
     }
 }
@@ -479,6 +585,133 @@ mod tests {
         assert_eq!(library.items.len(), 1);
         assert_eq!(library.items[0].folder, None);
         assert_eq!(library.delete_folder(folder), None);
+    }
+
+    fn private_library() -> (Library, ItemId, ItemId, ItemId) {
+        let mut library = Library::default();
+        let vault = library.create_folder("Vault".into());
+        library.set_folder_flags(vault, Some(true), None);
+        let (mut open, mut hidden, mut spare) = (sample_item(), sample_item(), sample_item());
+        hidden.folder = Some(vault);
+        open.title = "open".into();
+        spare.title = "spare".into();
+        let ids = (open.id, hidden.id, spare.id);
+        library.items.extend([open, hidden, spare]);
+        return (library, ids.0, ids.1, ids.2);
+    }
+
+    #[test]
+    fn folder_flags_default_to_false_for_legacy_folders() {
+        let folder: Folder =
+            serde_json::from_str(r#"{"id":"11111111-1111-1111-1111-111111111111","name":"x"}"#).expect("legacy folder");
+        assert!(!folder.locked);
+        assert!(!folder.hidden);
+    }
+
+    #[test]
+    fn placement_history_defaults_from_legacy_placement() {
+        let library: Library = serde_json::from_str(r#"{"placement":{"default":{"item":null}}}"#).expect("legacy");
+        assert!(library.placement.safe_default.is_none());
+        assert!(library.placement.safe.is_empty());
+    }
+
+    #[test]
+    fn privacy_defaults_and_patch() {
+        let settings: Settings = serde_json::from_str("{}").expect("empty object");
+        assert_eq!(settings.privacy, Privacy::default());
+        assert!(settings.privacy.lock_on_screen_lock);
+        assert!(settings.privacy.lock_on_display);
+        assert!(!settings.privacy.lock_on_idle);
+        assert_eq!(settings.privacy.idle_minutes, 15);
+        let mut settings = settings;
+        apply_patch(&mut settings, &serde_json::json!({ "privacy": { "lock_on_idle": true, "idle_minutes": 0 } }))
+            .expect("patch");
+        assert!(settings.privacy.lock_on_idle);
+        assert_eq!(settings.privacy.idle_minutes, 1);
+        assert!(settings.privacy.lock_on_display);
+        apply_patch(&mut settings, &serde_json::json!({ "privacy": { "idle_minutes": null } })).expect("reset");
+        assert_eq!(settings.privacy.idle_minutes, 15);
+    }
+
+    #[test]
+    fn items_are_private_only_in_locked_folders() {
+        let (mut library, open, hidden, _) = private_library();
+        assert!(library.is_private_id(hidden));
+        assert!(!library.is_private_id(open));
+        assert!(!library.is_private_id(Uuid::new_v4()));
+        let vault = library.folders[0].id;
+        library.set_folder_flags(vault, Some(false), None);
+        assert!(!library.is_private_id(hidden));
+        assert!(!library.set_folder_flags(Uuid::new_v4(), Some(true), None));
+    }
+
+    #[test]
+    fn remember_records_only_non_private_items() {
+        let (mut library, open, hidden, _) = private_library();
+        library.remember(None, Some(hidden));
+        library.remember(Some("S"), Some(hidden));
+        assert!(library.placement.safe_default.is_none());
+        assert!(library.placement.safe.is_empty());
+        library.remember(None, Some(open));
+        library.remember(Some("S"), Some(open));
+        library.remember(Some("S"), None);
+        assert_eq!(library.placement.safe_default, Some(open));
+        assert_eq!(library.placement.safe.get("S"), Some(&open));
+    }
+
+    #[test]
+    fn resolve_substitutes_private_items_only_when_hidden() {
+        let (mut library, open, hidden, spare) = private_library();
+        library.placement.default.item = Some(hidden);
+        library.placement.safe_default = Some(spare);
+        assert_eq!(library.resolve(Some("S"), true), Some(hidden));
+        assert_eq!(library.resolve(Some("S"), false), Some(spare));
+        assert_eq!(library.resolve(None, false), Some(spare));
+        library.placement.spaces.insert("S".into(), Assignment { item: Some(hidden), geometry_override: None });
+        library.placement.safe.insert("S".into(), open);
+        assert_eq!(library.resolve(Some("S"), false), Some(open));
+        assert_eq!(library.resolve(Some("T"), false), Some(spare));
+        library.placement.spaces.insert("S".into(), Assignment { item: Some(spare), geometry_override: None });
+        assert_eq!(library.resolve(Some("S"), false), Some(spare));
+    }
+
+    #[test]
+    fn replacement_falls_back_to_first_public_playable_item_then_nothing() {
+        let (mut library, open, hidden, _) = private_library();
+        library.placement.default.item = Some(hidden);
+        assert_eq!(library.resolve(None, false), Some(open));
+        library.placement.safe_default = Some(hidden);
+        assert_eq!(library.resolve(None, false), Some(open));
+        library.placement.safe_default = Some(Uuid::new_v4());
+        assert_eq!(library.resolve(None, false), Some(open));
+        assert!(!library.blanked("S"));
+        library.items.retain(|item| item.id == hidden);
+        assert_eq!(library.resolve(None, false), None);
+        assert_eq!(library.resolve(None, true), Some(hidden));
+        assert!(library.blanked("S"));
+        library.placement.default.item = None;
+        assert!(!library.blanked("S"));
+    }
+
+    #[test]
+    fn replacement_skips_unplayable_items_and_forgotten_history() {
+        let (mut library, open, hidden, spare) = private_library();
+        library.placement.default.item = Some(hidden);
+        library.items[0].playable = false;
+        assert_eq!(library.resolve(None, false), Some(spare));
+        library.placement.safe_default = Some(spare);
+        library.placement.safe.insert("S".into(), open);
+        library.forget_safe(&[spare]);
+        assert!(library.placement.safe_default.is_none());
+        assert_eq!(library.placement.safe.get("S"), Some(&open));
+        library.forget_safe(&[open]);
+        assert!(library.placement.safe.is_empty());
+    }
+
+    #[test]
+    fn folder_items_lists_members() {
+        let (library, _, hidden, _) = private_library();
+        assert_eq!(library.folder_items(library.folders[0].id), vec![hidden]);
     }
 
     #[test]

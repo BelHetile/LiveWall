@@ -138,6 +138,7 @@ pub struct Engine {
     nodes: HashMap<ItemId, Node>,
     desktop: Desktop,
     stills_dir: PathBuf,
+    private_stills_dir: PathBuf,
     still_pending: HashSet<String>,
     unload_waiting: HashMap<ItemId, (String, f64)>,
     unloaded: HashMap<ItemId, f64>,
@@ -157,6 +158,7 @@ pub struct Playback {
     pub muted: bool,
     pub stop_after: u32,
     pub verdict: rules::Verdict,
+    pub unlocked: bool,
 }
 
 impl Engine {
@@ -176,7 +178,8 @@ impl Engine {
             surfaces: HashMap::new(),
             nodes: HashMap::new(),
             desktop,
-            stills_dir: paths.stills_dir(),
+            stills_dir: paths.stills_for(false),
+            private_stills_dir: paths.stills_for(true),
             still_pending: HashSet::new(),
             unload_waiting: HashMap::new(),
             unloaded: HashMap::new(),
@@ -209,10 +212,23 @@ impl Engine {
         playback: &Playback,
         transition: Option<&transition::ResolvedTransition>,
     ) {
-        self.apply_assignments(library, transition.is_some());
+        self.apply_assignments(library, transition.is_some(), playback.unlocked);
         self.apply_frames(library);
         self.begin_transitions(transition);
         self.update_playback(library, playback);
+    }
+
+    pub fn hide_private(&mut self, library: &Library, playback: &Playback) {
+        let fading: Vec<SurfaceKey> = self
+            .transitions
+            .iter()
+            .filter(|(_, active)| library.is_private_id(active.old))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in fading {
+            self.finish_transition(&key);
+        }
+        self.reapply(library, playback, None);
     }
 
     pub fn refresh_playback(&mut self, library: &Library, playback: &Playback) {
@@ -413,7 +429,8 @@ impl Engine {
 
     pub fn refresh_desktop(&mut self, library: &Library, force: bool) {
         let targets = self.desktop_targets();
-        let stills = self.resolve_stills(library, &targets);
+        let (stills, blanked) = self.resolve_stills(library, &targets);
+        self.desktop.revert(self.mtm, &blanked);
         self.desktop.update(self.mtm, &targets, &stills, force);
     }
 
@@ -428,10 +445,15 @@ impl Engine {
         return targets;
     }
 
-    fn resolve_stills(&mut self, library: &Library, targets: &[Target]) -> std::collections::BTreeMap<String, String> {
+    fn resolve_stills(
+        &mut self,
+        library: &Library,
+        targets: &[Target],
+    ) -> (std::collections::BTreeMap<String, String>, Vec<String>) {
         let mut stills = std::collections::BTreeMap::new();
+        let mut blanked = Vec::new();
         let lock = library.placement.lock.and_then(|lock| {
-            let item = playable_item(library, Some(lock.item))?;
+            let item = playable_item(library, Some(lock.item).filter(|id| !library.is_private_id(*id)))?;
             let entry = library.items.iter().find(|entry| entry.id == item)?;
             return Some((entry, lock.time));
         });
@@ -440,7 +462,12 @@ impl Engine {
                 found
             } else {
                 let surface = SurfaceKey::new(target.space.clone());
-                let Some(item_id) = playable_item(library, resolve_item(library, &surface)) else { continue };
+                let Some(item_id) = playable_item(library, resolve_item(library, &surface, false)) else {
+                    if library.blanked(&target.space) {
+                        blanked.push(target.space.clone());
+                    }
+                    continue;
+                };
                 let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
                 (item, item.still_time)
             };
@@ -448,7 +475,7 @@ impl Engine {
                 stills.insert(target.space.clone(), path);
             }
         }
-        return stills;
+        return (stills, blanked);
     }
 
     fn still_for(&mut self, item: &crate::model::Item, time: f32) -> Option<String> {
@@ -493,7 +520,8 @@ impl Engine {
 
     pub fn on_unlock(&mut self, library: &Library) {
         let targets = self.desktop_targets();
-        let stills = self.resolve_stills(library, &targets);
+        let (stills, blanked) = self.resolve_stills(library, &targets);
+        self.desktop.revert(self.mtm, &blanked);
         self.desktop.on_unlock(self.mtm, &targets, &stills);
     }
 
@@ -527,7 +555,8 @@ impl Engine {
         let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { return };
         let time = video.current_time();
         let key = still::cache_key(&entry.path, still::mtime_secs(&entry.path), time as f32);
-        let dest = still::cache_file(&self.stills_dir, &key);
+        let dir = if library.is_private(entry) { &self.private_stills_dir } else { &self.stills_dir };
+        let dest = still::cache_file(dir, &key);
         let dest = dest.to_string_lossy().into_owned();
         if std::path::Path::new(&dest).exists() {
             self.perform_unload(item, &dest, time);
@@ -767,9 +796,12 @@ impl Engine {
         surface.window.close();
     }
 
-    fn apply_assignments(&mut self, library: &Library, animate: bool) {
-        let assignments: Vec<(SurfaceKey, Option<ItemId>)> =
-            self.surfaces.keys().map(|key| (key.clone(), playable_item(library, resolve_item(library, key)))).collect();
+    fn apply_assignments(&mut self, library: &Library, animate: bool, reveal: bool) {
+        let assignments: Vec<(SurfaceKey, Option<ItemId>)> = self
+            .surfaces
+            .keys()
+            .map(|key| (key.clone(), playable_item(library, resolve_item(library, key, reveal))))
+            .collect();
         for (key, item) in assignments {
             let current = self.surfaces.get(&key).and_then(|surface| surface.item);
             if current == item {
@@ -1000,13 +1032,8 @@ pub fn rebuild_allowed(ages: &[Duration], window: Duration, limit: usize) -> boo
     return ages.iter().filter(|age| **age < window).count() < limit;
 }
 
-pub fn resolve_item(library: &Library, key: &SurfaceKey) -> Option<ItemId> {
-    if let Some(assignment) = library.placement.spaces.get(&key.space)
-        && assignment.item.is_some()
-    {
-        return assignment.item;
-    }
-    return library.placement.default.item;
+pub fn resolve_item(library: &Library, key: &SurfaceKey, reveal: bool) -> Option<ItemId> {
+    return library.resolve(Some(&key.space), reveal);
 }
 
 pub fn playable_item(library: &Library, item: Option<ItemId>) -> Option<ItemId> {
@@ -1130,8 +1157,8 @@ mod tests {
         let mut library = Library::default();
         library.placement.default.item = Some(item_b);
         library.placement.spaces.insert("S".into(), Assignment { item: Some(item_a), geometry_override: None });
-        assert_eq!(resolve_item(&library, &SurfaceKey::new("S")), Some(item_a));
-        assert_eq!(resolve_item(&library, &SurfaceKey::new("X")), Some(item_b));
+        assert_eq!(resolve_item(&library, &SurfaceKey::new("S"), true), Some(item_a));
+        assert_eq!(resolve_item(&library, &SurfaceKey::new("X"), true), Some(item_b));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod desktop;
 pub mod detect;
 pub mod hotkeys;

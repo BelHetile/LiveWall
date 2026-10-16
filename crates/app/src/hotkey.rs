@@ -345,6 +345,7 @@ pub fn registration_id(action: HotkeyAction) -> u32 {
         HotkeyAction::Random => 5,
         HotkeyAction::VolumeUp => 6,
         HotkeyAction::VolumeDown => 7,
+        HotkeyAction::Lock => 8,
     };
 }
 
@@ -500,6 +501,7 @@ mod tests {
             random: None,
             volume_up: None,
             volume_down: None,
+            lock: None,
         };
         assert_eq!(
             validate(&parse("shift+a").expect("parse"), HotkeyAction::Next, &hotkeys),
