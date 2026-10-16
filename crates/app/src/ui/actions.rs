@@ -3,7 +3,7 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSBeep, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation, NSPopUpButton,
-    NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindowDelegate,
+    NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
@@ -175,7 +175,21 @@ define_class!(
     impl Actions {
         #[unsafe(method(showSettings:))]
         fn show_settings(&self, _sender: Option<&AnyObject>) {
-            update(|ui, mtm| ui.settings(mtm).show(None));
+            update(|ui, mtm| ui.show_settings(mtm, None));
+        }
+
+        #[unsafe(method(closeSettings:))]
+        fn close_settings(&self, _sender: Option<&AnyObject>) {
+            later(|ui, _| {
+                if let Some(settings) = &ui.settings {
+                    settings.close();
+                }
+            });
+        }
+
+        #[unsafe(method(hideLibrary:))]
+        fn hide_library(&self, _sender: Option<&AnyObject>) {
+            later(|ui, mtm| ui.hide(mtm));
         }
 
         #[unsafe(method(quit:))]
@@ -370,6 +384,23 @@ define_class!(
     }
 
     unsafe impl NSWindowDelegate for Actions {
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, sender: &NSWindow) -> bool {
+            sender.sheetParent().is_none_or(|parent| {
+                parent.endSheet(sender);
+                return false;
+            })
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            later(|ui, mtm| {
+                if !ui.window.isVisible() {
+                    crate::ui::show_in_dock(mtm, false);
+                }
+            });
+        }
+
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
             later(|ui, _| {

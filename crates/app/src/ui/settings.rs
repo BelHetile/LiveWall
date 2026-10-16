@@ -7,7 +7,8 @@ use objc2_app_kit::{
     NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
     NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
     NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView,
-    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_foundation::{NSArray, NSString};
@@ -25,9 +26,9 @@ const FORWARD_DELETE: u32 = 117;
 pub const ROTATE: isize = 1;
 pub const TRANSITION: isize = 2;
 pub const PAUSE: isize = 3;
+const CLOSE_INSET: CGFloat = 18.0;
 const LOGIN: isize = 4;
 const OPEN_LIBRARY: isize = 5;
-const DOCK: isize = 6;
 const FULLSCREEN: isize = 7;
 const COVERED: isize = 8;
 const HOT: isize = 9;
@@ -82,7 +83,6 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
     return match (tag, input) {
         (LOGIN, Input::Flag(on)) => Some(Change::Login(*on)),
         (OPEN_LIBRARY, Input::Flag(on)) => patch(json!({ "open_library_at_launch": on })),
-        (DOCK, Input::Flag(on)) => patch(json!({ "show_in_dock": on })),
         (FULLSCREEN, Input::Flag(on)) => patch(json!({ "pause_when_fullscreen": on })),
         (COVERED, Input::Flag(on)) => patch(json!({ "pause_when_maximized": on })),
         (HOT, Input::Flag(on)) => patch(json!({ "pause_when_hot": on })),
@@ -394,7 +394,9 @@ impl Settings {
         window.setStyleMask(style);
         window.setToolbarStyle(NSWindowToolbarStyle::Preference);
         unsafe { window.setReleasedWhenClosed(false) };
+        window.setPreventsApplicationTerminationWhenModal(false);
         window.setContentSize(size);
+        add_close(mtm, &window, style, target);
         return Self {
             window,
             mode,
@@ -413,15 +415,20 @@ impl Settings {
         };
     }
 
-    pub fn show(&self, tab: Option<isize>) {
+    pub fn show(&self, parent: &NSWindow, tab: Option<isize>) {
         if let Some(tab) = tab {
             self.tabs.setSelectedTabViewItemIndex(tab);
         }
-        if !self.window.isVisible() {
-            self.window.center();
+        if self.window.sheetParent().is_none() {
+            parent.beginSheet_completionHandler(&self.window, None);
         }
-        self.window.makeKeyAndOrderFront(None);
         self.window.makeFirstResponder(None);
+    }
+
+    pub fn close(&self) {
+        if let Some(parent) = self.window.sheetParent() {
+            parent.endSheet(&self.window);
+        }
     }
 
     pub fn sync_look(&self, look: &Look) {
@@ -452,7 +459,6 @@ impl Settings {
             let on = match switch.tag() {
                 LOGIN => flag("launch_at_login"),
                 OPEN_LIBRARY => flag("open_library_at_launch"),
-                DOCK => flag("show_in_dock"),
                 PAUSE => master,
                 FULLSCREEN => flag("pause_when_fullscreen"),
                 COVERED => flag("pause_when_maximized"),
@@ -588,6 +594,24 @@ fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: 
     }
 }
 
+fn add_close(mtm: MainThreadMarker, window: &NSWindow, style: NSWindowStyleMask, target: &AnyObject) {
+    let Some(close) = NSWindow::standardWindowButton_forStyleMask(NSWindowButton::CloseButton, style, mtm) else {
+        return;
+    };
+    let Some(frame) = window.contentView().and_then(|content| unsafe { content.superview() }) else {
+        return;
+    };
+    unsafe {
+        close.setTarget(Some(target));
+        close.setAction(Some(sel!(closeSettings:)));
+    }
+    close.setKeyEquivalent(&widgets::ns("\u{1b}"));
+    frame.addSubview(&close);
+    close.setTranslatesAutoresizingMaskIntoConstraints(false);
+    close.leadingAnchor().constraintEqualToAnchor_constant(&frame.leadingAnchor(), CLOSE_INSET).setActive(true);
+    close.topAnchor().constraintEqualToAnchor_constant(&frame.topAnchor(), CLOSE_INSET).setActive(true);
+}
+
 fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
     let stack = widgets::stack(mtm, sections, true, 18.0);
     stack.setAlignment(NSLayoutAttribute::Leading);
@@ -710,7 +734,6 @@ fn pair(mtm: MainThreadMarker, knob: &Knob) -> Retained<NSView> {
 fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General {
     let login = switch(mtm, LOGIN, target);
     let open_library = switch(mtm, OPEN_LIBRARY, target);
-    let dock = switch(mtm, DOCK, target);
     let language = choice(mtm, &LANGUAGES.map(|(title, _)| title), LANGUAGE, target);
     let startup = form(
         mtm,
@@ -718,7 +741,6 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
         &[
             line(mtm, "Open at Login", None, &login),
             line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
-            line(mtm, "Show in Dock", Some("Hide to keep LiveWall in the menu bar only"), &dock),
             line(mtm, "Language", None, &language),
         ],
     );
@@ -759,7 +781,7 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
     return General {
         page: page(mtm, &[&startup, &power, &library]),
         pause,
-        switches: vec![login, open_library, dock, master, fullscreen, covered, hot, optimize],
+        switches: vec![login, open_library, master, fullscreen, covered, hot, optimize],
         popups: vec![language, release, frame_rate],
     };
 }

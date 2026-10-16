@@ -21,7 +21,7 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSApplication, NSSplitViewController, NSSplitViewItem, NSWindow};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSSplitViewController, NSSplitViewItem, NSWindow};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSTimer};
 use proto::{Request, Response, ResponseBody};
 use serde_json::{Value, json};
@@ -192,6 +192,28 @@ impl Ui {
         });
     }
 
+    fn hide(&self, mtm: MainThreadMarker) {
+        self.end_sheets();
+        self.window.close();
+        show_in_dock(mtm, false);
+    }
+
+    fn end_sheets(&self) {
+        while let Some(sheet) = self.window.attachedSheet() {
+            self.window.endSheet(&sheet);
+            if self.window.attachedSheet().is_some_and(|other| other == sheet) {
+                sheet.orderOut(None);
+                return;
+            }
+        }
+    }
+
+    fn show_settings(&mut self, mtm: MainThreadMarker, tab: Option<isize>) {
+        self.open(mtm);
+        let window = self.window.clone();
+        self.settings(mtm).show(&window, tab);
+    }
+
     fn restyle(&mut self, mtm: MainThreadMarker) {
         windows::set_appearance(mtm, self.look.mode);
         self.wall.paint(&self.look.colors);
@@ -201,6 +223,7 @@ impl Ui {
 
     #[allow(deprecated)]
     fn open(&self, mtm: MainThreadMarker) {
+        show_in_dock(mtm, true);
         if self.window.isMiniaturized() {
             self.window.deminiaturize(None);
         }
@@ -248,6 +271,19 @@ fn submit(work: impl FnOnce(&mut App) -> Option<Response> + Send + 'static) {
             report(&response);
         }
     });
+}
+
+pub fn show_in_dock(mtm: MainThreadMarker, visible: bool) {
+    let policy =
+        if visible { NSApplicationActivationPolicy::Regular } else { NSApplicationActivationPolicy::Accessory };
+    let application = NSApplication::sharedApplication(mtm);
+    if application.activationPolicy() != policy {
+        let _ = application.setActivationPolicy(policy);
+    }
+}
+
+pub fn dismiss_sheets() {
+    update(|ui, _| ui.end_sheets());
 }
 
 pub fn download_failed(reason: &str) {
@@ -455,6 +491,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let windows::Panes { split, inspector: inspector_item } = windows::panes(mtm, &wall, &inspector);
 
     let window = windows::main_window(mtm, &split);
+    window.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
     let toolbar = Toolbar::new(mtm, &actions);
     toolbar.search.setStringValue(&ns(&filter.query));
     window.setToolbar(Some(&toolbar.bar));
@@ -501,13 +538,12 @@ pub fn launched() {
             ui.wall.reveal(index);
         }
         if let Some(tab) = settings_tab {
-            ui.settings(mtm).show(Some(tab));
+            ui.show_settings(mtm, Some(tab));
         }
-        if let Some(path) = env("LW_UI_WINDOW_FILE") {
-            let shown = ui.settings.as_ref().map_or(&ui.window, |settings| &settings.window);
-            if let Err(error) = std::fs::write(&path, shown.windowNumber().to_string()) {
-                tracing::warn!(%error, %path, "cannot write window number");
-            }
+        if let Some(path) = env("LW_UI_WINDOW_FILE")
+            && let Err(error) = std::fs::write(&path, ui.window.windowNumber().to_string())
+        {
+            tracing::warn!(%error, %path, "cannot write window number");
         }
     });
 }

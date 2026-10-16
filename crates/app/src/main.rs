@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use livewall::{App, BindOutcome, Event, Paths, cleanup, install, post, prepare, proto, serve, terminating, ui, with};
+use livewall::{App, BindOutcome, Event, Paths, cleanup, install, post, prepare, proto, serve, terminating, ui};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -122,7 +122,7 @@ fn main() -> ExitCode {
         runtime.spawn(serve(listener));
         runtime.spawn(watch_signals());
 
-        with(|app| app.apply_dock());
+        ui::show_in_dock(mtm, false);
         if let Err(error) = ui::install(mtm) {
             tracing::error!(%error, "cannot build the library window");
             return ExitCode::FAILURE;

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::NSApplication;
 use objc2_foundation::NSTimer;
 use objc2_local_authentication::LAContext;
 use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
@@ -644,6 +644,7 @@ impl App {
     fn shutdown(&mut self) {
         self.engine.restore_desktop();
         process::kill_all();
+        crate::ui::dismiss_sheets();
         quit(self.mtm);
     }
 
@@ -809,15 +810,6 @@ impl App {
                 crate::ui::changed();
             }
         });
-    }
-
-    pub fn apply_dock(&self) {
-        let policy = if self.settings.show_in_dock {
-            NSApplicationActivationPolicy::Regular
-        } else {
-            NSApplicationActivationPolicy::Accessory
-        };
-        let _ = NSApplication::sharedApplication(self.mtm).setActivationPolicy(policy);
     }
 
     fn current_item(&self) -> Option<ItemId> {
@@ -1104,7 +1096,6 @@ impl App {
             Request::SettingsGet => ok(&self.settings),
             Request::SettingsSet { patch } => {
                 let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
-                let dock = self.settings.show_in_dock;
                 let rotation = self.rotation_settings();
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Err(Response::err(ErrorCode::Invalid, message));
@@ -1113,9 +1104,6 @@ impl App {
                 let language = i18n::select_language(self.settings.language, &system::preferred_languages());
                 if language != previous {
                     self.strings = Strings::new(language);
-                }
-                if self.settings.show_in_dock != dock {
-                    self.apply_dock();
                 }
                 if self.rotation_settings() != rotation {
                     self.restart_rotation();

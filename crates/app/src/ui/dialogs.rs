@@ -21,6 +21,7 @@ const QUALITIES: [&str; 5] = ["Best Available", "4K", "1440p", "1080p", "720p"];
 const DEFAULT_QUALITY: isize = 3;
 
 fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
+    alert.window().setPreventsApplicationTerminationWhenModal(false);
     let Some(window) = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.window.clone())).filter(|window| window.isVisible())
     else {
         done(alert.runModal());

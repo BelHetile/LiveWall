@@ -58,7 +58,7 @@ pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
                 Some((PRIVACY_KEY, option | NSEventModifierFlags::Control)),
             ),
             NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Hide LiveWall", sel!(hide:), None, 0, Some(("h", command))),
+            menu_item(mtm, "Hide LiveWall", sel!(hideLibrary:), Some(target), 0, Some(("h", command))),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Quit LiveWall", sel!(quit:), Some(target), 0, Some(("q", command))),
         ],
