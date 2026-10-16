@@ -749,6 +749,6 @@
 	<key>“%@” was converted without sound: macOS can't convert its sound track.</key>
 	<string>«%@» сконвертировано без звука: macOS не умеет конвертировать его звуковую дорожку.</string>
 	<key>Unlock private wallpaper folders</key>
-	<string>разблокировать личные папки с обоями</string>
+	<string>разблокировать приватные папки с обоями</string>
 </dict>
 </plist>
