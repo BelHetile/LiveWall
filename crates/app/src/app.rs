@@ -117,6 +117,56 @@ pub struct App {
     optimize: Arc<optimize::Queue>,
     downloads: Arc<download::Queue>,
     preparing_downloads: usize,
+    shown_pause: Option<String>,
+}
+
+pub struct PauseReason {
+    key: &'static str,
+    arg: Option<String>,
+}
+
+impl PauseReason {
+    fn new(key: &'static str, arg: Option<String>) -> Self {
+        return Self { key, arg };
+    }
+
+    fn from_cause(cause: &rules::Cause) -> Self {
+        let key = match cause {
+            rules::Cause::DisplayAsleep => "Display asleep",
+            rules::Cause::ScreenLocked => "Screen locked",
+            rules::Cause::Screensaver => "Screen saver is running",
+            rules::Cause::Occluded => "Desktop is hidden",
+            rules::Cause::Thermal => "Mac is running hot",
+            rules::Cause::LowPower => "Low Power Mode is on",
+            rules::Cause::Fullscreen => "An app is in fullscreen",
+            rules::Cause::Coverage => "Desktop covered by windows",
+            rules::Cause::Focus => "Another app is focused",
+            rules::Cause::App(bundle) => return Self::new("App rule: %@", Some(app_name(bundle))),
+        };
+        return Self::new(key, None);
+    }
+
+    fn args(&self) -> Vec<i18n::Arg> {
+        return self.arg.iter().cloned().map(i18n::Arg::Text).collect();
+    }
+
+    pub fn english(&self) -> String {
+        return i18n::substitute(self.key, &self.args());
+    }
+
+    pub fn text(&self, strings: &Strings) -> String {
+        return strings.format("Paused: %@", &[i18n::Arg::Text(strings.format(self.key, &self.args()))]);
+    }
+}
+
+fn app_name(bundle: &str) -> String {
+    return objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .to_vec()
+        .into_iter()
+        .find(|application| application.bundleIdentifier().is_some_and(|id| id.to_string() == bundle))
+        .and_then(|application| application.localizedName())
+        .map_or_else(|| bundle.to_string(), |name| name.to_string());
 }
 
 impl App {
@@ -135,6 +185,7 @@ impl App {
             &MenuState {
                 title: current_title(&library, unlocked),
                 paused: false,
+                status: None,
                 muted: settings.muted,
                 launch_at_login: settings.launch_at_login,
             },
@@ -173,6 +224,7 @@ impl App {
             optimize,
             downloads,
             preparing_downloads: 0,
+            shown_pause: None,
             paths: paths.clone(),
         };
         app.sync(false);
@@ -642,6 +694,7 @@ impl App {
             &MenuState {
                 title: current_title(&self.library, self.unlocked),
                 paused: self.paused,
+                status: self.pause_reason().map(|reason| reason.text(&self.strings)),
                 muted: self.settings.muted,
                 launch_at_login: self.settings.launch_at_login,
             },
@@ -685,6 +738,7 @@ impl App {
         let playback = self.playback();
         self.engine.refresh_playback(&self.library, &playback);
         self.refresh_power();
+        self.publish_pause();
     }
 
     fn refresh_power(&mut self) {
@@ -811,6 +865,7 @@ impl App {
     fn set_paused(&mut self, paused: bool) -> Response {
         self.paused = paused;
         self.reapply();
+        self.publish_pause();
         return ok(&self.state());
     }
 
@@ -996,6 +1051,7 @@ impl App {
                 max_pixels: self.max_display_px(),
                 app_nap_token: self.nap.active(),
                 paused_by: self.paused_by(),
+                pause_reason: self.pause_reason().map(|reason| reason.english()),
                 locked: !self.unlocked,
             }),
             Request::Pause => self.set_paused(true),
@@ -1267,6 +1323,32 @@ impl App {
         return by;
     }
 
+    pub fn pause_reason(&self) -> Option<PauseReason> {
+        let animated = self
+            .showing_item()
+            .and_then(|id| self.library.items.iter().find(|item| item.id == id))
+            .is_some_and(|item| item.kind != ItemKind::Image);
+        if !animated {
+            return None;
+        }
+        if self.paused {
+            return Some(PauseReason::new("Paused by you", None));
+        }
+        if self.verdict.action == rules::Action::KeepRunning {
+            return None;
+        }
+        return self.verdict.cause.as_ref().map(PauseReason::from_cause);
+    }
+
+    fn publish_pause(&mut self) {
+        let reason = self.pause_reason().map(|reason| reason.english());
+        if reason != self.shown_pause {
+            self.shown_pause = reason;
+            self.sync_menu();
+            crate::ui::changed();
+        }
+    }
+
     fn rules_report(&self) -> RulesReport<'_> {
         return RulesReport {
             snapshot: &self.snapshot,
@@ -1418,6 +1500,7 @@ struct StatusReport {
     max_pixels: u32,
     app_nap_token: bool,
     paused_by: Vec<String>,
+    pause_reason: Option<String>,
     locked: bool,
 }
 

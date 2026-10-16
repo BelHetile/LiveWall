@@ -72,6 +72,8 @@
 	<string>Другое приложение</string>
 	<key>Another app is focused</key>
 	<string>Активно другое приложение</string>
+	<key>App rule: %@</key>
+	<string>Правило для %@</string>
 	<key>App rules — pause while these apps are…</key>
 	<string>Правила приложений — пауза, пока эти приложения…</string>
 	<key>App switcher</key>
@@ -194,6 +196,8 @@
 	<string>Рабочий стол</string>
 	<key>Desktop covered by windows</key>
 	<string>Рабочий стол закрыт окнами</string>
+	<key>Desktop is hidden</key>
+	<string>Рабочий стол скрыт</string>
 	<key>Dismiss</key>
 	<string>Скрыть</string>
 	<key>Display asleep</key>
@@ -560,6 +564,8 @@
 	<string>Как на рабочем столе · статичный кадр</string>
 	<key>Screen locked</key>
 	<string>Экран заблокирован</string>
+	<key>Screen saver is running</key>
+	<string>Работает заставка</string>
 	<key>Screenshot</key>
 	<string>снимок экрана</string>
 	<key>Second</key>

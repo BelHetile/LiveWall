@@ -76,6 +76,7 @@ impl MenuTarget {
 pub struct MenuState {
     pub title: Option<String>,
     pub paused: bool,
+    pub status: Option<String>,
     pub muted: bool,
     pub launch_at_login: bool,
 }
@@ -150,6 +151,7 @@ impl Menu {
     pub fn update(&self, state: &MenuState, strings: &Strings) {
         let title = state.title.clone().unwrap_or_else(|| strings.get("No wallpaper"));
         self.title.setTitle(&NSString::from_str(&title));
+        self.title.setSubtitle(state.status.as_deref().map(NSString::from_str).as_deref());
         self.library.setTitle(&NSString::from_str(&strings.get("Open library")));
         self.pause.setTitle(&NSString::from_str(&if state.paused {
             strings.get("Resume")

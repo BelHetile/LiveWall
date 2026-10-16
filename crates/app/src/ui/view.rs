@@ -113,6 +113,7 @@ pub struct Library {
     pub desktops: usize,
     pub assignments: Vec<(Target, usize)>,
     pub downloads: Vec<Download>,
+    pub pause: Option<String>,
 }
 
 impl Library {
@@ -294,5 +295,6 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         spaces,
         assignments,
         downloads,
+        pause: app.pause_reason().map(|reason| reason.english()),
     };
 }
