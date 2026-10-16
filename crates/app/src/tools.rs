@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -21,22 +22,6 @@ pub enum ToolKind {
 impl ToolKind {
     pub const ALL: [ToolKind; 3] = [ToolKind::Ffmpeg, ToolKind::YtDlp, ToolKind::Deno];
 
-    pub fn id(self) -> &'static str {
-        return match self {
-            ToolKind::Ffmpeg => "ffmpeg",
-            ToolKind::YtDlp => "yt-dlp",
-            ToolKind::Deno => "deno",
-        };
-    }
-
-    pub fn formula(self) -> &'static str {
-        return match self {
-            ToolKind::Ffmpeg => "ffmpeg",
-            ToolKind::YtDlp => "yt-dlp",
-            ToolKind::Deno => "deno",
-        };
-    }
-
     fn version_args(self) -> &'static [&'static str] {
         return match self {
             ToolKind::Ffmpeg => &["-version"],
@@ -45,11 +30,15 @@ impl ToolKind {
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        return match id {
-            "ffmpeg" => Some(ToolKind::Ffmpeg),
-            "yt-dlp" => Some(ToolKind::YtDlp),
-            "deno" => Some(ToolKind::Deno),
-            _ => None,
+        return serde_json::from_value(serde_json::Value::from(id)).ok();
+    }
+}
+
+impl fmt::Display for ToolKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        return match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(id)) => formatter.write_str(&id),
+            _ => Err(fmt::Error),
         };
     }
 }
@@ -79,7 +68,7 @@ fn search_dirs(tools_dir: &Path) -> [PathBuf; 2] {
 
 pub fn locate(tool: ToolKind, tools_dir: &Path) -> Option<PathBuf> {
     for dir in search_dirs(tools_dir) {
-        let candidate = dir.join(tool.id());
+        let candidate = dir.join(tool.to_string());
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -135,7 +124,7 @@ pub async fn install(tool: ToolKind, tools_dir: &Path) -> Result<PathBuf, String
         return Err(format!("brew was not found at {}", brew.display()));
     }
     let mut process = Process::new(brew.as_os_str().to_owned());
-    process.arg("install").arg(tool.formula());
+    process.arg("install").arg(tool.to_string());
     process.env(HOMEBREW_NO_AUTO_UPDATE, "1");
     process.env(HOMEBREW_NO_INSTALL_CLEANUP, "1");
     process.env(HOMEBREW_NO_INTERACTIVE, "1");
@@ -143,9 +132,9 @@ pub async fn install(tool: ToolKind, tools_dir: &Path) -> Result<PathBuf, String
     let output = process.output().await.map_err(|error| error.to_string())?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("brew install {} failed: {}", tool.formula(), message.trim()));
+        return Err(format!("brew install {tool} failed: {}", message.trim()));
     }
-    return locate(tool, tools_dir).ok_or_else(|| format!("{} was not found after installation", tool.id()));
+    return locate(tool, tools_dir).ok_or_else(|| format!("{tool} was not found after installation"));
 }
 
 #[cfg(test)]
@@ -163,8 +152,9 @@ mod tests {
     #[test]
     fn tool_ids_round_trip() {
         for tool in ToolKind::ALL {
-            assert_eq!(ToolKind::from_id(tool.id()), Some(tool));
+            assert_eq!(ToolKind::from_id(&tool.to_string()), Some(tool));
         }
+        assert_eq!(ToolKind::YtDlp.to_string(), "yt-dlp");
         assert_eq!(ToolKind::from_id("ffprobe"), None);
     }
 

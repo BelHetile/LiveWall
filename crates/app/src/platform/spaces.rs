@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 
-use crate::platform::cf_ref;
+use crate::cf::{cf_i64, cf_ref, cf_string, cf_u64, downcast_array, downcast_dict};
 
 pub const ALL_SPACES: &str = "*";
 
@@ -239,7 +239,7 @@ struct DisplayTopology {
 fn parse_displays(entries: &CFArray<CFType>) -> Vec<DisplayTopology> {
     let mut displays = Vec::new();
     for entry in entries.iter() {
-        let Some(dict) = downcast_dict(&entry) else { continue };
+        let Some(dict) = downcast_dict(Some(&entry)) else { continue };
         if let Some(display) = parse_display(dict) {
             displays.push(display);
         }
@@ -252,23 +252,18 @@ fn parse_display(dict: &CFDictionary<CFString, CFType>) -> Option<DisplayTopolog
     let spaces_key = CFString::from_str("Spaces");
     let current_key = CFString::from_str("Current Space");
 
-    let uuid = dict.get(&identifier_key).and_then(|value| cf_string(&value))?;
+    let uuid = cf_string(dict.get(&identifier_key).as_deref())?;
 
     let current_entry = dict.get(&current_key);
-    let current_dict = current_entry.as_ref().and_then(|value| downcast_dict(value));
-    let current = current_dict
-        .and_then(|current| {
-            let key = CFString::from_str("uuid");
-            current.get(&key)
-        })
-        .and_then(|value| cf_string(&value))
-        .unwrap_or_default();
+    let current_dict = downcast_dict(current_entry.as_deref());
+    let uuid_key = CFString::from_str("uuid");
+    let current = cf_string(current_dict.and_then(|current| current.get(&uuid_key)).as_deref()).unwrap_or_default();
 
     let mut spaces = Vec::new();
     let spaces_entry = dict.get(&spaces_key);
-    if let Some(list) = spaces_entry.as_ref().and_then(|value| downcast_array(value)) {
+    if let Some(list) = downcast_array(spaces_entry.as_deref()) {
         for entry in list.iter() {
-            if let Some(space) = downcast_dict(&entry).and_then(parse_space) {
+            if let Some(space) = downcast_dict(Some(&entry)).and_then(parse_space) {
                 spaces.push(space);
             }
         }
@@ -277,39 +272,14 @@ fn parse_display(dict: &CFDictionary<CFString, CFType>) -> Option<DisplayTopolog
 }
 
 fn parse_space(dict: &CFDictionary<CFString, CFType>) -> Option<Space> {
-    let uuid = dict.get(&CFString::from_str("uuid")).and_then(|value| cf_string(&value))?;
-    let id = dict.get(&CFString::from_str("id64")).and_then(|value| cf_u64(&value));
-    let kind =
-        dict.get(&CFString::from_str("type")).and_then(|value| cf_i64(&value)).map_or(SpaceKind::User, |value| {
-            match value {
-                2 => SpaceKind::System,
-                4 => SpaceKind::Fullscreen,
-                _ => SpaceKind::User,
-            }
-        });
+    let uuid = cf_string(dict.get(&CFString::from_str("uuid")).as_deref())?;
+    let id = cf_u64(dict.get(&CFString::from_str("id64")).as_deref());
+    let kind = cf_i64(dict.get(&CFString::from_str("type")).as_deref()).map_or(SpaceKind::User, |value| match value {
+        2 => SpaceKind::System,
+        4 => SpaceKind::Fullscreen,
+        _ => SpaceKind::User,
+    });
     return Some(Space { uuid, id: id.unwrap_or(0), kind });
-}
-
-fn downcast_dict(value: &CFType) -> Option<&CFDictionary<CFString, CFType>> {
-    let dict = value.downcast_ref::<CFDictionary>()?;
-    return Some(unsafe { dict.cast_unchecked::<CFString, CFType>() });
-}
-
-fn downcast_array(value: &CFType) -> Option<&CFArray<CFType>> {
-    let array = value.downcast_ref::<CFArray>()?;
-    return Some(unsafe { array.cast_unchecked() });
-}
-
-fn cf_string(value: &CFType) -> Option<String> {
-    return value.downcast_ref::<CFString>().map(ToString::to_string);
-}
-
-fn cf_i64(value: &CFType) -> Option<i64> {
-    return value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i64);
-}
-
-fn cf_u64(value: &CFType) -> Option<u64> {
-    return cf_i64(value).and_then(|value| u64::try_from(value).ok());
 }
 
 #[cfg(test)]

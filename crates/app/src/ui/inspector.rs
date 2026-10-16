@@ -1,43 +1,47 @@
 use std::path::PathBuf;
-use std::ptr::NonNull;
 
-use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlSize, NSEvent, NSFont, NSFontWeightRegular, NSLayoutAttribute, NSLineBreakMode, NSMenu,
-    NSMenuItem, NSPopUpButton, NSScreen, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
-    NSStackView, NSStackViewGravity, NSTextAlignment, NSView,
+    NSButton, NSColor, NSControlSize, NSEvent, NSLayoutAttribute, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
+    NSScreen, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider, NSStackView, NSStackViewGravity,
+    NSTextAlignment, NSView,
 };
 use objc2_av_foundation::{
     AVLayerVideoGravityResizeAspectFill, AVPlayerItem, AVPlayerLayer, AVPlayerLooper, AVQueuePlayer, AVURLAsset,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_core_media::CMTime;
-use objc2_foundation::{NSArray, NSString, NSTimer, NSURL};
+use objc2_foundation::{NSArray, NSString, NSTimer};
 use objc2_quartz_core::{CAAutoresizingMask, CALayer, kCAGravityResizeAspectFill};
 
 use proto::{FillMode, Geometry};
 
+use crate::cf::file_url;
 use crate::geometry::{self, Size};
+use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
+use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::palette::Theme;
-use crate::ui::state::{Filter, Scope, markers};
+use crate::ui::state::{Filter, Scope, TAG_RESET, markers};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
-use crate::ui::wall::{duration, kind_name, resolution};
+use crate::ui::wall::{TILE_ASPECT, duration, kind_name, resolution};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
 const WIDTH: CGFloat = 340.0;
 const INSET: CGFloat = 20.0;
+const LOCK_WIDTH: CGFloat = 118.0;
+const VOLUME_WIDTH: CGFloat = 136.0;
+const SLIDER_WIDTH: CGFloat = 164.0;
+const VALUE_WIDTH: CGFloat = 50.0;
 pub const VOLUME: isize = 1;
 pub const SPEED: isize = 2;
 pub const HORIZONTAL: isize = 3;
 pub const VERTICAL: isize = 4;
 pub const ZOOM: isize = 5;
 pub const SCRUB: isize = 6;
-pub const RESET: isize = -100;
 pub const FRAME_TO_LOCK: &str = "Set This Frame as Lock Screen";
 const MODES: [&str; 5] = ["Fill", "Fit", "Stretch", "Center", "Custom"];
 pub const FILLS: [FillMode; 5] = [FillMode::Fill, FillMode::Fit, FillMode::Stretch, FillMode::Center, FillMode::Custom];
@@ -166,20 +170,10 @@ impl Inspector {
         }
         let scope = self.target.unwrap_or(filter.scope);
         let title = format!("On {}", scope.title());
-        let menu = scope_menu(library, scope, &title, sel!(target:), target);
+        let menu = scope_menu(mtm, library, scope, &title, sel!(target:), target);
         if self.target.is_some() {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
-            let reset = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &NSString::from_str("Match Toolbar"),
-                    Some(sel!(target:)),
-                    &NSString::new(),
-                )
-            };
-            unsafe { reset.setTarget(Some(target)) };
-            reset.setTag(RESET);
-            menu.addItem(&reset);
+            menu.addItem(&widgets::menu_item(mtm, "Match Toolbar", sel!(target:), Some(target), TAG_RESET, None));
         }
         controls.destination.setMenu(Some(&menu));
         widgets::alpha(&controls.destination, if self.target.is_some() { 1.0 } else { 0.85 });
@@ -193,9 +187,7 @@ impl Inspector {
             self.content.removeArrangedSubview(&view);
             view.removeFromSuperview();
         }
-        if let Some(timer) = self.timer.take() {
-            timer.invalidate();
-        }
+        cancel_timer(self.timer.take());
         if let Some((player, _)) = self.player.take() {
             unsafe { player.pause() };
         }
@@ -230,7 +222,7 @@ impl Inspector {
             &Weight::Regular,
             &NSColor::tertiaryLabelColor(),
         );
-        length.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightRegular })));
+        length.setFont(Some(&widgets::digits()));
         length.setContentCompressionResistancePriority_forOrientation(
             1000.0,
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
@@ -241,7 +233,7 @@ impl Inspector {
 
         let title = widgets::label(mtm, &item.title, 15.0, &Weight::Semibold, &NSColor::labelColor());
         title.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
-        title.setToolTip(Some(&NSString::from_str(&item.title)));
+        title.setToolTip(Some(&widgets::ns(&item.title)));
         let (primary, secondary) = facts(item);
         let meta = widgets::label(mtm, &primary, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
         let more = widgets::label(mtm, &secondary, 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
@@ -287,7 +279,7 @@ impl Inspector {
         if video {
             self.content.setCustomSpacing_afterView(8.0, &transport);
         }
-        preview.heightAnchor().constraintEqualToAnchor_multiplier(&preview.widthAnchor(), 10.0 / 16.0).setActive(true);
+        preview.heightAnchor().constraintEqualToAnchor_multiplier(&preview.widthAnchor(), TILE_ASPECT).setActive(true);
 
         self.content.setCustomSpacing_afterView(8.0, &library_row);
         self.start_clock(&scrub, &time, item.duration);
@@ -315,14 +307,13 @@ impl Inspector {
         };
         let player = player.clone();
         let (scrub, time): (Retained<NSSlider>, Retained<NumberField>) = (scrub.into(), time.into());
-        let tick = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        self.timer = Some(schedule_block(0.25, true, move || {
             let seconds = unsafe { player.currentTime().seconds() };
             if seconds.is_finite() && length > 0.0 && !time.editing() {
                 scrub.setDoubleValue(seconds % length);
                 time.show(seconds % length);
             }
-        });
-        self.timer = Some(unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.25, true, &tick) });
+        }));
     }
 
     pub fn sync(&self, item: &Item) {
@@ -415,7 +406,7 @@ impl Inspector {
 
     pub fn seek(&self, seconds: f64) {
         if let Some((player, _)) = &self.player {
-            unsafe { player.seekToTime(CMTime::with_seconds(seconds, 600)) };
+            unsafe { player.seekToTime(CMTime::with_seconds(seconds, CM_TIMESCALE)) };
         }
         if let Some(controls) = &self.controls {
             controls.time.show(seconds);
@@ -445,7 +436,7 @@ impl Inspector {
     fn preview(&mut self, mtm: MainThreadMarker, item: &Item) -> Retained<NSView> {
         let view: Retained<PreviewView> = unsafe { msg_send![PreviewView::alloc(mtm), init] };
         let layer: Retained<CALayer> = if item.kind == ItemKind::Video {
-            let url = NSURL::fileURLWithPath(&NSString::from_str(&item.path.to_string_lossy()));
+            let url = file_url(&item.path);
             let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
             let player = unsafe { AVQueuePlayer::new(mtm) };
             let template = unsafe { AVPlayerItem::playerItemWithAsset(&asset, mtm) };
@@ -483,16 +474,7 @@ impl Inspector {
 
 fn frame_menu(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
-    let item = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            &NSString::from_str(FRAME_TO_LOCK),
-            Some(sel!(lockFrame:)),
-            &NSString::new(),
-        )
-    };
-    unsafe { item.setTarget(Some(target)) };
-    menu.addItem(&item);
+    menu.addItem(&widgets::menu_item(mtm, FRAME_TO_LOCK, sel!(lockFrame:), Some(target), 0, None));
     return menu;
 }
 
@@ -510,24 +492,24 @@ fn actions(
     };
     let wallpaper = widgets::button(mtm, title, Some(icon), action, target);
     widgets::prominent(&wallpaper, theme);
-    wallpaper.setKeyEquivalent(&NSString::from_str("\r"));
+    wallpaper.setKeyEquivalent(&widgets::ns("\r"));
     wallpaper.setEnabled(item.playable || item.progress.is_none());
     let lock = widgets::button(mtm, "Lock Screen", Some("lock"), sel!(setLock:), target);
-    lock.setToolTip(Some(&NSString::from_str("Set as Lock Screen")));
+    lock.setToolTip(Some(&widgets::ns("Set as Lock Screen")));
     lock.setAttributedTitle(&widgets::styled(
         "Lock Screen",
-        &NSFont::systemFontOfSize(12.0),
+        &widgets::font(12.0, &Weight::Regular),
         &NSColor::secondaryLabelColor(),
     ));
     lock.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
-    lock.widthAnchor().constraintEqualToConstant(118.0).setActive(true);
+    lock.widthAnchor().constraintEqualToConstant(LOCK_WIDTH).setActive(true);
     wallpaper.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
     let buttons = widgets::stack(mtm, &[&wallpaper, &lock], false, 8.0);
     buttons.setDistribution(objc2_app_kit::NSStackViewDistribution::Fill);
     lock.heightAnchor().constraintEqualToAnchor(&wallpaper.heightAnchor()).setActive(true);
     let destination = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
     widgets::secondary(&destination);
-    destination.setToolTip(Some(&NSString::from_str("Choose a specific desktop")));
+    destination.setToolTip(Some(&widgets::ns("Choose a specific desktop")));
     let stack = widgets::stack(mtm, &[&buttons, &destination], true, 8.0);
     stack.setAlignment(NSLayoutAttribute::Leading);
     buttons.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
@@ -535,21 +517,14 @@ fn actions(
     destination.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
     destination.trailingAnchor().constraintEqualToAnchor(&wallpaper.trailingAnchor()).setActive(true);
     if video {
-        let frame = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str("Use This Frame"),
-                Some(target),
-                Some(sel!(lockFrame:)),
-                mtm,
-            )
-        };
+        let frame = widgets::button(mtm, "Use This Frame", None, sel!(lockFrame:), target);
         widgets::secondary(&frame);
         frame.setAttributedTitle(&widgets::styled(
             "Use This Frame",
-            &NSFont::systemFontOfSize(12.0),
+            &widgets::font(12.0, &Weight::Regular),
             &NSColor::secondaryLabelColor(),
         ));
-        frame.setToolTip(Some(&NSString::from_str(FRAME_TO_LOCK)));
+        frame.setToolTip(Some(&widgets::ns(FRAME_TO_LOCK)));
         frame.setImage(widgets::symbol("film", 11.0).as_deref());
         frame.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
         frame.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -573,11 +548,11 @@ type Playback = (
 fn playback(mtm: MainThreadMarker, theme: &Theme, target: &AnyObject) -> Playback {
     let mute = widgets::icon_button(mtm, "speaker.wave.2.fill", sel!(mute:), target);
     let volume = slider(mtm, 0.0, 0.0, 100.0, VOLUME, theme, target);
-    volume.widthAnchor().constraintEqualToConstant(136.0).setActive(true);
+    volume.widthAnchor().constraintEqualToConstant(VOLUME_WIDTH).setActive(true);
     let volume_value = field(mtm, VOLUME, target);
     let volume_box = widgets::stack(mtm, &[&mute, &volume, &volume_value], false, 6.0);
     let speed = slider(mtm, 1.0, 0.25, 2.0, SPEED, theme, target);
-    speed.widthAnchor().constraintEqualToConstant(164.0).setActive(true);
+    speed.widthAnchor().constraintEqualToConstant(SLIDER_WIDTH).setActive(true);
     let speed_value = field(mtm, SPEED, target);
     let speed_box = widgets::stack(mtm, &[&speed, &speed_value], false, 6.0);
     let volume_row = widgets::row(mtm, "Volume", &volume_box);
@@ -591,7 +566,7 @@ fn placement(
     theme: &Theme,
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSSegmentedControl>, [Offset; 3]) {
-    let labels: Vec<Retained<NSString>> = MODES.iter().map(|text| NSString::from_str(text)).collect();
+    let labels: Vec<Retained<NSString>> = MODES.iter().map(|text| widgets::ns(text)).collect();
     let modes = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&labels),
@@ -613,7 +588,7 @@ fn placement(
         .iter()
         .zip(&offsets)
         .map(|(name, (control, value))| {
-            control.widthAnchor().constraintEqualToConstant(164.0).setActive(true);
+            control.widthAnchor().constraintEqualToConstant(SLIDER_WIDTH).setActive(true);
             return widgets::row(mtm, name, &widgets::stack(mtm, &[control, value], false, 6.0));
         })
         .collect();
@@ -627,11 +602,11 @@ fn placement(
 
 fn reset_button(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSButton> {
     let reset = widgets::button(mtm, "", Some("arrow.counterclockwise"), sel!(resetSettings:), target);
-    let font = NSFont::systemFontOfSize(12.0);
+    let font = widgets::font(12.0, &Weight::Regular);
     reset.setAttributedTitle(&widgets::styled("Reset to Defaults", &font, &NSColor::systemRedColor()));
     reset.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
     reset.setContentTintColor(Some(&NSColor::systemRedColor()));
-    reset.setToolTip(Some(&NSString::from_str("Reset playback and placement for this wallpaper")));
+    reset.setToolTip(Some(&widgets::ns("Reset playback and placement for this wallpaper")));
     return reset;
 }
 
@@ -642,7 +617,7 @@ fn library_row(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSStackVi
         folder.setAction(Some(sel!(moveFolder:)));
     }
     folder.setControlSize(NSControlSize::Small);
-    folder.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+    folder.setFont(Some(&widgets::font(12.0, &Weight::Regular)));
     folder.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
     let icon = widgets::symbol_view(mtm, "folder", 12.0, &NSColor::secondaryLabelColor());
     icon.setContentCompressionResistancePriority_forOrientation(
@@ -651,7 +626,7 @@ fn library_row(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSStackVi
     );
     let delete = widgets::icon_button(mtm, "trash", sel!(delete:), target);
     delete.setContentTintColor(Some(&NSColor::systemRedColor()));
-    delete.setToolTip(Some(&NSString::from_str("Remove from Library")));
+    delete.setToolTip(Some(&widgets::ns("Remove from Library")));
     let row = widgets::stack(mtm, &[&icon, &folder, &delete], false, 8.0);
     row.heightAnchor().constraintEqualToConstant(26.0).setActive(true);
     return (row, folder);
@@ -725,7 +700,7 @@ fn field(mtm: MainThreadMarker, tag: isize, target: &AnyObject) -> Retained<Numb
         _ => (0.05, |value| format!("{value:.2}×")),
     };
     let parse: fn(&str) -> Option<f64> = if tag == SCRUB { seconds } else { widgets::number };
-    return NumberField::new(mtm, Units { step, format, parse }, tag, 50.0, sel!(typed:), target);
+    return NumberField::new(mtm, Units { step, format, parse }, tag, VALUE_WIDTH, sel!(typed:), target);
 }
 
 fn seconds(text: &str) -> Option<f64> {
@@ -737,8 +712,8 @@ fn seconds(text: &str) -> Option<f64> {
 
 fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>) {
     popup.removeAllItems();
-    let mut titles: Vec<Retained<NSString>> = vec![NSString::from_str("Unfiled")];
-    titles.extend(library.folders.iter().map(|name| NSString::from_str(name)));
+    let mut titles: Vec<Retained<NSString>> = vec![widgets::ns("Unfiled")];
+    titles.extend(library.folders.iter().map(|name| widgets::ns(name)));
     popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
     popup.selectItemAtIndex(folder.map_or(0, |index| isize::try_from(index + 1).unwrap_or(0)));
 }

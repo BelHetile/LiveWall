@@ -1,18 +1,19 @@
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Stdio};
+mod support;
+
+use std::path::Path;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use livewall::proto::{self, ErrorCode, HotkeyAction, Request, RequestEnvelope, Response, ResponseBody};
+use livewall::proto::{ErrorCode, HotkeyAction, Request, Response, ResponseBody};
 use livewall::{App, BindOutcome, Paths, install, prepare, serve, synthesize_press};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSDate, NSRunLoop};
 
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
+use support::Sandbox;
+
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(20);
-const POLL: Duration = Duration::from_millis(50);
+const PUMP: Duration = Duration::from_millis(50);
 
 fn main() -> ExitCode {
     if std::env::var("LW_E2E").as_deref() != Ok("1") {
@@ -141,7 +142,7 @@ fn in_process(mtm: MainThreadMarker) {
 fn cross_process() {
     println!("e2e_hotkeys: cross-process conflicts");
     let first = Sandbox::new("conflict-a");
-    let mut child_first = first.launch();
+    first.launch();
     let report = first.ok(Request::HotkeysGet);
     for action in HotkeyAction::ALL {
         let entry = entry_for(&report, action);
@@ -150,7 +151,7 @@ fn cross_process() {
     }
 
     let second = Sandbox::new("conflict-b");
-    let mut child_second = second.launch();
+    second.launch();
     let report = second.ok(Request::HotkeysGet);
     for action in HotkeyAction::ALL {
         let entry = entry_for(&report, action);
@@ -159,17 +160,17 @@ fn cross_process() {
         assert!(conflict.contains("another app"), "second app conflict reason was {conflict:?}");
     }
 
-    quit(&first, &mut child_first);
-    quit(&second, &mut child_second);
+    first.quit();
+    second.quit();
 
     let third = Sandbox::new("conflict-c");
-    let mut child_third = third.launch();
+    third.launch();
     let report = third.ok(Request::HotkeysGet);
     for action in HotkeyAction::ALL {
         let entry = entry_for(&report, action);
         assert_eq!(entry["registered"].as_bool(), Some(true), "hotkeys were not released after quit: {entry}");
     }
-    quit(&third, &mut child_third);
+    third.quit();
 }
 
 fn entry_for(report: &serde_json::Value, action: HotkeyAction) -> serde_json::Value {
@@ -205,94 +206,18 @@ fn status(socket: &Path) -> serde_json::Value {
 
 fn exchange(socket: &Path, request: Request) -> Response {
     let socket = socket.to_path_buf();
-    let worker = std::thread::spawn(move || {
-        let mut stream = UnixStream::connect(&socket).ok()?;
-        stream.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
-        stream.write_all(&proto::encode(&RequestEnvelope::new(request))).ok()?;
-        stream.flush().ok()?;
-        let mut reader = BufReader::new(stream);
-        let mut line = Vec::new();
-        reader.read_until(b'\n', &mut line).ok()?;
-        proto::decode::<Response>(&line).ok()
-    });
+    let worker = std::thread::spawn(move || support::send(&socket, request, Duration::from_secs(10)));
     let deadline = Instant::now() + EXCHANGE_TIMEOUT;
     loop {
         if worker.is_finished() {
             return worker.join().expect("join exchange").expect("exchange");
         }
         assert!(Instant::now() < deadline, "no response from the in-process app");
-        pump(POLL.as_secs_f64());
+        pump(PUMP.as_secs_f64());
     }
 }
 
 fn pump(seconds: f64) {
     let limit = NSDate::dateWithTimeIntervalSinceNow(seconds);
     NSRunLoop::mainRunLoop().runUntilDate(&limit);
-}
-
-struct Sandbox {
-    dir: tempfile::TempDir,
-}
-
-impl Sandbox {
-    fn new(label: &str) -> Self {
-        let dir = tempfile::Builder::new().prefix(&format!("livewall-e2e-{label}-")).tempdir().expect("tempdir");
-        return Self { dir };
-    }
-
-    fn data_dir(&self) -> PathBuf {
-        return self.dir.path().join("data");
-    }
-
-    fn socket(&self) -> PathBuf {
-        return self.dir.path().join("control.sock");
-    }
-
-    fn launch(&self) -> Child {
-        let data = self.data_dir();
-        std::fs::create_dir_all(&data).expect("data dir");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_LiveWall"))
-            .env("LIVEWALL_DATA_DIR", &data)
-            .env("LIVEWALL_SOCKET", self.socket())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn LiveWall");
-        let deadline = Instant::now() + LAUNCH_TIMEOUT;
-        while Instant::now() < deadline {
-            if UnixStream::connect(self.socket()).is_ok() {
-                return child;
-            }
-            std::thread::sleep(POLL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("LiveWall socket did not appear");
-    }
-
-    fn ok(&self, request: Request) -> serde_json::Value {
-        let response = self.request(request);
-        return match response.body {
-            ResponseBody::Ok { data } => data,
-            ResponseBody::Err(body) => panic!("unexpected error {body:?}"),
-        };
-    }
-
-    fn request(&self, request: Request) -> Response {
-        let mut stream = UnixStream::connect(self.socket()).expect("connect");
-        stream.set_read_timeout(Some(EXCHANGE_TIMEOUT)).expect("timeout");
-        stream.write_all(&proto::encode(&RequestEnvelope::new(request))).expect("write");
-        stream.flush().expect("flush");
-        let mut reader = BufReader::new(stream);
-        let mut line = Vec::new();
-        reader.read_until(b'\n', &mut line).expect("read");
-        assert!(!line.is_empty(), "app closed the connection");
-        return proto::decode::<Response>(&line).expect("decode");
-    }
-}
-
-fn quit(sandbox: &Sandbox, child: &mut Child) {
-    let _ = sandbox.request(Request::Quit);
-    let _ = child.wait();
 }

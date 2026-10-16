@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
@@ -9,6 +10,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSApplicationTerminateReply};
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
 static SOCKET_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -61,17 +63,17 @@ impl Delegate {
 fn main() -> ExitCode {
     init_logging();
     let Some(mtm) = MainThreadMarker::new() else {
-        eprintln!("LiveWall must run on the main thread");
+        tracing::error!("must run on the main thread");
         return ExitCode::FAILURE;
     };
 
     let paths = Paths::detect();
     if let Err(error) = paths.ensure() {
-        eprintln!("LiveWall: cannot create data directory: {error}");
+        tracing::error!(%error, "cannot create data directory");
         return ExitCode::FAILURE;
     }
     if let Err(error) = paths.reset_incoming() {
-        eprintln!("LiveWall: cannot reset the incoming directory: {error}");
+        tracing::warn!(%error, "cannot reset the incoming directory");
     }
 
     let socket_path = proto::socket_path();
@@ -84,7 +86,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(error) => {
-            eprintln!("LiveWall: cannot bind {}: {error}", socket_path.display());
+            tracing::error!(%error, socket = %socket_path.display(), "cannot bind socket");
             return ExitCode::FAILURE;
         }
     };
@@ -92,7 +94,7 @@ fn main() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("LiveWall: cannot start tokio runtime: {error}");
+            tracing::error!(%error, "cannot start tokio runtime");
             return ExitCode::FAILURE;
         }
     };
@@ -104,7 +106,7 @@ fn main() -> ExitCode {
     let listener = match adopted {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("LiveWall: cannot adopt socket: {error}");
+            tracing::error!(%error, "cannot adopt socket");
             return ExitCode::FAILURE;
         }
     };
@@ -122,7 +124,7 @@ fn main() -> ExitCode {
 
         with(|app| app.apply_dock());
         if let Err(error) = ui::install(mtm) {
-            eprintln!("LiveWall: cannot build the library window: {error}");
+            tracing::error!(%error, "cannot build the library window");
             return ExitCode::FAILURE;
         }
         let application = NSApplication::sharedApplication(mtm);
@@ -152,6 +154,10 @@ async fn watch_signals() {
 
 fn init_logging() {
     let oslog = tracing_oslog::OsLogger::new("io.github.belhetile.livewall", "engine");
-    let subscriber = tracing_subscriber::registry().with(oslog);
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_filter(tracing_subscriber::filter::LevelFilter::WARN);
+    let subscriber = tracing_subscriber::registry().with(oslog).with(stderr);
     let _ = tracing::subscriber::set_global_default(subscriber);
 }

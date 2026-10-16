@@ -1,4 +1,5 @@
 mod app;
+mod cf;
 mod download;
 mod engine;
 mod geometry;
@@ -12,7 +13,6 @@ mod menu;
 mod model;
 mod paths;
 mod platform;
-mod privacy;
 mod process;
 mod rules;
 mod store;
@@ -24,6 +24,7 @@ pub use i18n::{Arg, Strings};
 pub use ipc::{BindOutcome, cleanup, prepare, serve};
 pub use model::Language;
 pub use paths::Paths;
+#[cfg(feature = "test-support")]
 pub use platform::hotkeys::synthesize_press;
 pub use proto;
 pub use store::{Warning, load, save};

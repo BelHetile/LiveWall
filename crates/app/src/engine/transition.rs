@@ -1,13 +1,15 @@
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGColor, CGMutablePath};
 use objc2_foundation::{NSNumber, NSString, NSValue};
 use objc2_quartz_core::{
-    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATransaction, kCAFillRuleEvenOdd,
+    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, kCAFillRuleEvenOdd,
     kCAFillRuleNonZero, kCAMediaTimingFunctionLinear,
 };
 use proto::{Axis, Pos, Transition, TransitionKind};
+
+use crate::cf::object;
+use crate::engine::layer::without_actions;
 
 const CIRCLE_SEGMENTS: usize = 96;
 const WAVE_SAMPLES_PER_PERIOD: f64 = 16.0;
@@ -55,10 +57,7 @@ fn pick<T: Copy>(
 }
 
 pub fn apply(layer: &CALayer, spec: &ResolvedTransition) {
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
-    decorate(layer, spec);
-    CATransaction::commit();
+    without_actions(|| decorate(layer, spec));
 }
 
 fn decorate(layer: &CALayer, spec: &ResolvedTransition) {
@@ -249,10 +248,6 @@ fn arc_point(center: (f64, f64), radius: f64, angle: f64) -> (f64, f64) {
 
 fn fill_color() -> CFRetained<CGColor> {
     return CGColor::new_generic_gray(0.0, 1.0);
-}
-
-fn object<T: AsRef<AnyObject> + ?Sized>(value: &T) -> &AnyObject {
-    return value.as_ref();
 }
 
 #[allow(clippy::cast_possible_truncation)]

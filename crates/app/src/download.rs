@@ -4,16 +4,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
 use crate::app::{Event, post};
 use crate::import::{self, Transfer};
-use crate::jobs;
+use crate::jobs::{self, ESCALATION, Lifecycle, Registry};
 use crate::media::probe;
 use crate::model::Item;
 use crate::process::Process;
@@ -21,7 +20,6 @@ use crate::process::Process;
 pub const MIN_HEIGHT: u32 = 720;
 pub const MAX_HEIGHT: u32 = 2160;
 pub const H264_CEILING: u32 = 1080;
-pub const ESCALATION: Duration = Duration::from_secs(3);
 pub const LW_PROGRESS: &str = "LWPROG ";
 pub const LW_POST: &str = "LWPOST ";
 
@@ -51,10 +49,6 @@ pub fn selector(max_height: u32, av1_hw: bool) -> String {
     let merged = format!("b[height<={cap}]{avoid}");
     let single = format!("b[height<={cap}]");
     return format!("{best}/{fallback_split}/{merged}/{single}/b");
-}
-
-fn merge_format() -> &'static str {
-    return "mp4";
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,10 +110,40 @@ pub enum JobState {
     Cancelled,
 }
 
+impl Lifecycle for JobState {
+    fn queued() -> Self {
+        return JobState::Queued;
+    }
+
+    fn cancelled() -> Self {
+        return JobState::Cancelled;
+    }
+
+    fn is_queued(&self) -> bool {
+        return matches!(self, JobState::Queued);
+    }
+
+    fn is_terminal(&self) -> bool {
+        return matches!(self, JobState::Done { .. } | JobState::Failed { .. } | JobState::Cancelled);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    Queued,
+    Downloading,
+    Merging,
+    Importing,
+    Done,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct JobReport {
     pub id: String,
-    pub state: &'static str,
+    pub state: Phase,
     pub progress: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
@@ -133,30 +157,37 @@ pub struct JobReport {
     pub reason: Option<String>,
 }
 
-impl JobState {
-    pub fn report(&self, id: &str) -> JobReport {
-        let make = |state, progress, speed, eta, item, path, reason| JobReport {
+impl JobReport {
+    fn new(id: &str, state: Phase, progress: f64) -> Self {
+        return Self {
             id: id.to_string(),
             state,
             progress,
-            speed,
-            eta,
-            item,
-            path,
-            reason,
+            speed: None,
+            eta: None,
+            item: None,
+            path: None,
+            reason: None,
         };
+    }
+}
+
+impl JobState {
+    pub fn report(&self, id: &str) -> JobReport {
         return match self {
-            JobState::Queued => make("queued", 0.0, None, None, None, None, None),
+            JobState::Queued => JobReport::new(id, Phase::Queued, 0.0),
             JobState::Downloading { percent, speed, eta } => {
-                make("downloading", *percent, *speed, *eta, None, None, None)
+                JobReport { speed: *speed, eta: *eta, ..JobReport::new(id, Phase::Downloading, *percent) }
             }
-            JobState::Merging => make("merging", 0.9, None, None, None, None, None),
-            JobState::Importing => make("importing", 1.0, None, None, None, None, None),
+            JobState::Merging => JobReport::new(id, Phase::Merging, 0.9),
+            JobState::Importing => JobReport::new(id, Phase::Importing, 1.0),
             JobState::Done { item, path } => {
-                make("done", 1.0, None, None, Some(item.clone()), Some(path.clone()), None)
+                JobReport { item: Some(item.clone()), path: Some(path.clone()), ..JobReport::new(id, Phase::Done, 1.0) }
             }
-            JobState::Failed { reason } => make("failed", 0.0, None, None, None, None, Some(reason.clone())),
-            JobState::Cancelled => make("cancelled", 0.0, None, None, None, None, None),
+            JobState::Failed { reason } => {
+                JobReport { reason: Some(reason.clone()), ..JobReport::new(id, Phase::Failed, 0.0) }
+            }
+            JobState::Cancelled => JobReport::new(id, Phase::Cancelled, 0.0),
         };
     }
 }
@@ -189,119 +220,65 @@ fn yt_args(spec: &Spec, job_dir: &Path) -> Vec<OsString> {
     args.push("--format".into());
     args.push(selector(spec.height, spec.av1_hw).into());
     args.push("--merge-output-format".into());
-    args.push(merge_format().into());
+    args.push("mp4".into());
     args.push("--output".into());
     args.push(job_dir.join("%(title).120B.%(ext)s").into_os_string());
     args.push(spec.url.clone().into());
     return args;
 }
 
-struct JobRecord {
-    state: JobState,
-    cancel: Option<Arc<Notify>>,
-    cancelled: bool,
-}
-
 pub struct Queue {
-    shared: Arc<Mutex<BTreeMap<String, JobRecord>>>,
+    jobs: Registry<String, JobState>,
     handle: Handle,
 }
 
 impl Queue {
     pub fn new(handle: Handle) -> Self {
-        return Self { shared: Arc::new(Mutex::new(BTreeMap::new())), handle };
+        return Self { jobs: Registry::new(handle.clone()), handle };
     }
 
     pub fn enqueue(&self, spec: Spec) -> String {
         let id = uuid::Uuid::new_v4().to_string();
-        if let Ok(mut jobs) = self.shared.lock() {
-            jobs.insert(id.clone(), JobRecord { state: JobState::Queued, cancel: None, cancelled: false });
-        }
-        let shared = Arc::clone(&self.shared);
+        self.jobs.insert(id.clone());
+        let jobs = self.jobs.clone();
         let task_id = id.clone();
         self.handle.spawn(async move {
-            run_job(task_id, spec, shared).await;
+            run_job(task_id, spec, jobs).await;
         });
         return id;
     }
 
     pub fn status(&self, id: &str) -> Option<JobState> {
-        return self.shared.lock().ok()?.get(id).map(|record| record.state.clone());
+        return self.jobs.status(&id.to_string());
     }
 
     pub fn reports(&self) -> Vec<JobReport> {
-        let Ok(jobs) = self.shared.lock() else {
-            return Vec::new();
-        };
-        return jobs.iter().map(|(id, record)| record.state.report(id)).collect();
+        return self.jobs.snapshot().iter().map(|(id, state)| state.report(id)).collect();
     }
 
     pub fn complete(&self, id: &str, state: JobState) {
-        let Ok(mut jobs) = self.shared.lock() else {
-            return;
-        };
-        if let Some(record) = jobs.get_mut(id) {
-            record.state = state;
-        }
+        self.jobs.set_state(&id.to_string(), state);
     }
 
     pub fn cancel(&self, id: &str) {
-        let Ok(mut jobs) = self.shared.lock() else {
-            return;
-        };
-        let Some(record) = jobs.get_mut(id) else {
-            return;
-        };
-        record.cancelled = true;
-        if let Some(notify) = &record.cancel {
-            notify.notify_one();
-        }
-        if matches!(record.state, JobState::Queued) {
-            record.state = JobState::Cancelled;
-        }
+        self.jobs.cancel(&id.to_string());
     }
 }
 
-fn set_state(shared: &Mutex<BTreeMap<String, JobRecord>>, id: &str, state: JobState) {
-    if let Ok(mut jobs) = shared.lock()
-        && let Some(record) = jobs.get_mut(id)
-    {
-        record.state = state;
-    }
-}
-
-fn take_cancelled(shared: &Mutex<BTreeMap<String, JobRecord>>, id: &str) -> bool {
-    let Ok(mut jobs) = shared.lock() else {
-        return true;
-    };
-    let Some(record) = jobs.get_mut(id) else {
-        return true;
-    };
-    return record.cancelled;
-}
-
-fn register_cancel(shared: &Mutex<BTreeMap<String, JobRecord>>, id: &str, notify: Arc<Notify>) {
-    if let Ok(mut jobs) = shared.lock()
-        && let Some(record) = jobs.get_mut(id)
-    {
-        record.cancel = Some(notify);
-    }
-}
-
-async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobRecord>>>) {
+async fn run_job(id: String, spec: Spec, jobs: Registry<String, JobState>) {
     let handle = Handle::current();
-    if take_cancelled(&shared, &id) {
+    if jobs.take_cancelled(&id) {
         return;
     }
     let job_dir = spec.incoming.join(&id);
     if let Err(error) = std::fs::create_dir_all(&job_dir) {
-        fail(&shared, &id, format!("cannot create download dir: {error}"));
+        fail(&jobs, &id, format!("cannot create download dir: {error}"));
         return;
     }
 
     let notify = Arc::new(Notify::new());
-    register_cancel(&shared, &id, Arc::clone(&notify));
-    set_state(&shared, &id, JobState::Downloading { percent: 0.0, speed: None, eta: None });
+    jobs.register_cancel(&id, Arc::clone(&notify));
+    jobs.set_state(&id, JobState::Downloading { percent: 0.0, speed: None, eta: None });
 
     let args = yt_args(&spec, &job_dir);
     let mut process = Process::new(spec.yt_dlp.as_os_str().to_owned());
@@ -309,7 +286,7 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
     let mut child = match process.spawn_piped() {
         Ok(child) => child,
         Err(error) => {
-            fail(&shared, &id, format!("cannot start yt-dlp: {error}"));
+            fail(&jobs, &id, format!("cannot start yt-dlp: {error}"));
             return;
         }
     };
@@ -317,16 +294,9 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
     let stderr = child.take_stderr();
     let tracker = Arc::new(Mutex::new(ProgressTracker::default()));
     if let Some(stdout) = stdout {
-        spawn_progress(&handle, Arc::clone(&shared), id.clone(), stdout, Arc::clone(&tracker));
+        spawn_progress(&handle, jobs.clone(), id.clone(), stdout, Arc::clone(&tracker));
     }
-    let stderr_task = stderr.map(|stderr| {
-        handle.spawn(async move {
-            let mut text = String::new();
-            let mut reader = BufReader::new(stderr);
-            let _ = reader.read_to_string(&mut text).await;
-            return text;
-        })
-    });
+    let stderr_task = jobs::drain_stderr(&handle, stderr);
 
     let mut status: Option<io::Result<ExitStatus>> = None;
     let cancelled = tokio::select! {
@@ -339,35 +309,27 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
 
     if cancelled {
         let _ = child.cancel(ESCALATION).await;
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
+        let _ = jobs::join_stderr(stderr_task).await;
         let _ = std::fs::remove_dir_all(&job_dir);
-        set_state(&shared, &id, JobState::Cancelled);
-        jobs::evict_after(&handle, Arc::clone(&shared), id.clone(), |_| true);
+        jobs.finish(&id, JobState::Cancelled);
         return;
     }
 
-    let stderr_text = match stderr_task {
-        Some(task) => task.await.unwrap_or_default(),
-        None => String::new(),
-    };
+    let stderr_text = jobs::join_stderr(stderr_task).await;
     let success = matches!(status, Some(Ok(exit)) if exit.success());
     if !success {
         let _ = std::fs::remove_dir_all(&job_dir);
-        fail(&shared, &id, failure_reason(&stderr_text));
-        jobs::evict_after(&handle, Arc::clone(&shared), id, |_| true);
+        fail(&jobs, &id, jobs::failure_reason(&stderr_text, "yt-dlp"));
         return;
     }
 
     let Some(file) = find_output(&job_dir) else {
         let _ = std::fs::remove_dir_all(&job_dir);
-        fail(&shared, &id, "yt-dlp produced no output file");
-        jobs::evict_after(&handle, Arc::clone(&shared), id, |_| true);
+        fail(&jobs, &id, "yt-dlp produced no output file");
         return;
     };
 
-    set_state(&shared, &id, JobState::Importing);
+    jobs.set_state(&id, JobState::Importing);
     let inputs = vec![file.to_string_lossy().into_owned()];
     let report = import::run(&inputs, &spec.wallpapers, &spec.thumbs, spec.policy, Transfer::Move).await;
     let _ = std::fs::remove_dir_all(&job_dir);
@@ -380,16 +342,16 @@ async fn run_job(id: String, spec: Spec, shared: Arc<Mutex<BTreeMap<String, JobR
             .next()
             .and_then(|result| result.reason)
             .unwrap_or_else(|| "import failed".to_string());
-        fail(&shared, &id, reason);
-    } else {
-        post(Event::DownloadImported { job: id.clone(), items });
+        fail(&jobs, &id, reason);
+        return;
     }
-    jobs::evict_after(&handle, shared, id, |_| true);
+    post(Event::DownloadImported { job: id.clone(), items });
+    jobs.evict(&id);
 }
 
 fn spawn_progress(
     handle: &Handle,
-    shared: Arc<Mutex<BTreeMap<String, JobRecord>>>,
+    jobs: Registry<String, JobState>,
     id: String,
     stdout: tokio::process::ChildStdout,
     tracker: Arc<Mutex<ProgressTracker>>,
@@ -403,33 +365,23 @@ fn spawn_progress(
                         let Ok(mut tracker) = tracker.lock() else { break };
                         (tracker.update(&raw), raw.speed, raw.eta)
                     };
-                    set_state(&shared, &id, JobState::Downloading { percent, speed, eta });
+                    jobs.set_state(&id, JobState::Downloading { percent, speed, eta });
                 }
             } else if let Some(payload) = line.strip_prefix(LW_POST)
                 && let Ok(raw) = serde_json::from_str::<RawPost>(payload)
                 && raw.postprocessor.is_some()
             {
-                set_state(&shared, &id, JobState::Merging);
+                jobs.set_state(&id, JobState::Merging);
             }
         }
     });
 }
 
-fn fail(shared: &Mutex<BTreeMap<String, JobRecord>>, id: &str, reason: impl Into<String>) {
-    set_state(shared, id, JobState::Failed { reason: reason.into() });
+fn fail(jobs: &Registry<String, JobState>, id: &String, reason: impl Into<String>) {
+    jobs.set_state(id, JobState::Failed { reason: reason.into() });
+    jobs.evict(id);
 }
 
-fn failure_reason(stderr: &str) -> String {
-    for line in stderr.lines().rev() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    return "yt-dlp failed".to_string();
-}
-
-#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn find_output(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(u64, PathBuf)> = None;
@@ -438,8 +390,8 @@ fn find_output(dir: &Path) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let name = path.to_string_lossy().to_ascii_lowercase();
-        if name.ends_with(".part") || name.ends_with(".ytdl") || name.ends_with(".temp") {
+        let extension = path.extension().map(|value| value.to_string_lossy().to_ascii_lowercase());
+        if matches!(extension.as_deref(), Some("part" | "ytdl" | "temp")) {
             continue;
         }
         let size = entry.metadata().map_or(0, |metadata| metadata.len());
@@ -513,10 +465,5 @@ mod tests {
             eta: None,
         });
         assert!((regressed - 0.95).abs() < 1e-9, "progress regressed: {regressed}");
-    }
-
-    #[test]
-    fn merge_format_is_mp4() {
-        assert_eq!(merge_format(), "mp4");
     }
 }

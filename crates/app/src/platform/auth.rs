@@ -11,12 +11,9 @@ pub fn evaluate(reason: &str, epoch: u64) -> Retained<LAContext> {
     let reply = RcBlock::new(move |success: Bool, _error: *mut NSError| {
         post(Event::UnlockResult { success: success.as_bool(), epoch });
     });
+    let reason = NSString::from_str(reason);
     unsafe {
-        context.evaluatePolicy_localizedReason_reply(
-            LAPolicy::DeviceOwnerAuthentication,
-            &NSString::from_str(reason),
-            &reply,
-        );
+        context.evaluatePolicy_localizedReason_reply(LAPolicy::DeviceOwnerAuthentication, &reason, &reply);
     }
     return context;
 }

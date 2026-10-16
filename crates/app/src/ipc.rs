@@ -1,13 +1,17 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::Duration;
 
 use proto::{Error, ErrorCode, Request, RequestEnvelope, Response};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
-use crate::app::{self, Event};
+use crate::app::{Event, post};
+
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
+const SOCKET_MODE: u32 = 0o600;
 
 pub enum BindOutcome {
     Bound(std::os::unix::net::UnixListener),
@@ -23,7 +27,7 @@ pub fn prepare(path: &Path) -> io::Result<BindOutcome> {
     }
     let listener = std::os::unix::net::UnixListener::bind(path)?;
     listener.set_nonblocking(true)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(SOCKET_MODE))?;
     return Ok(BindOutcome::Bound(listener));
 }
 
@@ -38,7 +42,7 @@ pub async fn serve(listener: UnixListener) {
                 tokio::spawn(handle(stream));
             }
             Err(_) => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
             }
         }
     }
@@ -55,7 +59,7 @@ async fn handle(stream: UnixStream) {
                     break;
                 }
                 if is_quit {
-                    app::post(Event::Quit);
+                    post(Event::Quit);
                     break;
                 }
             }
@@ -77,7 +81,7 @@ async fn handle_frame(frame: &[u8]) -> (Response, bool) {
             }
             let is_quit = matches!(envelope.request, Request::Quit);
             let (sender, receiver) = oneshot::channel();
-            app::post(Event::Request(envelope.request, sender));
+            post(Event::Request(envelope.request, sender));
             let response = match receiver.await {
                 Ok(response) => response,
                 Err(_) => Response::err(ErrorCode::Internal, "request dropped"),

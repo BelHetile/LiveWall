@@ -8,7 +8,11 @@ description = "IPC protocol types for LiveWall"
 [lints]
 workspace = true
 
+[features]
+clap = ["dep:clap"]
+
 [dependencies]
+clap = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

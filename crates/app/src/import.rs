@@ -36,7 +36,6 @@ pub struct PathResult {
 #[derive(Debug, Clone)]
 pub struct ImportedItem {
     pub item: Item,
-    pub needs_optimize: bool,
     pub result: PathResult,
 }
 
@@ -47,16 +46,9 @@ pub struct Report {
     pub skipped: usize,
 }
 
-impl Report {
-    #[cfg(test)]
-    fn added(&self) -> usize {
-        return self.imported.len();
-    }
-}
-
 struct Prepared {
     id: Uuid,
-    path: String,
+    path: PathBuf,
     probe: probe::Probe,
     verdict: probe::Verdict,
     needs_optimize: bool,
@@ -88,7 +80,7 @@ pub async fn run(
             return (index, outcome);
         });
     }
-    let mut ordered: Vec<(usize, Result<ImportedItem, PathResult>)> = Vec::with_capacity(inputs.len());
+    let mut ordered: Vec<(usize, Result<ImportedItem, Box<PathResult>>)> = Vec::with_capacity(inputs.len());
     while let Some(joined) = set.join_next().await {
         if let Ok(entry) = joined {
             ordered.push(entry);
@@ -105,28 +97,27 @@ pub async fn run(
             }
             Err(failed) => {
                 report.skipped += 1;
-                report.results.push(failed);
+                report.results.push(*failed);
             }
         }
     }
     return report;
 }
 
-#[allow(clippy::result_large_err)]
 async fn import_one(
     input: String,
     dest_dir: PathBuf,
     thumbs_dir: PathBuf,
     policy: probe::Policy,
     transfer: Transfer,
-) -> Result<ImportedItem, PathResult> {
-    let Some(extension) = extension_of(&input) else {
+) -> Result<ImportedItem, Box<PathResult>> {
+    let Some(extension) = extension_of(Path::new(&input)) else {
         return Err(skipped(&input, "unsupported format"));
     };
     let Some(kind) = kind_for(&extension) else {
         return Err(skipped(&input, "unsupported format"));
     };
-    let task_input = input.clone();
+    let task_input = PathBuf::from(&input);
     let task = tokio::task::spawn_blocking(move || prepare(&task_input, &extension, kind, &dest_dir, policy, transfer));
     let prepared = match task.await {
         Ok(Ok(prepared)) => prepared,
@@ -141,7 +132,7 @@ async fn import_one(
         path: input.clone(),
         status: PathStatus::Imported,
         id: Some(prepared.id.to_string()),
-        title: Some(title_of(&input)),
+        title: Some(title_of(Path::new(&input))),
         thumbnail: thumbnail.clone(),
         verdict: Some(prepared.verdict.clone()),
         reason: None,
@@ -149,8 +140,8 @@ async fn import_one(
     let item = Item {
         id: prepared.id,
         kind: prepared.probe.kind,
-        path: prepared.path,
-        title: title_of(&input),
+        path: prepared.path.to_string_lossy().into_owned(),
+        title: title_of(Path::new(&input)),
         added_at: jiff::Timestamp::now(),
         folder: None,
         mode: FillMode::Fill,
@@ -171,52 +162,50 @@ async fn import_one(
         needs_optimize: prepared.needs_optimize,
         optimize_reason: reason_text(&prepared.verdict),
     };
-    return Ok(ImportedItem { item, needs_optimize: prepared.needs_optimize, result });
+    return Ok(ImportedItem { item, result });
 }
 
 fn reason_text(verdict: &probe::Verdict) -> Option<String> {
     let probe::Verdict::NeedsOptimize { reasons } = verdict else {
         return None;
     };
-    let labels: Vec<&str> = reasons.iter().map(|reason| reason.label()).collect();
+    let labels: Vec<String> = reasons.iter().map(ToString::to_string).collect();
     return Some(labels.join(","));
 }
 
-#[allow(clippy::result_large_err)]
 fn prepare(
-    input: &str,
+    input: &Path,
     extension: &str,
     kind: ItemKind,
     dest_dir: &Path,
     policy: probe::Policy,
     transfer: Transfer,
-) -> Result<Prepared, PathResult> {
+) -> Result<Prepared, Box<PathResult>> {
     let id = Uuid::new_v4();
     let target = dest_dir.join(format!("{id}.{extension}"));
     if let Err(error) = place(input, &target, transfer) {
-        return Err(skipped(input, &format!("cannot import file: {error}")));
+        return Err(skipped(&input.to_string_lossy(), &format!("cannot import file: {error}")));
     }
-    let path = target.to_string_lossy().into_owned();
-    let found = probe::inspect(&path, kind);
+    let found = probe::inspect(&target, kind);
     let verdict = probe::verdict(&found, policy);
     if let probe::Verdict::Unsupported { reason } = &verdict {
         let reason = reason.clone();
         let _ = std::fs::remove_file(&target);
-        return Err(PathResult {
-            path: input.to_string(),
+        return Err(Box::new(PathResult {
+            path: input.to_string_lossy().into_owned(),
             status: PathStatus::Rejected,
             id: None,
             title: None,
             thumbnail: None,
             verdict: Some(verdict),
             reason: Some(reason),
-        });
+        }));
     }
     let needs_optimize = matches!(verdict, probe::Verdict::NeedsOptimize { .. });
-    return Ok(Prepared { id, path, probe: found, verdict, needs_optimize });
+    return Ok(Prepared { id, path: target, probe: found, verdict, needs_optimize });
 }
 
-fn place(input: &str, target: &Path, transfer: Transfer) -> std::io::Result<()> {
+fn place(input: &Path, target: &Path, transfer: Transfer) -> std::io::Result<()> {
     return match transfer {
         Transfer::Copy => {
             std::fs::copy(input, target)?;
@@ -233,16 +222,16 @@ fn place(input: &str, target: &Path, transfer: Transfer) -> std::io::Result<()> 
     };
 }
 
-fn extension_of(input: &str) -> Option<String> {
-    return Path::new(input).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+fn extension_of(input: &Path) -> Option<String> {
+    return input.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
 }
 
-fn title_of(input: &str) -> String {
-    return Path::new(input).file_stem().and_then(|stem| stem.to_str()).unwrap_or("untitled").to_string();
+fn title_of(input: &Path) -> String {
+    return input.file_stem().and_then(|stem| stem.to_str()).unwrap_or("untitled").to_string();
 }
 
-fn skipped(path: &str, reason: &str) -> PathResult {
-    return PathResult {
+fn skipped(path: &str, reason: &str) -> Box<PathResult> {
+    return Box::new(PathResult {
         path: path.to_string(),
         status: PathStatus::Skipped,
         id: None,
@@ -250,7 +239,7 @@ fn skipped(path: &str, reason: &str) -> PathResult {
         thumbnail: None,
         verdict: None,
         reason: Some(reason.to_string()),
-    };
+    });
 }
 
 #[cfg(test)]
@@ -267,11 +256,11 @@ mod tests {
         let source = dir.path().join("a.bin");
         std::fs::write(&source, b"data").expect("write");
         let copy = dir.path().join("copy.bin");
-        place(&source.to_string_lossy(), &copy, Transfer::Copy).expect("copy");
+        place(&source, &copy, Transfer::Copy).expect("copy");
         assert!(source.exists(), "copy must keep the original");
         assert!(copy.exists());
         let moved = dir.path().join("moved.bin");
-        place(&copy.to_string_lossy(), &moved, Transfer::Move).expect("move");
+        place(&copy, &moved, Transfer::Move).expect("move");
         assert!(!copy.exists(), "move must remove the original");
         assert!(moved.exists());
     }
@@ -300,7 +289,7 @@ mod tests {
         std::fs::write(&txt, b"not media").expect("write");
 
         let report = run(&[txt.to_string_lossy().into_owned()], &dest, &thumbs, policy(), Transfer::Copy).await;
-        assert_eq!(report.added(), 0);
+        assert!(report.imported.is_empty());
         assert_eq!(report.skipped, 1);
         assert_eq!(report.results.len(), 1);
         assert_eq!(report.results[0].status, PathStatus::Skipped);
@@ -323,7 +312,7 @@ mod tests {
             Transfer::Copy,
         )
         .await;
-        assert_eq!(report.added(), 0);
+        assert!(report.imported.is_empty());
         assert_eq!(report.skipped, 1);
         assert_eq!(report.results[0].status, PathStatus::Skipped);
     }

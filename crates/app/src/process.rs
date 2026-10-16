@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
@@ -7,33 +7,38 @@ use std::time::Duration;
 
 use tokio::process::{ChildStderr, ChildStdout, Command};
 
-static LIVE: Mutex<BTreeMap<u32, i32>> = Mutex::new(BTreeMap::new());
+static LIVE: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
 
 pub fn kill_all() {
-    let groups: Vec<i32> = LIVE.lock().map_or_else(|_| Vec::new(), |guard| guard.values().copied().collect());
-    for pgid in groups {
-        signal_group(pgid, libc::SIGKILL);
+    let pids: Vec<u32> = LIVE.lock().map_or_else(|_| Vec::new(), |guard| guard.iter().copied().collect());
+    for pid in pids {
+        signal_group(pid, libc::SIGKILL);
     }
 }
 
-fn signal_group(pgid: i32, signal: i32) {
-    if pgid > 1 {
-        unsafe { libc::killpg(pgid, signal) };
+fn signal_group(pid: u32, signal: i32) {
+    if let Ok(group) = i32::try_from(pid)
+        && group > 1
+    {
+        unsafe { libc::killpg(group, signal) };
     }
 }
 
 #[cfg(test)]
-fn group_alive(pgid: i32) -> bool {
-    if pgid <= 1 {
+fn group_alive(pid: u32) -> bool {
+    let Ok(group) = i32::try_from(pid) else {
+        return false;
+    };
+    if group <= 1 {
         return false;
     }
-    let result = unsafe { libc::killpg(pgid, 0) };
+    let result = unsafe { libc::killpg(group, 0) };
     return result == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
 }
 
-fn register(pid: u32, group: i32) {
+fn register(pid: u32) {
     if let Ok(mut guard) = LIVE.lock() {
-        guard.insert(pid, group);
+        guard.insert(pid);
     }
 }
 
@@ -41,10 +46,6 @@ fn deregister(pid: u32) {
     if let Ok(mut guard) = LIVE.lock() {
         guard.remove(&pid);
     }
-}
-
-fn pgid_of(pid: u32) -> i32 {
-    return i32::try_from(pid).unwrap_or(0);
 }
 
 pub struct Process {
@@ -101,7 +102,7 @@ impl Process {
     pub async fn output(&self) -> io::Result<Output> {
         let inner = self.command().spawn()?;
         let pid = inner.id().unwrap_or(0);
-        register(pid, pgid_of(pid));
+        register(pid);
         let result = inner.wait_with_output().await;
         deregister(pid);
         return result;
@@ -111,21 +112,19 @@ impl Process {
 pub struct Child {
     inner: tokio::process::Child,
     pid: u32,
-    pgid: i32,
     alive: bool,
 }
 
 impl Child {
     fn adopt(inner: tokio::process::Child) -> Self {
         let pid = inner.id().unwrap_or(0);
-        let group = pgid_of(pid);
-        register(pid, group);
-        return Self { inner, pid, pgid: group, alive: true };
+        register(pid);
+        return Self { inner, pid, alive: true };
     }
 
     #[cfg(test)]
-    fn pgid(&self) -> i32 {
-        return self.pgid;
+    fn pid(&self) -> u32 {
+        return self.pid;
     }
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
@@ -137,11 +136,11 @@ impl Child {
     }
 
     fn terminate(&self) {
-        signal_group(self.pgid, libc::SIGTERM);
+        signal_group(self.pid, libc::SIGTERM);
     }
 
     fn kill(&self) {
-        signal_group(self.pgid, libc::SIGKILL);
+        signal_group(self.pid, libc::SIGKILL);
     }
 
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
@@ -174,7 +173,7 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         if self.alive {
-            signal_group(self.pgid, libc::SIGKILL);
+            signal_group(self.pid, libc::SIGKILL);
             deregister(self.pid);
             self.alive = false;
         }
@@ -192,9 +191,9 @@ mod tests {
         return process;
     }
 
-    async fn wait_gone(pgid: i32) {
+    async fn wait_gone(pid: u32) {
         for _ in 0..100 {
-            if !group_alive(pgid) {
+            if !group_alive(pid) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -217,37 +216,37 @@ mod tests {
         let marker = dir.path().join("ready");
         let script = format!("trap \"\" TERM; : > '{}'; sleep 30", marker.display());
         let mut child = stub(&script).spawn_piped().expect("spawn");
-        let pgid = child.pgid();
-        assert!(pgid > 1);
+        let pid = child.pid();
+        assert!(pid > 1);
         await_marker(&marker).await;
         let started = Instant::now();
         child.cancel(Duration::from_millis(300)).await.expect("cancel");
         let elapsed = started.elapsed();
         assert!(elapsed >= Duration::from_millis(250), "escalation delay was skipped: {elapsed:?}");
         assert!(elapsed < Duration::from_secs(5), "cancel took too long: {elapsed:?}");
-        wait_gone(pgid).await;
-        assert!(!group_alive(pgid), "process group survived the kill");
+        wait_gone(pid).await;
+        assert!(!group_alive(pid), "process group survived the kill");
     }
 
     #[tokio::test]
     async fn cancel_is_prompt_when_term_is_honoured() {
         let mut child = stub("sleep 30").spawn_piped().expect("spawn");
-        let pgid = child.pgid();
+        let pid = child.pid();
         let started = Instant::now();
         child.cancel(Duration::from_secs(5)).await.expect("cancel");
         assert!(started.elapsed() < Duration::from_secs(2), "did not exit on SIGTERM");
-        wait_gone(pgid).await;
-        assert!(!group_alive(pgid), "process group survived the kill");
+        wait_gone(pid).await;
+        assert!(!group_alive(pid), "process group survived the kill");
     }
 
     #[tokio::test]
     async fn wait_reaps_without_killing_an_unrelated_group() {
         let mut child = stub("exit 0").spawn_piped().expect("spawn");
-        let pgid = child.pgid();
+        let pid = child.pid();
         let status = child.wait().await.expect("wait");
         assert!(status.success());
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!group_alive(pgid));
+        assert!(!group_alive(pid));
     }
 
     #[tokio::test]

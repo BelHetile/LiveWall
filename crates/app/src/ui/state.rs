@@ -2,6 +2,10 @@ use crate::model::ItemKind;
 use crate::ui::view::{Library, Target};
 use crate::ui::wall::duration;
 
+pub const TAG_ALL: isize = -1;
+pub const TAG_NEW_FOLDER: isize = -2;
+pub const TAG_RESET: isize = -100;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     All,
@@ -18,8 +22,8 @@ impl Scope {
 
     pub fn tag(self) -> isize {
         return match self {
-            Scope::All => -1,
-            Scope::Space(space) => isize::try_from(space).unwrap_or(-1),
+            Scope::All => TAG_ALL,
+            Scope::Space(space) => isize::try_from(space).unwrap_or(TAG_ALL),
         };
     }
 

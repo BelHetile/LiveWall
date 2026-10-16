@@ -30,7 +30,9 @@ const TYPE_HOTKEY_ID: u32 = u32::from_be_bytes(*b"hkid");
 const HOTKEY_EXCLUSIVE: u32 = 1;
 const EVENT_HOT_KEY_EXISTS_ERR: i32 = -9878;
 const EVENT_NOT_HANDLED_ERR: i32 = -9874;
+const PARAM_ERR: i32 = -50;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"LWr1");
+#[cfg(feature = "test-support")]
 const ATTRIBUTE_NONE: u32 = 0;
 
 #[link(name = "Carbon", kind = "framework")]
@@ -63,6 +65,11 @@ unsafe extern "C" {
         actual_size: *mut usize,
         data: *mut c_void,
     ) -> i32;
+}
+
+#[cfg(feature = "test-support")]
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
     fn CreateEvent(
         allocator: *mut c_void,
         class_id: u32,
@@ -150,7 +157,7 @@ impl Hotkeys {
             return Ok(());
         }
         let Some(code) = hotkey::keycode(&combo.key) else {
-            return Err(RegisterError::Failed(-50));
+            return Err(RegisterError::Failed(PARAM_ERR));
         };
         let mask = hotkey::modifier_mask(&combo.modifiers);
         let id = EventHotKeyId { signature: SIGNATURE, id: hotkey::registration_id(action) };
@@ -191,6 +198,7 @@ impl Drop for Hotkeys {
     }
 }
 
+#[cfg(feature = "test-support")]
 pub fn synthesize_press(action: HotkeyAction) -> bool {
     return unsafe {
         let target = GetApplicationEventTarget();

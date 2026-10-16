@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,30 +14,38 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::download;
-use crate::engine::{Engine, Playback, resolve_item};
+use crate::engine::{Engine, Playback};
 use crate::hotkey;
 use crate::i18n::{self, Strings};
 use crate::import;
-use crate::media::optimize;
 use crate::media::probe;
+use crate::media::{optimize, plan};
 use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{FolderId, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
-use crate::paths::Paths;
+use crate::paths::{DirKind, Paths};
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
 use crate::platform::spaces::{self, SurfaceKey};
 use crate::platform::system::{self, LoginItemStatus};
-use crate::platform::{auth, detect};
-use crate::privacy;
+use crate::platform::{auth, cancel_timer, detect, schedule_timer};
 use crate::process;
 use crate::rules;
 use crate::store;
 use crate::tools;
 
+mod privacy;
+
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 const VOLUME_STEP: f32 = 0.1;
 const IDLE_POLL_SECONDS: f64 = 10.0;
 const UNLOCK_REASON: &str = "Unlock private wallpaper folders";
+const LOCKED: &str = "locked";
+const INVALID_ITEM_ID: &str = "invalid item id";
+const INVALID_FOLDER_ID: &str = "invalid folder id";
+const NO_SUCH_ITEM: &str = "no such item";
+const NO_SUCH_FOLDER: &str = "no such folder";
+const NO_OPTIMIZE_JOB: &str = "no optimize job for this item";
+const SERIALIZATION_FAILED: &str = "serialization failed";
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -78,11 +85,11 @@ pub enum Event {
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
+    mtm: MainThreadMarker,
     paths: Paths,
     library: Library,
     settings: Settings,
     paused: bool,
-    muted: bool,
     display_asleep: bool,
     screen_locked: bool,
     screensaver: bool,
@@ -117,14 +124,13 @@ impl App {
 
         let strings = Strings::new(i18n::select_language(settings.language, &system::preferred_languages()));
         let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
-        let muted = settings.muted;
-        let unlocked = cfg!(debug_assertions) && std::env::var_os("LIVEWALL_TEST_UNLOCKED").is_some();
+        let unlocked = test_unlocked();
         let menu = Menu::install(
             mtm,
             &MenuState {
                 title: current_title(&library, unlocked),
                 paused: false,
-                muted,
+                muted: settings.muted,
                 launch_at_login: settings.launch_at_login,
             },
             &strings,
@@ -134,7 +140,7 @@ impl App {
         let optimize = Arc::new(optimize::Queue::new(&handle));
         let downloads = Arc::new(download::Queue::new(handle.clone()));
         let mut app = Self {
-            muted,
+            mtm,
             paused: false,
             display_asleep: false,
             screen_locked: false,
@@ -171,6 +177,18 @@ impl App {
     fn handle(&mut self, event: Event) {
         match event {
             Event::Quit => self.shutdown(),
+            Event::Request(request, reply) => self.request(request, reply),
+            Event::Hotkey(action) => self.run_hotkey(action),
+            Event::Menu(action) => self.run_menu(action),
+            Event::ImportDone { report, reply } => {
+                let response = self.finish_import(&report);
+                let _ = reply.send(response);
+            }
+            Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
+            Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
+            Event::Reply(request, response) => crate::ui::reply(&request, &response),
+            Event::UnlockResult { success, epoch } => self.finish_unlock(success, epoch),
+            Event::IdleTick => self.idle_tick(),
             Event::VideoLoaded { item } => {
                 let playback = self.playback();
                 self.engine.on_video_loaded(item, &self.library, &playback);
@@ -194,70 +212,92 @@ impl App {
                 self.refresh_power();
             }
             Event::WakeCheck { item } => self.engine.on_wake_check(item),
-            Event::Hotkey(action) => self.run_hotkey(action),
-            Event::Menu(action) => self.run_menu(action),
-            Event::Request(request, reply) => self.request(request, reply),
-            Event::ImportDone { report, reply } => {
-                let response = self.finish_import(&report);
-                let _ = reply.send(response);
+            Event::DisplayChanged => self.on_display_changed(),
+            Event::SpacesChanged => {
+                self.sync(true);
+                self.refresh_rules();
             }
-            Event::IdleTick => self.idle_tick(),
-            Event::UnlockResult { success, epoch } => self.finish_unlock(success, epoch),
-            Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
-            Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
-            Event::Reply(request, response) => crate::ui::reply(&request, &response),
-            signal => self.handle_signal(&signal),
+            Event::AudioChanged => {
+                self.observers.rebind_audio();
+                self.observers.refresh_audio();
+                self.refresh_rules();
+            }
+            Event::AudioSettled => {
+                self.observers.settle_audio();
+                self.refresh_rules();
+            }
+            Event::DisplayAsleep(asleep) => self.on_display_asleep(asleep),
+            Event::LowPowerChanged => {
+                self.low_power = system::low_power_mode();
+                self.refresh_rules();
+            }
+            Event::ThermalChanged => {
+                self.thermal_hot = system::thermal_hot();
+                self.refresh_rules();
+            }
+            Event::ScreensaverChanged(active) => self.on_screensaver(active),
+            Event::OcclusionChanged => {
+                if self.engine.on_occlusion_changed() {
+                    self.refresh_rules();
+                }
+            }
+            Event::OcclusionSettled => {
+                if self.engine.on_occlusion_settled() {
+                    self.refresh_rules();
+                }
+            }
+            Event::ScreenLocked => self.on_screen_locked(),
+            Event::ScreenUnlocked => self.on_screen_unlocked(),
+            Event::SystemWake => {
+                self.refresh_rules();
+                self.engine.on_wake();
+            }
+            Event::FrontmostChanged | Event::GeometryTick => self.refresh_rules(),
         }
         self.sync_menu();
     }
 
-    fn handle_signal(&mut self, event: &Event) {
-        match *event {
-            Event::DisplayChanged => {
-                if self.settings.privacy.lock_on_display && system::online_display_count() > 1 {
-                    self.lock();
-                }
-                self.sync(false);
-            }
-            Event::SpacesChanged => self.sync(true),
-            Event::AudioChanged => {
-                self.observers.rebind_audio();
-                self.observers.refresh_audio();
-            }
-            Event::AudioSettled => self.observers.settle_audio(),
-            Event::DisplayAsleep(asleep) => {
-                self.display_asleep = asleep;
-                if asleep && self.settings.privacy.lock_on_screen_lock {
-                    self.lock();
-                }
-            }
-            Event::LowPowerChanged => self.low_power = system::low_power_mode(),
-            Event::ThermalChanged => self.thermal_hot = system::thermal_hot(),
-            Event::ScreensaverChanged(active) => {
-                self.screensaver = active;
-                if active && self.settings.privacy.lock_on_screen_lock {
-                    self.lock();
-                }
-            }
-            Event::OcclusionChanged if !self.engine.on_occlusion_changed() => return,
-            Event::OcclusionSettled if !self.engine.on_occlusion_settled() => return,
-            Event::ScreenLocked => {
-                self.screen_locked = true;
-                if self.settings.privacy.lock_on_screen_lock {
-                    self.lock();
-                }
-                self.engine.on_lock();
-            }
-            Event::ScreenUnlocked => {
-                self.screen_locked = false;
-                self.engine.on_unlock(&self.library);
-            }
-            _ => {}
+    fn on_display_changed(&mut self) {
+        if self.settings.privacy.lock_on_display && system::online_display_count() > 1 {
+            self.lock();
+        }
+        self.sync(false);
+        self.refresh_rules();
+    }
+
+    fn on_display_asleep(&mut self, asleep: bool) {
+        self.display_asleep = asleep;
+        if asleep && self.settings.privacy.lock_on_screen_lock {
+            self.lock();
         }
         self.refresh_rules();
-        if matches!(*event, Event::DisplayAsleep(false) | Event::SystemWake | Event::ScreenUnlocked) {
+        if !asleep {
             self.engine.on_wake();
         }
+    }
+
+    fn on_screensaver(&mut self, active: bool) {
+        self.screensaver = active;
+        if active && self.settings.privacy.lock_on_screen_lock {
+            self.lock();
+        }
+        self.refresh_rules();
+    }
+
+    fn on_screen_locked(&mut self) {
+        self.screen_locked = true;
+        if self.settings.privacy.lock_on_screen_lock {
+            self.lock();
+        }
+        self.engine.on_lock();
+        self.refresh_rules();
+    }
+
+    fn on_screen_unlocked(&mut self) {
+        self.screen_locked = false;
+        self.engine.on_unlock(&self.library);
+        self.refresh_rules();
+        self.engine.on_wake();
     }
 
     fn request(&mut self, request: Request, reply: oneshot::Sender<Response>) {
@@ -272,6 +312,12 @@ impl App {
                 let _ = reply.send(response);
             }
         }
+    }
+
+    fn reply_with(&self, reply: oneshot::Sender<Response>, work: impl Future<Output = Response> + Send + 'static) {
+        self.handle.spawn(async move {
+            let _ = reply.send(work.await);
+        });
     }
 
     pub fn submit(&mut self, request: Request) {
@@ -335,14 +381,13 @@ impl App {
         let policy = self.probe_policy();
         let height = self.max_display_px();
         let av1_hw = probe::av1_hardware();
-        self.handle.spawn(async move {
-            let response =
-                match resolve_download(&url, consent || settings_consent, &paths, policy, height, av1_hw, &queue).await
-                {
-                    Ok(id) => Response::ok(serde_json::json!({ "id": id, "state": "queued" })),
-                    Err((code, message)) => Response::err(code, message),
-                };
-            let _ = reply.send(response);
+        self.reply_with(reply, async move {
+            return match resolve_download(&url, consent || settings_consent, &paths, policy, height, av1_hw, &queue)
+                .await
+            {
+                Ok(id) => ok(&serde_json::json!({ "id": id, "state": "queued" })),
+                Err((code, message)) => Response::err(code, message),
+            };
         });
     }
 
@@ -389,27 +434,24 @@ impl App {
             return;
         };
         let policy = self.probe_policy();
-        self.handle.spawn(async move {
+        self.reply_with(reply, async move {
             let task = tokio::task::spawn_blocking(move || {
-                let found = probe::inspect(&path, kind);
+                let found = probe::inspect(std::path::Path::new(&path), kind);
                 let verdict = probe::verdict(&found, policy);
                 return (found, verdict);
             });
-            let response = match task.await {
-                Ok((found, verdict)) => Response::ok(serde_json::json!({ "probe": found, "verdict": verdict })),
+            return match task.await {
+                Ok((found, verdict)) => ok(&serde_json::json!({ "probe": found, "verdict": verdict })),
                 Err(_) => Response::err(ErrorCode::Internal, "probe failed"),
             };
-            let _ = reply.send(response);
         });
     }
 
     fn start_tools(&mut self, reply: oneshot::Sender<Response>) {
         let tools_dir = self.paths.tools_dir();
-        self.handle.spawn(async move {
+        self.reply_with(reply, async move {
             let report = tools::report(&tools_dir).await;
-            let response = serde_json::to_value(&report)
-                .map_or_else(|_| Response::err(ErrorCode::Internal, "serialization failed"), Response::ok);
-            let _ = reply.send(response);
+            return ok(&report);
         });
     }
 
@@ -423,18 +465,17 @@ impl App {
             return;
         }
         let tools_dir = self.paths.tools_dir();
-        self.handle.spawn(async move {
-            let response = match tools::install(kind, &tools_dir).await {
-                Ok(path) => Response::ok(serde_json::json!({ "tool": kind, "path": path.to_string_lossy() })),
+        self.reply_with(reply, async move {
+            return match tools::install(kind, &tools_dir).await {
+                Ok(path) => ok(&serde_json::json!({ "tool": kind, "path": path.to_string_lossy() })),
                 Err(message) => Response::err(ErrorCode::ToolMissing, message),
             };
-            let _ = reply.send(response);
         });
     }
 
     fn on_optimize_requested(&self, item: ItemId) -> Result<(), (ErrorCode, String)> {
         let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
-            return Err((ErrorCode::NotFound, "no such item".to_string()));
+            return Err((ErrorCode::NotFound, NO_SUCH_ITEM.to_string()));
         };
         if !entry.needs_optimize {
             return Err((ErrorCode::Media, "item does not need optimization".to_string()));
@@ -443,31 +484,31 @@ impl App {
         let container =
             std::path::Path::new(&entry.path).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
         let route = if entry.kind == ItemKind::Gif {
-            optimize::Route::Apple
+            plan::Route::Apple
         } else {
-            optimize::route(container.as_deref(), entry.codec.as_deref(), probe::av1_hardware())
+            plan::route(container.as_deref(), entry.codec.as_deref(), probe::av1_hardware())
         };
         let ffmpeg = match route {
-            optimize::Route::Apple => None,
-            optimize::Route::Ffmpeg => match tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) {
+            plan::Route::Apple => None,
+            plan::Route::Ffmpeg => match tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) {
                 Some(path) => Some(path),
                 None => return Err((ErrorCode::ToolMissing, "ffmpeg is not installed".to_string())),
             },
         };
-        let fallback = optimize::Source {
+        let fallback = plan::Source {
             width: entry.width,
             height: entry.height,
             fps: entry.fps,
             bit_depth: None,
             hdr: entry.hdr,
             transfer: None,
-            audio: optimize::audio_plan(entry.audio_codec.as_deref(), false),
+            audio: plan::audio_plan(entry.audio_codec.as_deref(), false),
         };
         let job = optimize::Job {
             item,
             kind: entry.kind,
             input: PathBuf::from(&entry.path),
-            thumbs_dir: self.paths.thumbs_for(self.library.is_private(entry)),
+            thumbs_dir: self.paths.dir_for(DirKind::Thumbs, self.library.visibility(entry)),
             ffmpeg,
             fps_limit: self.settings.optimize_fps_limit,
             max_pixels: self.max_display_px(),
@@ -480,27 +521,23 @@ impl App {
         return Ok(());
     }
 
-    fn start_optimize(&self, id: &str) -> Response {
-        let Ok(uuid) = id.parse::<Uuid>() else {
-            return Response::err(ErrorCode::Invalid, "invalid item id");
-        };
-        return match self.on_optimize_requested(uuid) {
+    fn start_optimize(&self, id: &str) -> Result<Response, Response> {
+        let uuid = parse_item(id)?;
+        return Ok(match self.on_optimize_requested(uuid) {
             Ok(()) => ok(&serde_json::json!({ "id": id, "state": "queued" })),
             Err((code, message)) => Response::err(code, message),
-        };
+        });
     }
 
-    fn optimize_status(&self, id: &str) -> Response {
-        let Ok(uuid) = id.parse::<Uuid>() else {
-            return Response::err(ErrorCode::Invalid, "invalid item id");
-        };
+    fn optimize_status(&self, id: &str) -> Result<Response, Response> {
+        let uuid = parse_item(id)?;
         if !self.unlocked && self.library.is_private_id(uuid) {
-            return Response::err(ErrorCode::NotFound, "no optimize job for this item");
+            return Ok(Response::err(ErrorCode::NotFound, NO_OPTIMIZE_JOB));
         }
-        return match self.optimize.status(uuid) {
+        return Ok(match self.optimize.status(uuid) {
             Some(state) => ok(&state.report(uuid)),
-            None => Response::err(ErrorCode::NotFound, "no optimize job for this item"),
-        };
+            None => Response::err(ErrorCode::NotFound, NO_OPTIMIZE_JOB),
+        });
     }
 
     fn download_status(&self, id: &str) -> Response {
@@ -534,7 +571,7 @@ impl App {
                 let _ = self.set_paused(!paused);
             }
             HotkeyAction::ToggleMute => {
-                let muted = self.muted;
+                let muted = self.settings.muted;
                 let _ = self.set_muted(!muted);
             }
             HotkeyAction::VolumeUp => self.nudge_volume(VOLUME_STEP),
@@ -554,7 +591,7 @@ impl App {
     fn showing_item(&self) -> Option<ItemId> {
         let (spaces, current) = self.desktops();
         let space = spaces.into_iter().nth(current)?;
-        return resolve_item(&self.library, &SurfaceKey::new(space), self.unlocked);
+        return self.library.resolve(Some(&space), self.unlocked);
     }
 
     fn run_menu(&mut self, action: MenuAction) {
@@ -573,7 +610,7 @@ impl App {
                 let _ = self.select(Selection::Random, None);
             }
             MenuAction::ToggleMute => {
-                let muted = self.muted;
+                let muted = self.settings.muted;
                 let _ = self.set_muted(!muted);
             }
             MenuAction::ToggleLaunchAtLogin => {
@@ -587,7 +624,7 @@ impl App {
     fn shutdown(&mut self) {
         self.engine.restore_desktop();
         process::kill_all();
-        quit();
+        quit(self.mtm);
     }
 
     fn sync_menu(&self) {
@@ -595,7 +632,7 @@ impl App {
             &MenuState {
                 title: current_title(&self.library, self.unlocked),
                 paused: self.paused,
-                muted: self.muted,
+                muted: self.settings.muted,
                 launch_at_login: self.settings.launch_at_login,
             },
             &self.strings,
@@ -605,7 +642,7 @@ impl App {
     fn playback(&self) -> Playback {
         return Playback {
             paused: self.paused,
-            muted: self.muted,
+            muted: self.settings.muted,
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
             unlocked: self.unlocked,
@@ -654,23 +691,13 @@ impl App {
         let needed = rules::geometry_poll_needed(self.engine.any_playing(), &self.verdict, &self.settings);
         match (needed, self.geometry_timer.is_some()) {
             (true, false) => self.start_geometry_timer(),
-            (false, true) => {
-                if let Some(timer) = self.geometry_timer.take() {
-                    timer.invalidate();
-                }
-            }
+            (false, true) => cancel_timer(self.geometry_timer.take()),
             _ => {}
         }
     }
 
     fn start_geometry_timer(&mut self) {
-        let block = block2::RcBlock::new(|_timer: NonNull<NSTimer>| {
-            post(Event::GeometryTick);
-        });
-        let timer =
-            unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(GEOMETRY_POLL_SECONDS, true, &block) };
-        crate::platform::apply_timer_tolerance(&timer, GEOMETRY_POLL_SECONDS);
-        self.geometry_timer = Some(timer);
+        self.geometry_timer = Some(schedule_timer(GEOMETRY_POLL_SECONDS, true, || Event::GeometryTick));
     }
 
     fn sync(&mut self, force_desktop: bool) {
@@ -738,13 +765,21 @@ impl App {
             .downloads
             .reports()
             .into_iter()
-            .filter(|report| matches!(report.state, "queued" | "downloading" | "merging" | "importing"))
+            .filter(|report| {
+                matches!(
+                    report.state,
+                    download::Phase::Queued
+                        | download::Phase::Downloading
+                        | download::Phase::Merging
+                        | download::Phase::Importing
+                )
+            })
             .collect();
     }
 
     pub fn ensure_thumbnail(&self, item: &Item) {
-        let (id, kind, path, duration) = (item.id, item.kind, item.path.clone(), item.duration);
-        let thumbs = self.paths.thumbs_for(self.library.is_private(item));
+        let (id, kind, path, duration) = (item.id, item.kind, PathBuf::from(&item.path), item.duration);
+        let thumbs = self.paths.dir_for(DirKind::Thumbs, self.library.visibility(item));
         self.handle.spawn(async move {
             if crate::media::thumb::ensure(id, kind, path, duration, thumbs).await.is_some() {
                 crate::ui::changed();
@@ -753,13 +788,12 @@ impl App {
     }
 
     pub fn apply_dock(&self) {
-        let Some(mtm) = MainThreadMarker::new() else { return };
         let policy = if self.settings.show_in_dock {
             NSApplicationActivationPolicy::Regular
         } else {
             NSApplicationActivationPolicy::Accessory
         };
-        let _ = NSApplication::sharedApplication(mtm).setActivationPolicy(policy);
+        let _ = NSApplication::sharedApplication(self.mtm).setActivationPolicy(policy);
     }
 
     fn current_item(&self) -> Option<ItemId> {
@@ -767,7 +801,7 @@ impl App {
     }
 
     fn state(&self) -> StateReport {
-        return StateReport { paused: self.paused, muted: self.muted };
+        return StateReport { paused: self.paused, muted: self.settings.muted };
     }
 
     fn set_paused(&mut self, paused: bool) -> Response {
@@ -777,7 +811,8 @@ impl App {
     }
 
     fn set_muted(&mut self, muted: bool) -> Response {
-        self.muted = muted;
+        self.settings.muted = muted;
+        self.persist_settings();
         self.reapply();
         return ok(&self.state());
     }
@@ -789,12 +824,9 @@ impl App {
         everywhere: bool,
         transition: Option<&proto::Transition>,
     ) -> Response {
-        let item = match item {
-            Some(value) => match value.parse::<Uuid>() {
-                Ok(id) => Some(id),
-                Err(_) => return Response::err(ErrorCode::Invalid, "invalid item id"),
-            },
-            None => None,
+        let item = match item.map(parse_item).transpose() {
+            Ok(item) => item,
+            Err(response) => return response,
         };
         if let Some(id) = item
             && let Some(entry) = self.library.items.iter().find(|entry| entry.id == id)
@@ -828,10 +860,8 @@ impl App {
             return;
         }
         self.unlocked = false;
-        let playback = self.playback();
-        self.engine.hide_private(&self.library, &playback);
+        self.refresh_visibility();
         self.sync_idle_timer();
-        self.refresh_power();
         self.sync_menu();
         crate::ui::changed();
     }
@@ -859,20 +889,8 @@ impl App {
     fn sync_idle_timer(&mut self) {
         let needed = self.unlocked && self.settings.privacy.lock_on_idle;
         match (needed, self.idle_timer.is_some()) {
-            (true, false) => {
-                let block = block2::RcBlock::new(|_timer: NonNull<NSTimer>| {
-                    post(Event::IdleTick);
-                });
-                let timer =
-                    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(IDLE_POLL_SECONDS, true, &block) };
-                crate::platform::apply_timer_tolerance(&timer, IDLE_POLL_SECONDS);
-                self.idle_timer = Some(timer);
-            }
-            (false, true) => {
-                if let Some(timer) = self.idle_timer.take() {
-                    timer.invalidate();
-                }
-            }
+            (true, false) => self.idle_timer = Some(schedule_timer(IDLE_POLL_SECONDS, true, || Event::IdleTick)),
+            (false, true) => cancel_timer(self.idle_timer.take()),
             _ => {}
         }
     }
@@ -888,104 +906,7 @@ impl App {
         if self.unlocked || !privacy::denies(&self.library, request) {
             return None;
         }
-        return Some(Response::err(ErrorCode::Locked, "locked"));
-    }
-
-    fn library_view(&self) -> LibraryView<'_> {
-        return LibraryView {
-            items: privacy::visible_items(&self.library, self.unlocked),
-            folders: privacy::visible_folders(&self.library, self.unlocked),
-        };
-    }
-
-    fn optimizing(&self, item: ItemId) -> bool {
-        return matches!(
-            self.optimize.status(item),
-            Some(optimize::JobState::Queued | optimize::JobState::Running { .. })
-        );
-    }
-
-    fn refresh_visibility(&mut self) {
-        if self.unlocked {
-            self.reapply();
-            return;
-        }
-        let playback = self.playback();
-        self.engine.hide_private(&self.library, &playback);
-        self.engine.refresh_desktop(&self.library, false);
-        self.refresh_power();
-    }
-
-    fn relocate(&mut self, items: &[ItemId], to_private: bool) -> Result<(), Response> {
-        if items.iter().any(|item| self.optimizing(*item)) {
-            return Err(Response::err(ErrorCode::Busy, "optimize is in progress for this item"));
-        }
-        for item in items {
-            self.engine.forget(*item);
-        }
-        let lock = self.library.placement.lock;
-        if let Err(error) = privacy::relocate_many(&self.paths, &mut self.library.items, items, to_private, lock) {
-            self.reapply();
-            return Err(Response::err(ErrorCode::Internal, format!("cannot move media: {error}")));
-        }
-        return Ok(());
-    }
-
-    fn move_to_folder(&mut self, ids: &[ItemId], folder: Option<FolderId>) -> Response {
-        let to_private = self.library.is_locked_folder(folder);
-        let changing: Vec<ItemId> = self
-            .library
-            .items
-            .iter()
-            .filter(|item| ids.contains(&item.id) && self.library.is_private(item) != to_private)
-            .map(|item| item.id)
-            .collect();
-        if let Err(response) = self.relocate(&changing, to_private) {
-            return response;
-        }
-        let moved = self.library.move_items(ids, folder);
-        self.persist_library();
-        self.refresh_visibility();
-        return ok(&serde_json::json!({ "moved": moved }));
-    }
-
-    fn delete_folder(&mut self, id: FolderId) -> Response {
-        if !self.library.has_folder(id) {
-            return Response::err(ErrorCode::NotFound, "no such folder");
-        }
-        if self.library.is_locked_folder(Some(id))
-            && let Err(response) = self.relocate(&self.library.folder_items(id), false)
-        {
-            return response;
-        }
-        let Some(moved) = self.library.delete_folder(id) else {
-            return Response::err(ErrorCode::NotFound, "no such folder");
-        };
-        self.persist_library();
-        self.refresh_visibility();
-        return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
-    }
-
-    pub fn set_folder_lock(&mut self, id: FolderId, locked: Option<bool>, hidden: Option<bool>) -> Response {
-        let Some(folder) = self.library.folders.iter().find(|folder| folder.id == id) else {
-            return Response::err(ErrorCode::NotFound, "no such folder");
-        };
-        let (was_locked, was_hidden) = (folder.locked, folder.hidden);
-        let unlocking = locked == Some(false);
-        let restyling = hidden.is_some_and(|hidden| hidden != was_hidden);
-        if was_locked && !self.unlocked && (unlocking || restyling) {
-            return Response::err(ErrorCode::Locked, "locked");
-        }
-        if let Some(to_private) = locked.filter(|locked| *locked != was_locked) {
-            let members = self.library.folder_items(id);
-            if let Err(response) = self.relocate(&members, to_private) {
-                return response;
-            }
-        }
-        self.library.set_folder_flags(id, locked, hidden);
-        self.persist_library();
-        self.refresh_visibility();
-        return ok(&serde_json::json!({ "id": id.to_string(), "locked": locked, "hidden": hidden }));
+        return Some(Response::err(ErrorCode::Locked, LOCKED));
     }
 
     pub fn create_folder(&mut self, name: String, item: Option<ItemId>) -> Uuid {
@@ -1005,7 +926,7 @@ impl App {
             return ok(&serde_json::json!({ "lock": null }));
         };
         let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
-            return Response::err(ErrorCode::NotFound, "no such item");
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
         };
         let time = time.unwrap_or(entry.still_time).max(0.0);
         self.library.placement.lock = Some(LockAssignment { item, time });
@@ -1017,7 +938,7 @@ impl App {
     pub fn reset_item(&mut self, id: ItemId) -> Response {
         let (volume, speed) = (self.settings.volume, self.settings.speed);
         let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) else {
-            return Response::err(ErrorCode::NotFound, "no such item");
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
         };
         entry.volume = volume;
         entry.speed = speed;
@@ -1029,178 +950,154 @@ impl App {
         return ok(&serde_json::json!({ "item": id.to_string() }));
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn dispatch(&mut self, request: &Request) -> Response {
         if let Some(denied) = self.deny(request) {
             return denied;
         }
-        match request {
-            Request::Status => {
-                return ok(&StatusReport {
-                    version: env!("CARGO_PKG_VERSION"),
-                    paused: self.paused,
-                    muted: self.muted,
-                    current: self.current_item().map(|id| id.to_string()),
-                    surfaces: self.engine.windows().len(),
-                    playing: self.engine.playing_count(),
-                    max_pixels: self.max_display_px(),
-                    app_nap_token: self.nap.active(),
-                    paused_by: self.paused_by(),
-                    locked: !self.unlocked,
-                });
-            }
-            Request::Pause => return self.set_paused(true),
-            Request::Resume => return self.set_paused(false),
-            Request::TogglePause => return self.set_paused(!self.paused),
-            Request::Mute => return self.set_muted(true),
-            Request::Unmute => return self.set_muted(false),
-            Request::Current => return ok(&self.current_report()),
-            Request::LibraryList => return ok(&self.library_view()),
+        return self.route(request).unwrap_or_else(|response| response);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn route(&mut self, request: &Request) -> Result<Response, Response> {
+        return Ok(match request {
+            Request::Status => ok(&StatusReport {
+                version: env!("CARGO_PKG_VERSION"),
+                paused: self.paused,
+                muted: self.settings.muted,
+                current: self.current_item().map(|id| id.to_string()),
+                surfaces: self.engine.windows().len(),
+                playing: self.engine.playing_count(),
+                max_pixels: self.max_display_px(),
+                app_nap_token: self.nap.active(),
+                paused_by: self.paused_by(),
+                locked: !self.unlocked,
+            }),
+            Request::Pause => self.set_paused(true),
+            Request::Resume => self.set_paused(false),
+            Request::TogglePause => self.set_paused(!self.paused),
+            Request::Mute => self.set_muted(true),
+            Request::Unmute => self.set_muted(false),
+            Request::Current => ok(&self.current_report()),
+            Request::LibraryList => ok(&self.library_view()),
             Request::LibraryRemove { ids } => {
                 let removed = self.remove_items(ids);
                 self.persist_library();
                 self.reapply();
-                return ok(&serde_json::json!({ "removed": removed }));
+                ok(&serde_json::json!({ "removed": removed }))
             }
             Request::LibraryRename { id, title } => {
-                let Ok(id) = id.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid item id");
-                };
+                let id = parse_item(id)?;
                 if !self.library.rename_item(id, title.clone()) {
-                    return Response::err(ErrorCode::NotFound, "no such item");
+                    return Err(Response::err(ErrorCode::NotFound, NO_SUCH_ITEM));
                 }
                 self.persist_library();
-                return ok(&serde_json::json!({ "renamed": true }));
+                ok(&serde_json::json!({ "renamed": true }))
             }
             Request::LibraryMove { ids, folder } => {
                 let folder = match folder {
-                    Some(value) => match value.parse::<Uuid>() {
-                        Ok(id) if self.library.has_folder(id) => Some(id),
-                        Ok(_) => return Response::err(ErrorCode::NotFound, "no such folder"),
-                        Err(_) => return Response::err(ErrorCode::Invalid, "invalid folder id"),
-                    },
+                    Some(value) => {
+                        let id = parse_folder(value)?;
+                        if !self.library.has_folder(id) {
+                            return Err(Response::err(ErrorCode::NotFound, NO_SUCH_FOLDER));
+                        }
+                        Some(id)
+                    }
                     None => None,
                 };
                 let ids: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
-                return self.move_to_folder(&ids, folder);
+                self.move_to_folder(&ids, folder)
             }
             Request::FolderCreate { name } => {
                 let id = self.create_folder(name.clone(), None);
-                return ok(&serde_json::json!({ "id": id.to_string(), "name": name }));
+                ok(&serde_json::json!({ "id": id.to_string(), "name": name }))
             }
             Request::FolderRename { id, name } => {
-                let Ok(id) = id.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid folder id");
-                };
+                let id = parse_folder(id)?;
                 if !self.library.rename_folder(id, name.clone()) {
-                    return Response::err(ErrorCode::NotFound, "no such folder");
+                    return Err(Response::err(ErrorCode::NotFound, NO_SUCH_FOLDER));
                 }
                 self.persist_library();
-                return ok(&serde_json::json!({ "id": id.to_string(), "name": name }));
+                ok(&serde_json::json!({ "id": id.to_string(), "name": name }))
             }
-            Request::FolderDelete { id } => {
-                let Ok(id) = id.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid folder id");
-                };
-                return self.delete_folder(id);
-            }
-            Request::FolderLock { id, locked, hidden } => {
-                let Ok(id) = id.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid folder id");
-                };
-                return self.set_folder_lock(id, *locked, *hidden);
-            }
+            Request::FolderDelete { id } => self.delete_folder(parse_folder(id)?),
+            Request::FolderLock { id, locked, hidden } => self.set_folder_lock(parse_folder(id)?, *locked, *hidden),
             Request::Lock => {
                 self.lock();
-                return ok(&serde_json::json!({ "locked": true }));
+                ok(&serde_json::json!({ "locked": true }))
             }
             Request::Apply { item, target, transition } => {
-                return self.apply(item.as_deref(), target, false, transition.as_ref());
+                self.apply(item.as_deref(), target, false, transition.as_ref())
             }
-            Request::Next { transition } => return self.select(Selection::Next, transition.as_ref()),
-            Request::Previous { transition } => return self.select(Selection::Previous, transition.as_ref()),
-            Request::Random { transition } => return self.select(Selection::Random, transition.as_ref()),
+            Request::Next { transition } => self.select(Selection::Next, transition.as_ref()),
+            Request::Previous { transition } => self.select(Selection::Previous, transition.as_ref()),
+            Request::Random { transition } => self.select(Selection::Random, transition.as_ref()),
             Request::SetGeometry { item, mode, geometry } => {
-                let Ok(id) = item.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid item id");
+                let id = parse_item(item)?;
+                let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) else {
+                    return Err(Response::err(ErrorCode::NotFound, NO_SUCH_ITEM));
                 };
-                if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) {
-                    entry.mode = *mode;
-                    entry.modes.insert(*mode, *geometry);
-                    self.persist_library();
-                    self.reapply();
-                    return ok(&serde_json::json!({ "item": id.to_string() }));
-                }
-                return Response::err(ErrorCode::NotFound, "no such item");
+                entry.mode = *mode;
+                entry.modes.insert(*mode, *geometry);
+                self.persist_library();
+                self.reapply();
+                ok(&serde_json::json!({ "item": id.to_string() }))
             }
             Request::SetItem { item, volume, speed, muted, still_time } => {
-                return self.set_item(item, *volume, *speed, *muted, *still_time);
+                self.set_item(item, *volume, *speed, *muted, *still_time)
             }
-            Request::Spaces => {
-                return ok(&serde_json::json!({
-                    "separate_spaces": self.engine.separate_spaces(),
-                    "topology": self.engine.spaces(),
-                }));
-            }
-            Request::Windows => {
-                return ok(&serde_json::json!({
-                    "windows": self.engine.windows(),
-                    "nodes": self.engine.node_summary(),
-                }));
-            }
-            Request::Desktop => return ok(&self.engine.desktop_report()),
-            Request::Rules => return ok(&self.rules_report()),
-            Request::SettingsGet => return ok(&self.settings),
+            Request::Spaces => ok(&serde_json::json!({
+                "separate_spaces": self.engine.separate_spaces(),
+                "topology": self.engine.spaces(),
+            })),
+            Request::Windows => ok(&serde_json::json!({
+                "windows": self.engine.windows(),
+                "nodes": self.engine.node_summary(),
+            })),
+            Request::Desktop => ok(&self.engine.desktop_report()),
+            Request::Rules => ok(&self.rules_report()),
+            Request::SettingsGet => ok(&self.settings),
             Request::SettingsSet { patch } => {
                 let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
-                let (muted, dock) = (self.settings.muted, self.settings.show_in_dock);
+                let dock = self.settings.show_in_dock;
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
-                    return Response::err(ErrorCode::Invalid, message);
+                    return Err(Response::err(ErrorCode::Invalid, message));
                 }
                 self.persist_settings();
                 let language = i18n::select_language(self.settings.language, &system::preferred_languages());
                 if language != previous {
                     self.strings = Strings::new(language);
                 }
-                if self.settings.muted != muted {
-                    self.muted = self.settings.muted;
-                }
                 if self.settings.show_in_dock != dock {
                     self.apply_dock();
                 }
                 self.refresh_rules();
                 self.sync_idle_timer();
-                return ok(&self.settings);
+                ok(&self.settings)
             }
-            Request::HotkeysGet => return ok(&self.hotkeys_report()),
-            Request::HotkeysSet { action, combo } => return self.set_hotkey(*action, combo.clone()),
-            Request::LoginItemGet => return ok(&serde_json::json!({ "status": system::login_item_status() })),
-            Request::LoginItemSet { enabled } => return self.set_login_item(*enabled),
-            Request::Menu => return ok(&self.menu.report()),
-            Request::Optimize { id } => return self.start_optimize(id),
-            Request::OptimizeStatus { id } => return self.optimize_status(id),
+            Request::HotkeysGet => ok(&self.hotkeys_report()),
+            Request::HotkeysSet { action, combo } => self.set_hotkey(*action, combo.clone()),
+            Request::LoginItemGet => ok(&serde_json::json!({ "status": system::login_item_status() })),
+            Request::LoginItemSet { enabled } => self.set_login_item(*enabled),
+            Request::Menu => ok(&self.menu.report()),
+            Request::Optimize { id } => self.start_optimize(id)?,
+            Request::OptimizeStatus { id } => self.optimize_status(id)?,
             Request::OptimizeCancel { id } => {
-                let Ok(uuid) = id.parse::<Uuid>() else {
-                    return Response::err(ErrorCode::Invalid, "invalid item id");
-                };
-                self.optimize.cancel(uuid);
-                return ok(&serde_json::json!({ "id": id, "state": "cancelled" }));
+                self.optimize.cancel(parse_item(id)?);
+                ok(&serde_json::json!({ "id": id, "state": "cancelled" }))
             }
-            Request::DownloadStatus { id } => return self.download_status(id),
+            Request::DownloadStatus { id } => self.download_status(id),
             Request::DownloadCancel { id } => {
                 self.downloads.cancel(id);
-                return ok(&serde_json::json!({ "id": id, "state": "cancelled" }));
+                ok(&serde_json::json!({ "id": id, "state": "cancelled" }))
             }
-            Request::Downloads => return ok(&self.downloads.reports()),
-            Request::Quit => return Response::ok(serde_json::json!({})),
+            Request::Downloads => ok(&self.downloads.reports()),
+            Request::Quit => ok(&serde_json::json!({})),
             Request::LibraryAdd { .. }
             | Request::Tools
             | Request::ToolsInstall { .. }
             | Request::Probe { .. }
-            | Request::Download { .. } => {
-                return Response::err(ErrorCode::Internal, "request is handled asynchronously");
-            }
-        }
+            | Request::Download { .. } => Response::err(ErrorCode::Internal, "request is handled asynchronously"),
+        });
     }
 
     pub fn set_item(
@@ -1211,11 +1108,12 @@ impl App {
         muted: Option<bool>,
         still_time: Option<f32>,
     ) -> Response {
-        let Ok(id) = item.parse::<Uuid>() else {
-            return Response::err(ErrorCode::Invalid, "invalid item id");
+        let id = match parse_item(item) {
+            Ok(id) => id,
+            Err(response) => return response,
         };
         let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) else {
-            return Response::err(ErrorCode::NotFound, "no such item");
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
         };
         if let Some(volume) = volume {
             entry.volume = volume.clamp(0.0, 1.0);
@@ -1247,11 +1145,12 @@ impl App {
     pub fn restore_hotkeys(&mut self) {
         let defaults = proto::Hotkeys::default();
         for action in HotkeyAction::ALL {
-            let _ = self.bind_hotkey(action, None);
+            let _ = self.apply_binding(action, None);
         }
         for action in HotkeyAction::ALL {
-            let _ = self.bind_hotkey(action, defaults.get(action).cloned());
+            let _ = self.apply_binding(action, defaults.get(action).cloned());
         }
+        self.persist_settings();
     }
 
     pub fn record_hotkey(&mut self, recording: bool) {
@@ -1267,22 +1166,28 @@ impl App {
     }
 
     fn bind_hotkey(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) -> Response {
+        if let Err(response) = self.apply_binding(action, combo) {
+            return response;
+        }
+        self.persist_settings();
+        return ok(&self.hotkeys_report());
+    }
+
+    fn apply_binding(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) -> Result<(), Response> {
         let Some(combo) = combo else {
             self.hotkeys.unregister(action);
             self.settings.hotkeys.set(action, None);
             self.hotkey_failures.remove(&action);
-            self.persist_settings();
-            return ok(&self.hotkeys_report());
+            return Ok(());
         };
         if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
-            return Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo));
+            return Err(Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo)));
         }
         match self.hotkeys.register(action, &combo) {
             Ok(()) => {
                 self.settings.hotkeys.set(action, Some(combo));
                 self.hotkey_failures.remove(&action);
-                self.persist_settings();
-                return ok(&self.hotkeys_report());
+                return Ok(());
             }
             Err(RegisterError::TakenByOtherApp) => {
                 let display = hotkey::display(&combo);
@@ -1290,9 +1195,9 @@ impl App {
                     "%@ is already used by another app. Press another combination.",
                     &[crate::i18n::Arg::Text(display)],
                 );
-                return Response::err(ErrorCode::Invalid, message);
+                return Err(Response::err(ErrorCode::Invalid, message));
             }
-            Err(error) => return Response::err(ErrorCode::Invalid, register_message(error)),
+            Err(error) => return Err(Response::err(ErrorCode::Invalid, register_message(error))),
         }
     }
 
@@ -1354,7 +1259,7 @@ impl App {
             kind: item.map(|entry| entry.kind),
             mode: item.map(|entry| entry.mode),
             paused: self.paused,
-            muted: self.muted,
+            muted: self.settings.muted,
             rate,
             ready,
             surfaces: self.engine.windows().len(),
@@ -1528,17 +1433,33 @@ struct CurrentReport {
     surfaces: usize,
 }
 
-#[derive(Serialize)]
-struct LibraryView<'a> {
-    items: Vec<&'a Item>,
-    folders: Vec<&'a crate::model::Folder>,
+fn ok<T: Serialize>(value: &T) -> Response {
+    return match serde_json::to_value(value) {
+        Ok(data) => Response::ok(data),
+        Err(_) => Response::err(ErrorCode::Internal, SERIALIZATION_FAILED),
+    };
 }
 
-fn ok<T: Serialize>(value: &T) -> Response {
-    match serde_json::to_value(value) {
-        Ok(data) => Response::ok(data),
-        Err(_) => Response::err(ErrorCode::Internal, "serialization failed"),
-    }
+fn parse_id(value: &str, message: &'static str) -> Result<Uuid, Response> {
+    return value.parse::<Uuid>().map_err(|_| Response::err(ErrorCode::Invalid, message));
+}
+
+fn parse_item(value: &str) -> Result<ItemId, Response> {
+    return parse_id(value, INVALID_ITEM_ID);
+}
+
+fn parse_folder(value: &str) -> Result<FolderId, Response> {
+    return parse_id(value, INVALID_FOLDER_ID);
+}
+
+#[cfg(feature = "test-support")]
+fn test_unlocked() -> bool {
+    return std::env::var_os("LIVEWALL_TEST_UNLOCKED").is_some();
+}
+
+#[cfg(not(feature = "test-support"))]
+fn test_unlocked() -> bool {
+    return false;
 }
 
 async fn resolve_download(
@@ -1585,7 +1506,7 @@ async fn require_tool(
         return Ok(path);
     }
     if !consent {
-        return Err((ErrorCode::ConsentRequired, format!("{} is not installed; consent required", kind.id())));
+        return Err((ErrorCode::ConsentRequired, format!("{kind} is not installed; consent required")));
     }
     return tools::install(kind, tools_dir).await.map_err(|error| (ErrorCode::ToolMissing, error));
 }
@@ -1596,12 +1517,9 @@ pub fn terminating() -> bool {
     return TERMINATING.load(Ordering::SeqCst);
 }
 
-fn quit() {
+fn quit(mtm: MainThreadMarker) {
     TERMINATING.store(true, Ordering::SeqCst);
-    if let Some(mtm) = MainThreadMarker::new() {
-        let app = NSApplication::sharedApplication(mtm);
-        app.terminate(None);
-    }
+    NSApplication::sharedApplication(mtm).terminate(None);
 }
 
 thread_local! {

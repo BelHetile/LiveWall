@@ -6,20 +6,23 @@ use objc2_av_foundation::{
     AVAsynchronousKeyValueLoading, AVLayerVideoGravityResize, AVPlayerItem, AVPlayerLayer, AVPlayerLooper,
     AVQueuePlayer, AVURLAsset,
 };
-use objc2_core_foundation::CGRect;
 use objc2_core_media::{CMTime, kCMTimeZero};
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2_foundation::{NSArray, NSString};
 use objc2_quartz_core::CALayer;
 
 use crate::app::{Event, post};
+use crate::cf::file_url;
+use crate::engine::layer::LayerSet;
+use crate::geometry::Size;
+use crate::media::av::CM_TIMESCALE;
 use crate::model::ItemId;
 use crate::platform::spaces::SurfaceKey;
 
 pub struct VideoNode {
     pub item: ItemId,
-    pub size: (f64, f64),
+    pub size: Size,
     pub loaded: bool,
-    pub duration: f64,
+    pub layers: LayerSet,
     playing: bool,
     paused_since: Option<Instant>,
     speed: f32,
@@ -27,12 +30,11 @@ pub struct VideoNode {
     player: Retained<AVQueuePlayer>,
     asset: Retained<AVURLAsset>,
     looper: Option<Retained<AVPlayerLooper>>,
-    layers: Vec<(SurfaceKey, Retained<AVPlayerLayer>)>,
 }
 
 impl VideoNode {
     pub fn new(mtm: MainThreadMarker, item: ItemId, path: &str) -> Self {
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        let url = file_url(path);
         let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
         let player = unsafe { AVQueuePlayer::new(mtm) };
         unsafe {
@@ -41,9 +43,9 @@ impl VideoNode {
         }
         let node = Self {
             item,
-            size: (0.0, 0.0),
+            size: Size::new(0.0, 0.0),
             loaded: false,
-            duration: 0.0,
+            layers: LayerSet::default(),
             playing: false,
             paused_since: None,
             speed: 1.0,
@@ -51,7 +53,6 @@ impl VideoNode {
             player,
             asset,
             looper: None,
-            layers: Vec::new(),
         };
         node.load();
         return node;
@@ -67,14 +68,13 @@ impl VideoNode {
     }
 
     pub fn on_loaded(&mut self, mtm: MainThreadMarker) {
-        self.duration = unsafe { self.asset.duration().seconds() };
         self.size = video_size(&self.asset);
         let player_item = unsafe { AVPlayerItem::playerItemWithAsset(&self.asset, mtm) };
         let looper = unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&self.player, &player_item) };
         self.looper = Some(looper);
         self.loaded = true;
         if let Some(seconds) = self.pending_seek.take() {
-            unsafe { self.player.seekToTime(CMTime::with_seconds(seconds.max(0.0), 600)) };
+            unsafe { self.player.seekToTime(CMTime::with_seconds(seconds.max(0.0), CM_TIMESCALE)) };
         }
     }
 
@@ -83,23 +83,7 @@ impl VideoNode {
         if let Some(gravity) = unsafe { AVLayerVideoGravityResize } {
             unsafe { layer.setVideoGravity(gravity) };
         }
-        root.addSublayer(&layer);
-        self.layers.push((key.clone(), layer));
-    }
-
-    pub fn detach(&mut self, key: &SurfaceKey) {
-        if let Some(index) = self.layers.iter().position(|(existing, _)| existing == key) {
-            let (_, layer) = self.layers.remove(index);
-            layer.removeFromSuperlayer();
-        }
-    }
-
-    pub fn set_frame(&self, key: &SurfaceKey, frame: CGRect) {
-        for (existing, layer) in &self.layers {
-            if existing == key {
-                layer.setFrame(frame);
-            }
-        }
+        self.layers.add(key, layer.into_super(), root);
     }
 
     pub fn apply_playback(&mut self, playing: bool, muted: bool, volume: f32, speed: f32) {
@@ -144,7 +128,11 @@ impl VideoNode {
         let time = self.current_time();
         let zero = unsafe { kCMTimeZero };
         unsafe {
-            self.player.seekToTime_toleranceBefore_toleranceAfter(CMTime::with_seconds(time.max(0.0), 600), zero, zero);
+            self.player.seekToTime_toleranceBefore_toleranceAfter(
+                CMTime::with_seconds(time.max(0.0), CM_TIMESCALE),
+                zero,
+                zero,
+            );
             if self.playing {
                 self.player.play();
                 self.player.setRate(self.speed);
@@ -166,14 +154,14 @@ impl VideoNode {
             player.setMuted(self.player.isMuted());
             player.setVolume(self.player.volume());
         }
-        for (_, layer) in &self.layers {
+        for layer in self.layers.iter().filter_map(|layer| layer.downcast_ref::<AVPlayerLayer>()) {
             unsafe { layer.setPlayer(Some(&player)) };
         }
         self.player = player;
         let player_item = unsafe { AVPlayerItem::playerItemWithAsset(&self.asset, mtm) };
         self.looper = Some(unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&self.player, &player_item) });
         unsafe {
-            self.player.seekToTime(CMTime::with_seconds(time.max(0.0), 600));
+            self.player.seekToTime(CMTime::with_seconds(time.max(0.0), CM_TIMESCALE));
             if self.playing {
                 self.player.play();
                 self.player.setRate(self.speed);
@@ -192,32 +180,22 @@ impl VideoNode {
     pub fn is_ready(&self) -> bool {
         return self.loaded && self.looper.is_some();
     }
-
-    pub fn layer_count(&self) -> usize {
-        return self.layers.len();
-    }
-
-    pub fn layer(&self, key: &SurfaceKey) -> Option<Retained<CALayer>> {
-        return self.layers.iter().find(|(existing, _)| existing == key).map(|(_, layer)| layer.clone().into_super());
-    }
-
-    pub fn keys(&self) -> Vec<SurfaceKey> {
-        return self.layers.iter().map(|(key, _)| key.clone()).collect();
-    }
 }
 
 #[allow(deprecated)]
-fn video_size(asset: &AVURLAsset) -> (f64, f64) {
+fn video_size(asset: &AVURLAsset) -> Size {
     let Some(media_type) = (unsafe { objc2_av_foundation::AVMediaTypeVideo }) else {
-        return (0.0, 0.0);
+        return Size::new(0.0, 0.0);
     };
     let tracks = unsafe { asset.tracksWithMediaType(media_type) };
     let Some(track) = tracks.firstObject() else {
-        return (0.0, 0.0);
+        return Size::new(0.0, 0.0);
     };
     let size = unsafe { track.naturalSize() };
     let transform = unsafe { track.preferredTransform() };
     let rotated = transform.b.abs() > 0.5 || transform.c.abs() > 0.5;
-    let (width, height) = if rotated { (size.height, size.width) } else { (size.width, size.height) };
-    return (width, height);
+    if rotated {
+        return Size::new(size.height, size.width);
+    }
+    return Size::new(size.width, size.height);
 }

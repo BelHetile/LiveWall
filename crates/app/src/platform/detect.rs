@@ -10,7 +10,7 @@ use objc2_core_audio::{
     kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal,
     kAudioObjectSystemObject, kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
 };
-use objc2_core_foundation::{CFDictionary, CFNumber, CFString, CFType};
+use objc2_core_foundation::{CFDictionary, CFString, CFType};
 use objc2_core_graphics::{
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
     kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
@@ -18,20 +18,22 @@ use objc2_core_graphics::{
 use objc2_foundation::NSTimer;
 
 use crate::app::{Event, post};
+use crate::cf::{cf_f64, cf_i64, downcast_dict};
+use crate::platform::{cancel_timer, schedule_timer};
 use crate::rules;
 
-pub const FULLSCREEN_TOLERANCE: f64 = 2.0;
-pub const AUDIO_ACTIVE_DELAY: f64 = 0.5;
-pub const AUDIO_SILENCE_DELAY: f64 = 2.0;
+const FULLSCREEN_TOLERANCE: f64 = 2.0;
+const AUDIO_ACTIVE_DELAY: f64 = 0.5;
+const AUDIO_SILENCE_DELAY: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AudioStep {
+enum AudioStep {
     Cancel,
     Hold,
     Arm(f64),
 }
 
-pub fn audio_step(active: bool, raw: bool, settling: bool) -> AudioStep {
+fn audio_step(active: bool, raw: bool, settling: bool) -> AudioStep {
     if raw == active {
         return AudioStep::Cancel;
     }
@@ -100,13 +102,13 @@ fn on_screen_windows(frame: rules::Rect) -> Vec<Window> {
             continue;
         }
         let value: &CFType = unsafe { &*pointer.cast::<CFType>() };
-        let Some(dictionary) = value.downcast_ref::<CFDictionary>() else { continue };
-        let dictionary: &CFDictionary<CFString, CFType> = unsafe { dictionary.cast_unchecked() };
+        let Some(dictionary) = downcast_dict(Some(value)) else { continue };
         let Some(bounds) = cf_rect(dictionary, unsafe { kCGWindowBounds }) else { continue };
-        let layer = cf_i64(dictionary, unsafe { kCGWindowLayer }).unwrap_or(0);
-        let pid =
-            cf_i64(dictionary, unsafe { kCGWindowOwnerPID }).and_then(|value| i32::try_from(value).ok()).unwrap_or(0);
-        let alpha = cf_f64(dictionary, unsafe { kCGWindowAlpha }).unwrap_or(1.0);
+        let layer = cf_i64(dictionary.get(unsafe { kCGWindowLayer }).as_deref()).unwrap_or(0);
+        let pid = cf_i64(dictionary.get(unsafe { kCGWindowOwnerPID }).as_deref())
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(0);
+        let alpha = cf_f64(dictionary.get(unsafe { kCGWindowAlpha }).as_deref()).unwrap_or(1.0);
         let flipped = rules::Rect::new(bounds.x, frame.h - (bounds.y + bounds.h), bounds.w, bounds.h);
         windows.push(Window { bounds: flipped, layer, pid, alpha });
     }
@@ -123,19 +125,11 @@ fn cf_rect(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Optio
     return Some(rules::Rect::new(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
 }
 
-fn cf_i64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {
-    return dictionary.get(key).and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i64));
-}
-
-fn cf_f64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<f64> {
-    return dictionary.get(key).and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_f64));
-}
-
 fn is_candidate(window: &Window, own: i32) -> bool {
     return window.pid != own && window.layer == 0 && window.alpha > 0.0;
 }
 
-pub fn coverage_fraction(windows: &[rules::Rect], screen: rules::Rect) -> f64 {
+fn coverage_fraction(windows: &[rules::Rect], screen: rules::Rect) -> f64 {
     let area = screen.area();
     if area <= 0.0 {
         return 0.0;
@@ -144,7 +138,7 @@ pub fn coverage_fraction(windows: &[rules::Rect], screen: rules::Rect) -> f64 {
     return (union_area(&clipped.collect::<Vec<_>>()) / area).clamp(0.0, 1.0);
 }
 
-pub fn union_area(rects: &[rules::Rect]) -> f64 {
+fn union_area(rects: &[rules::Rect]) -> f64 {
     let normalized: Vec<rules::Rect> = rects.iter().copied().filter(|rect| rect.w > 0.0 && rect.h > 0.0).collect();
     if normalized.is_empty() {
         return 0.0;
@@ -193,7 +187,7 @@ fn union_length(intervals: &mut [(f64, f64)]) -> f64 {
     return total + (end - start);
 }
 
-pub fn approximately_covers(window: rules::Rect, screen: rules::Rect, tolerance: f64) -> bool {
+fn approximately_covers(window: rules::Rect, screen: rules::Rect, tolerance: f64) -> bool {
     return (window.x - screen.x).abs() <= tolerance
         && (window.y - screen.y).abs() <= tolerance
         && (window.w - screen.w).abs() <= tolerance
@@ -290,21 +284,21 @@ fn process_running_output(object: AudioObjectID) -> bool {
     return property_u32(object, global_address(kAudioProcessPropertyIsRunningOutput)).unwrap_or(0) != 0;
 }
 
-pub fn external_audio_playing() -> bool {
+fn external_audio_playing() -> bool {
     let own = own_pid();
     return process_object_list().into_iter().any(|object| {
         return process_pid(object).is_some_and(|pid| pid != own) && process_running_output(object);
     });
 }
 
-pub fn frontmost_bundle() -> Option<String> {
+fn frontmost_bundle() -> Option<String> {
     return NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .and_then(|application| application.bundleIdentifier())
         .map(|identifier| identifier.to_string());
 }
 
-pub fn running_bundles() -> Vec<String> {
+fn running_bundles() -> Vec<String> {
     let applications = NSWorkspace::sharedWorkspace().runningApplications();
     let mut bundles: Vec<String> = applications
         .to_vec()
@@ -380,12 +374,7 @@ impl AudioGate {
     }
 
     fn arm(&mut self, delay: f64) {
-        let block = RcBlock::new(|_timer: NonNull<NSTimer>| {
-            post(Event::AudioSettled);
-        });
-        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block) };
-        crate::platform::apply_timer_tolerance(&timer, delay);
-        self.timer = Some(timer);
+        self.timer = Some(schedule_timer(delay, false, || Event::AudioSettled));
     }
 
     fn settle(&mut self) {
@@ -398,9 +387,7 @@ impl AudioGate {
     }
 
     fn cancel(&mut self) {
-        if let Some(timer) = self.timer.take() {
-            timer.invalidate();
-        }
+        cancel_timer(self.timer.take());
     }
 }
 

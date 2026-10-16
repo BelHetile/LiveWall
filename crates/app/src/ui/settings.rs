@@ -4,10 +4,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSSlider, NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField,
-    NSView, NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
+    NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
+    NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView,
+    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_foundation::{NSArray, NSString};
@@ -19,6 +19,9 @@ use crate::ui::palette::{Look, Rgb, Theme};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
 const WIDTH: CGFloat = 540.0;
+const ESCAPE: u32 = 53;
+const DELETE: u32 = 51;
+const FORWARD_DELETE: u32 = 117;
 pub const ROTATE: isize = 1;
 pub const TRANSITION: isize = 2;
 pub const PAUSE: isize = 3;
@@ -187,7 +190,7 @@ impl RecorderView {
         label.centerYAnchor().constraintEqualToAnchor(&this.centerYAnchor()).setActive(true);
         this.widthAnchor().constraintEqualToConstant(128.0).setActive(true);
         this.heightAnchor().constraintEqualToConstant(24.0).setActive(true);
-        this.setToolTip(Some(&NSString::from_str("Click, then press a shortcut. ⌫ clears it, ⎋ cancels.")));
+        this.setToolTip(Some(&widgets::ns("Click, then press a shortcut. ⌫ clears it, ⎋ cancels.")));
         return this;
     }
 
@@ -204,7 +207,7 @@ impl RecorderView {
 
     fn paint(&self, text: &str, color: &NSColor, border: Option<&NSColor>) {
         let label = &self.ivars().label;
-        label.setStringValue(&NSString::from_str(text));
+        label.setStringValue(&widgets::ns(text));
         label.setTextColor(Some(color));
         if let Some(layer) = self.layer() {
             layer.setBorderWidth(if border.is_some() { 1.5 } else { 0.0 });
@@ -244,8 +247,8 @@ impl RecorderView {
         let action = self.ivars().action;
         let code = u32::from(event.keyCode());
         match code {
-            53 => return self.finish(),
-            51 | 117 => {
+            ESCAPE => return self.finish(),
+            DELETE | FORWARD_DELETE => {
                 let _ = crate::ui::rebind(action, None);
                 return self.finish();
             }
@@ -355,10 +358,10 @@ impl Settings {
         for (title, icon, view) in pages {
             let controller = NSViewController::new(mtm);
             controller.setView(view);
-            controller.setTitle(Some(&NSString::from_str(title)));
+            controller.setTitle(Some(&widgets::ns(title)));
             controller.setPreferredContentSize(size);
             let item = NSTabViewItem::tabViewItemWithViewController(&controller);
-            item.setLabel(&NSString::from_str(title));
+            item.setLabel(&widgets::ns(title));
             item.setImage(widgets::symbol(icon, 15.0).as_deref());
             tabs.addTabViewItem(&item);
         }
@@ -537,7 +540,7 @@ fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: 
     if let Some(index) = index.and_then(|index| isize::try_from(index).ok()) {
         popup.selectItemAtIndex(index);
     } else {
-        popup.addItemWithTitle(&NSString::from_str(extra));
+        popup.addItemWithTitle(&widgets::ns(extra));
         popup.selectItemAtIndex(base);
     }
 }
@@ -631,7 +634,7 @@ fn choice(mtm: MainThreadMarker, items: &[&str], tag: isize, target: &AnyObject)
     if let Some(menu) = popup.menu() {
         menu.setAutoenablesItems(false);
     }
-    let titles: Vec<Retained<NSString>> = items.iter().map(|title| NSString::from_str(title)).collect();
+    let titles: Vec<Retained<NSString>> = items.iter().map(|title| widgets::ns(title)).collect();
     popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
     popup.setTag(tag);
     unsafe {
@@ -695,8 +698,7 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
         ],
     );
     let place = widgets::label(mtm, location, 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    let change = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str("Change…"), None, None, mtm) };
-    change.setControlSize(NSControlSize::Small);
+    let change = widgets::compact(mtm, "Change…", None, None);
     change.setEnabled(false);
     let library_row = widgets::stack(mtm, &[&place, &change], false, 8.0);
     let optimize = switch(mtm, OPTIMIZE, target);
@@ -782,15 +784,7 @@ fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Ve
     let rows: Vec<Retained<NSView>> =
         recorders.iter().map(|recorder| line(mtm, action_title(recorder.ivars().action), None, recorder)).collect();
     let global = form(mtm, "Global", &rows);
-    let restore = unsafe {
-        NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("Restore Defaults"),
-            Some(target),
-            Some(sel!(restoreShortcuts:)),
-            mtm,
-        )
-    };
-    restore.setControlSize(NSControlSize::Small);
+    let restore = widgets::compact(mtm, "Restore Defaults", Some(sel!(restoreShortcuts:)), Some(target));
     let hint = widgets::label(
         mtm,
         "Work in any app, on the current desktop.",
@@ -818,7 +812,7 @@ type AppearancePage = (
 );
 
 fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> AppearancePage {
-    let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| NSString::from_str(title)).collect();
+    let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| widgets::ns(title)).collect();
     let mode = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&labels),

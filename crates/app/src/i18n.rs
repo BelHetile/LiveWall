@@ -27,12 +27,12 @@ pub struct Strings {
 
 impl Strings {
     pub fn new(language: Language) -> Self {
-        match language {
+        return match language {
             Language::En => Self { language, table: BTreeMap::new(), plurals: parse_stringsdict(EN_STRINGSDICT) },
             Language::Ru => {
                 Self { language, table: parse_strings(RU_STRINGS), plurals: parse_stringsdict(RU_STRINGSDICT) }
             }
-        }
+        };
     }
 
     pub fn get(&self, key: &str) -> String {

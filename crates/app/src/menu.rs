@@ -15,40 +15,34 @@ const STATUS_ICON: &[u8] = include_bytes!("../../../resources/status-icon@2x.png
 const STATUS_ICON_POINTS: f64 = 18.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(isize)]
 pub enum MenuAction {
-    TogglePause,
-    Next,
-    Previous,
-    Random,
-    ToggleMute,
-    ToggleLaunchAtLogin,
-    Quit,
+    TogglePause = 1,
+    Next = 2,
+    Previous = 3,
+    Random = 4,
+    ToggleMute = 5,
+    ToggleLaunchAtLogin = 6,
+    Quit = 7,
 }
 
 impl MenuAction {
+    const ALL: [Self; 7] = [
+        Self::TogglePause,
+        Self::Next,
+        Self::Previous,
+        Self::Random,
+        Self::ToggleMute,
+        Self::ToggleLaunchAtLogin,
+        Self::Quit,
+    ];
+
     fn tag(self) -> isize {
-        return match self {
-            MenuAction::TogglePause => 1,
-            MenuAction::Next => 2,
-            MenuAction::Previous => 3,
-            MenuAction::Random => 4,
-            MenuAction::ToggleMute => 5,
-            MenuAction::ToggleLaunchAtLogin => 6,
-            MenuAction::Quit => 7,
-        };
+        return self as isize;
     }
 
     fn from_tag(tag: isize) -> Option<Self> {
-        return match tag {
-            1 => Some(MenuAction::TogglePause),
-            2 => Some(MenuAction::Next),
-            3 => Some(MenuAction::Previous),
-            4 => Some(MenuAction::Random),
-            5 => Some(MenuAction::ToggleMute),
-            6 => Some(MenuAction::ToggleLaunchAtLogin),
-            7 => Some(MenuAction::Quit),
-            _ => None,
-        };
+        return Self::ALL.into_iter().find(|action| action.tag() == tag);
     }
 }
 

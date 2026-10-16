@@ -6,15 +6,17 @@ use std::ptr::NonNull;
 use std::time::UNIX_EPOCH;
 
 use objc2_av_foundation::{AVAssetImageGenerator, AVURLAsset};
-use objc2_core_foundation::{CFMutableData, CFRetained, CFString, CFURL};
+use objc2_core_foundation::{CFMutableData, CFRetained, CFString};
 use objc2_core_graphics::CGImage;
 use objc2_core_media::{CMTime, kCMTimeZero};
-use objc2_foundation::{NSError, NSString, NSURL};
+use objc2_foundation::NSError;
 use objc2_image_io::{CGImageDestination, CGImageSource};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::app::{Event, post};
+use crate::cf::{cf_file_url, file_url};
+use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 
 const PNG_TYPE: &str = "public.png";
@@ -28,7 +30,7 @@ pub fn accepts(path: &str) -> bool {
     return STILL_EXTENSIONS.contains(&extension.as_str());
 }
 
-pub fn cache_key(path: &str, mtime: i64, still_time: f32) -> String {
+pub fn cache_key(path: &str, mtime: i64, still_time: f64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
     hasher.update([0]);
@@ -55,15 +57,15 @@ pub fn mtime_secs(path: &str) -> i64 {
         .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0));
 }
 
-pub fn generate(item: ItemId, kind: ItemKind, path: &str, still_time: f32, dest: PathBuf) {
+pub fn generate(item: ItemId, kind: ItemKind, path: &str, still_time: f64, dest: PathBuf) {
     match kind {
         ItemKind::Video => generate_video(item, path, still_time, dest),
         ItemKind::Gif | ItemKind::Image => spawn_frame(item, path, dest),
     }
 }
 
-fn generate_video(item: ItemId, path: &str, still_time: f32, dest: PathBuf) {
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+fn generate_video(item: ItemId, path: &str, still_time: f64, dest: PathBuf) {
+    let url = file_url(path);
     let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
     let generator = unsafe { AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset) };
     unsafe {
@@ -84,14 +86,14 @@ fn generate_video(item: ItemId, path: &str, still_time: f32, dest: PathBuf) {
         let image = unsafe { CFRetained::retain(image) };
         finish(item, &image, &dest);
     });
-    let requested = unsafe { CMTime::with_seconds(f64::from(still_time.max(0.0)), 600) };
+    let requested = unsafe { CMTime::with_seconds(still_time.max(0.0), CM_TIMESCALE) };
     unsafe { generator.generateCGImageAsynchronouslyForTime_completionHandler(requested, &block) };
 }
 
 fn spawn_frame(item: ItemId, path: &str, dest: PathBuf) {
     let path = path.to_string();
     tokio::task::spawn_blocking(move || {
-        let Some(url) = CFURL::from_file_path(&path) else {
+        let Some(url) = cf_file_url(&path) else {
             failed(&dest);
             return;
         };

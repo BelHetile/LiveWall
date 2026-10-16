@@ -6,8 +6,9 @@ use objc2::MainThreadMarker;
 use objc2_foundation::NSTimer;
 use serde::{Deserialize, Serialize};
 
-use crate::app::{Event, post};
+use crate::app::Event;
 use crate::platform::desktop as ffi;
+use crate::platform::{cancel_timer, schedule_timer};
 use crate::store;
 
 const SWAP_VERSION: u32 = 1;
@@ -229,12 +230,7 @@ impl Desktop {
         if self.pending.is_empty() || self.timer.is_some() {
             return;
         }
-        let block = block2::RcBlock::new(|_timer: std::ptr::NonNull<NSTimer>| {
-            post(Event::DesktopVerify);
-        });
-        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(VERIFY_INTERVAL, true, &block) };
-        crate::platform::apply_timer_tolerance(&timer, VERIFY_INTERVAL);
-        self.timer = Some(timer);
+        self.timer = Some(schedule_timer(VERIFY_INTERVAL, true, || Event::DesktopVerify));
     }
 
     pub fn verify_tick(&mut self, mtm: MainThreadMarker) {
@@ -261,9 +257,7 @@ impl Desktop {
     }
 
     fn stop_verify(&mut self) {
-        if let Some(timer) = self.timer.take() {
-            timer.invalidate();
-        }
+        cancel_timer(self.timer.take());
         self.verify_started = None;
         self.pending.clear();
         self.deferred.clear();

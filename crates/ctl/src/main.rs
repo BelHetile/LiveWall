@@ -6,6 +6,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use proto::{
     ApplyTarget, FillMode, Geometry, HotkeyAction, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
+    TransitionKind,
 };
 use serde_json::Value;
 
@@ -60,17 +61,15 @@ enum Command {
     Apply {
         #[arg(long)]
         item: Option<String>,
-        #[arg(long, value_enum, default_value_t = TargetKind::Default)]
-        target: TargetKind,
-        #[arg(long)]
-        target_id: Option<String>,
+        #[command(flatten)]
+        target: TargetArgs,
         #[command(flatten)]
         transition: TransitionArgs,
     },
     SetGeometry {
         item: String,
         #[arg(long, value_enum)]
-        mode: FillModeArg,
+        mode: FillMode,
         #[arg(long, default_value_t = 0.0)]
         x: f64,
         #[arg(long, default_value_t = 0.0)]
@@ -186,7 +185,7 @@ enum HotkeysCommand {
     Get,
     Set {
         #[arg(value_enum)]
-        action: HotkeyActionArg,
+        action: HotkeyAction,
         #[arg(help = "Combo such as ctrl+opt+cmd+right; omit to clear the binding")]
         combo: Option<String>,
     },
@@ -201,22 +200,10 @@ enum LoginItemCommand {
     },
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum HotkeyActionArg {
-    Next,
-    Previous,
-    TogglePause,
-    ToggleMute,
-    Random,
-    VolumeUp,
-    VolumeDown,
-    Lock,
-}
-
 #[derive(clap::Args, Clone)]
 struct TransitionArgs {
     #[arg(short = 't', long, value_enum, help = "Wallpaper transition to play")]
-    transition: Option<TransitionKindArg>,
+    transition: Option<TransitionKind>,
     #[arg(long, help = "Transition duration in seconds")]
     duration: Option<f64>,
     #[arg(long, help = "Bezier control points as a,b,c,d")]
@@ -236,7 +223,7 @@ impl TransitionArgs {
         let mut out = proto::Transition::default();
         let mut any = false;
         if let Some(kind) = self.transition {
-            out.kind = Some(kind.into());
+            out.kind = Some(kind);
             any = true;
         }
         if let Some(duration) = self.duration {
@@ -268,36 +255,28 @@ impl TransitionArgs {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum TransitionKindArg {
-    None,
-    Simple,
-    Fade,
-    Left,
-    Right,
-    Top,
-    Bottom,
-    Wipe,
-    Wave,
-    Grow,
-    Center,
-    Any,
-    Outer,
-    Random,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
 enum TargetKind {
     Default,
     Space,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum FillModeArg {
-    Fill,
-    Fit,
-    Stretch,
-    Center,
-    Custom,
+#[derive(clap::Args)]
+struct TargetArgs {
+    #[arg(long, value_enum, default_value_t = TargetKind::Default)]
+    target: TargetKind,
+    #[arg(long)]
+    target_id: Option<String>,
+}
+
+impl TargetArgs {
+    fn build(self) -> Result<ApplyTarget, String> {
+        return match self.target {
+            TargetKind::Default => Ok(ApplyTarget::Default),
+            TargetKind::Space => {
+                Ok(ApplyTarget::Space { space: self.target_id.ok_or("--target-id is required for --target space")? })
+            }
+        };
+    }
 }
 
 fn main() -> ExitCode {
@@ -315,11 +294,7 @@ fn main() -> ExitCode {
         Err(code) => return ExitCode::from(code),
     };
 
-    if let Command::Download { url, consent, no_wait } = cli.command {
-        let code = run_download(&mut stream, url, consent, no_wait, cli.json);
-        return ExitCode::from(code);
-    }
-
+    let streams = matches!(cli.command, Command::Download { no_wait: false, .. });
     let request = match build_request(cli.command) {
         Ok(request) => request,
         Err(message) => {
@@ -327,6 +302,11 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
+
+    if streams {
+        let code = run_download(&mut stream, request, cli.json);
+        return ExitCode::from(code);
+    }
 
     let code = match exchange(&mut stream, request) {
         Ok((response, raw)) => print_response(&response, &raw, cli.json),
@@ -392,17 +372,11 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Delete { id } => Request::FolderDelete { id },
             FolderCommand::Lock { id, locked, hidden } => Request::FolderLock { id, locked, hidden },
         },
-        Command::Apply { item, target, target_id, transition } => {
-            let target = match target {
-                TargetKind::Default => ApplyTarget::Default,
-                TargetKind::Space => {
-                    ApplyTarget::Space { space: target_id.ok_or("--target-id is required for --target space")? }
-                }
-            };
-            Request::Apply { item, target, transition: transition.build()? }
+        Command::Apply { item, target, transition } => {
+            Request::Apply { item, target: target.build()?, transition: transition.build()? }
         }
         Command::SetGeometry { item, mode, x, y, zoom } => {
-            Request::SetGeometry { item, mode: mode.into(), geometry: Geometry { x, y, zoom } }
+            Request::SetGeometry { item, mode, geometry: Geometry { x, y, zoom } }
         }
         Command::SetItem { item, volume, speed, muted, still_time } => {
             Request::SetItem { item, volume, speed, muted, still_time }
@@ -416,7 +390,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         },
         Command::Hotkeys(command) => match command {
             HotkeysCommand::Get => Request::HotkeysGet,
-            HotkeysCommand::Set { action, combo } => Request::HotkeysSet { action: action.into(), combo },
+            HotkeysCommand::Set { action, combo } => Request::HotkeysSet { action, combo },
         },
         Command::LoginItem(command) => match command {
             LoginItemCommand::Get => Request::LoginItemGet,
@@ -426,13 +400,13 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Tools => Request::Tools,
         Command::ToolsInstall { tool, consent } => Request::ToolsInstall { tool, consent },
         Command::Probe { path } => Request::Probe { path },
+        Command::Download { url, consent, .. } => Request::Download { url, consent },
         Command::DownloadStatus { id } => Request::DownloadStatus { id },
         Command::DownloadCancel { id } => Request::DownloadCancel { id },
         Command::Optimize { id } => Request::Optimize { id },
         Command::OptimizeStatus { id } => Request::OptimizeStatus { id },
         Command::OptimizeCancel { id } => Request::OptimizeCancel { id },
         Command::Downloads => Request::Downloads,
-        Command::Download { .. } => return Err("download is handled separately".into()),
     };
     return Ok(request);
 }
@@ -480,8 +454,8 @@ fn print_response(response: &Response, raw: &str, json: bool) -> u8 {
     }
 }
 
-fn run_download(stream: &mut UnixStream, url: String, consent: bool, no_wait: bool, json: bool) -> u8 {
-    let (response, raw) = match exchange(stream, Request::Download { url, consent }) {
+fn run_download(stream: &mut UnixStream, request: Request, json: bool) -> u8 {
+    let (response, raw) = match exchange(stream, request) {
         Ok(result) => result,
         Err(error) => {
             eprintln!("lwctl: {error}");
@@ -495,9 +469,6 @@ fn run_download(stream: &mut UnixStream, url: String, consent: bool, no_wait: bo
             return EXIT_ERROR;
         }
     };
-    if no_wait {
-        return print_response(&response, &raw, json);
-    }
     let Some(id) = data.get("id").and_then(Value::as_str) else {
         return print_response(&response, &raw, json);
     };
@@ -554,53 +525,5 @@ fn finish_download(data: &Value) -> u8 {
             }
             return EXIT_OK;
         }
-    }
-}
-
-impl From<TransitionKindArg> for proto::TransitionKind {
-    fn from(value: TransitionKindArg) -> Self {
-        return match value {
-            TransitionKindArg::None => Self::None,
-            TransitionKindArg::Simple => Self::Simple,
-            TransitionKindArg::Fade => Self::Fade,
-            TransitionKindArg::Left => Self::Left,
-            TransitionKindArg::Right => Self::Right,
-            TransitionKindArg::Top => Self::Top,
-            TransitionKindArg::Bottom => Self::Bottom,
-            TransitionKindArg::Wipe => Self::Wipe,
-            TransitionKindArg::Wave => Self::Wave,
-            TransitionKindArg::Grow => Self::Grow,
-            TransitionKindArg::Center => Self::Center,
-            TransitionKindArg::Any => Self::Any,
-            TransitionKindArg::Outer => Self::Outer,
-            TransitionKindArg::Random => Self::Random,
-        };
-    }
-}
-
-impl From<FillModeArg> for FillMode {
-    fn from(value: FillModeArg) -> Self {
-        return match value {
-            FillModeArg::Fill => Self::Fill,
-            FillModeArg::Fit => Self::Fit,
-            FillModeArg::Stretch => Self::Stretch,
-            FillModeArg::Center => Self::Center,
-            FillModeArg::Custom => Self::Custom,
-        };
-    }
-}
-
-impl From<HotkeyActionArg> for HotkeyAction {
-    fn from(value: HotkeyActionArg) -> Self {
-        return match value {
-            HotkeyActionArg::Next => Self::Next,
-            HotkeyActionArg::Previous => Self::Previous,
-            HotkeyActionArg::TogglePause => Self::TogglePause,
-            HotkeyActionArg::ToggleMute => Self::ToggleMute,
-            HotkeyActionArg::Random => Self::Random,
-            HotkeyActionArg::VolumeUp => Self::VolumeUp,
-            HotkeyActionArg::VolumeDown => Self::VolumeDown,
-            HotkeyActionArg::Lock => Self::Lock,
-        };
     }
 }

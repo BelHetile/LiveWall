@@ -7,11 +7,12 @@ use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
     NSAppearanceNameDarkAqua, NSApplication, NSBezelStyle, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor,
-    NSControl, NSControlBorderShape, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType, NSFont,
-    NSFontAttributeName, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSForegroundColorAttributeName, NSGlassEffectView, NSImage, NSImageSymbolConfiguration, NSImageView,
-    NSLayoutConstraintOrientation, NSLineBreakMode, NSStackView, NSStackViewDistribution, NSTextAlignment, NSTextField,
-    NSTextFieldDelegate, NSTextView, NSTintProminence, NSTitlePosition, NSUserInterfaceLayoutOrientation, NSView,
+    NSControl, NSControlBorderShape, NSControlSize, NSControlTextEditingDelegate, NSEventModifierFlags,
+    NSFocusRingType, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular,
+    NSFontWeightSemibold, NSForegroundColorAttributeName, NSGlassEffectView, NSImage, NSImageSymbolConfiguration,
+    NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenuItem, NSStackView, NSStackViewDistribution,
+    NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView, NSTintProminence, NSTitlePosition,
+    NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGFloat;
 use objc2_core_graphics::CGColor;
@@ -81,7 +82,7 @@ impl NumberField {
         };
         let ivars = self.ivars();
         if let Some(value) = (ivars.parse)(&view.string().to_string()) {
-            view.setString(&NSString::from_str(&(ivars.format)(value + direction * ivars.step)));
+            view.setString(&ns(&(ivars.format)(value + direction * ivars.step)));
             unsafe { self.sendAction_to(self.action(), self.target().as_deref()) };
         }
         return true;
@@ -98,7 +99,7 @@ impl NumberField {
         let this = Self::alloc(mtm).set_ivars(units);
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         unsafe { this.setDelegate(Some(ProtocolObject::from_ref(&*this))) };
-        this.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightRegular })));
+        this.setFont(Some(&digits()));
         this.setAlignment(NSTextAlignment::Right);
         this.setBezeled(false);
         this.setBordered(false);
@@ -130,7 +131,7 @@ impl NumberField {
     }
 
     pub fn show(&self, value: f64) {
-        self.setStringValue(&NSString::from_str(&(self.ivars().format)(value)));
+        self.setStringValue(&ns(&(self.ivars().format)(value)));
     }
 
     pub fn editing(&self) -> bool {
@@ -169,6 +170,18 @@ impl Weight {
     }
 }
 
+pub fn ns(text: &str) -> Retained<NSString> {
+    return NSString::from_str(text);
+}
+
+pub fn font(size: CGFloat, weight: &Weight) -> Retained<NSFont> {
+    return NSFont::systemFontOfSize_weight(size, weight.value());
+}
+
+pub fn digits() -> Retained<NSFont> {
+    return NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightRegular });
+}
+
 pub fn label(
     mtm: MainThreadMarker,
     text: &str,
@@ -176,8 +189,8 @@ pub fn label(
     weight: &Weight,
     color: &NSColor,
 ) -> Retained<NSTextField> {
-    let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-    field.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight.value())));
+    let field = NSTextField::labelWithString(&ns(text), mtm);
+    field.setFont(Some(&font(size, weight)));
     field.setTextColor(Some(color));
     field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     field.setMaximumNumberOfLines(1);
@@ -190,16 +203,12 @@ pub fn styled(text: &str, font: &NSFont, color: &NSColor) -> Retained<NSAttribut
     let values: [&AnyObject; 2] = [font, color];
     let attributes = NSDictionary::from_slices(&keys, &values);
     return unsafe {
-        NSAttributedString::initWithString_attributes(
-            NSAttributedString::alloc(),
-            &NSString::from_str(text),
-            Some(&attributes),
-        )
+        NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(text), Some(&attributes))
     };
 }
 
 pub fn symbol(name: &str, size: CGFloat) -> Option<Retained<NSImage>> {
-    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)?;
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(name), None)?;
     let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(size, unsafe { NSFontWeightMedium });
     return image.imageWithSymbolConfiguration(&config);
 }
@@ -375,7 +384,7 @@ pub fn chip(mtm: MainThreadMarker, marker: &Marker, theme: &Theme) -> Retained<N
     let tint = marker.active.then(|| theme.accent.colorWithAlphaComponent(0.85));
     let view = glass(mtm, &content, 11.0, tint.as_deref());
     view.setAppearance(dark().as_deref());
-    view.setToolTip(Some(&NSString::from_str(&marker.tip)));
+    view.setToolTip(Some(&ns(&marker.tip)));
     return view;
 }
 
@@ -386,8 +395,7 @@ pub fn button(
     action: Sel,
     target: &AnyObject,
 ) -> Retained<NSButton> {
-    let button =
-        unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(target), Some(action), mtm) };
+    let button = unsafe { NSButton::buttonWithTitle_target_action(&ns(title), Some(target), Some(action), mtm) };
     button.setBezelStyle(NSBezelStyle::Glass);
     button.setBorderShape(NSControlBorderShape::Capsule);
     button.setControlSize(NSControlSize::Large);
@@ -407,7 +415,7 @@ pub fn secondary(button: &NSButton) {
     button.setBezelStyle(NSBezelStyle::Glass);
     button.setBorderShape(NSControlBorderShape::Capsule);
     button.setControlSize(NSControlSize::Regular);
-    button.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+    button.setFont(Some(&font(12.0, &Weight::Regular)));
     button.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
 }
 
@@ -415,12 +423,23 @@ pub fn prominent(button: &NSButton, theme: &Theme) {
     button.setBezelColor(Some(&theme.accent_fill));
     button.setTintProminence(NSTintProminence::Primary);
     button.setContentTintColor(Some(&theme.accent_text));
-    let font = button.font().unwrap_or_else(|| NSFont::systemFontOfSize(13.0));
-    button.setAttributedTitle(&styled(&button.title().to_string(), &font, &theme.accent_text));
+    let current = button.font().unwrap_or_else(|| font(13.0, &Weight::Regular));
+    button.setAttributedTitle(&styled(&button.title().to_string(), &current, &theme.accent_text));
     let tint = NSImageSymbolConfiguration::configurationWithPaletteColors(&NSArray::from_slice(&[&*theme.accent_text]));
     if let Some(image) = button.image().and_then(|image| image.imageWithSymbolConfiguration(&tint)) {
         button.setImage(Some(&image));
     }
+}
+
+pub fn compact(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<Sel>,
+    target: Option<&AnyObject>,
+) -> Retained<NSButton> {
+    let button = unsafe { NSButton::buttonWithTitle_target_action(&ns(title), target, action, mtm) };
+    button.setControlSize(NSControlSize::Small);
+    return button;
 }
 
 pub fn icon_button(mtm: MainThreadMarker, name: &str, action: Sel, target: &AnyObject) -> Retained<NSButton> {
@@ -436,4 +455,24 @@ pub fn set_icon(button: &NSButton, name: &str) {
     if let Some(image) = symbol(name, 13.0) {
         button.setImage(Some(&image));
     }
+}
+
+pub fn menu_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Sel,
+    target: Option<&AnyObject>,
+    tag: isize,
+    shortcut: Option<(&str, NSEventModifierFlags)>,
+) -> Retained<NSMenuItem> {
+    let key = shortcut.map_or_else(NSString::new, |(key, _)| ns(key));
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(title), Some(action), &key)
+    };
+    if let Some((_, modifiers)) = shortcut {
+        item.setKeyEquivalentModifierMask(modifiers);
+    }
+    unsafe { item.setTarget(target) };
+    item.setTag(tag);
+    return item;
 }

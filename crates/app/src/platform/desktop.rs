@@ -10,9 +10,9 @@ use objc2_app_kit::{NSScreen, NSWorkspace, NSWorkspaceDesktopImageOptionKey};
 use objc2_core_foundation::{
     CFArray, CFData, CFDictionary, CFNumber, CFPropertyListFormat, CFRetained, CFString, CFType,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
-use crate::platform::cf_ref;
+use crate::cf::{cf_ref, cf_string, file_url};
 
 const HI_SERVICES: &std::ffi::CStr =
     c"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices";
@@ -68,7 +68,7 @@ pub fn screen_url(mtm: MainThreadMarker, display: u32) -> Option<String> {
 
 pub fn screen_set(mtm: MainThreadMarker, display: u32, path: &str) -> Result<(), String> {
     let screen = screen_for(mtm, display).ok_or_else(|| format!("no screen for display {display}"))?;
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let url = file_url(path);
     let options = NSDictionary::<NSWorkspaceDesktopImageOptionKey, AnyObject>::new();
     return unsafe {
         NSWorkspace::sharedWorkspace().setDesktopImageURL_forScreen_options_error(&url, &screen, &options)
@@ -136,7 +136,7 @@ pub fn decode(encoded: &str) -> Option<CFRetained<CFDictionary<CFString, CFType>
 
 pub fn image_path(config: &CFDictionary<CFString, CFType>) -> Option<String> {
     let key = CFString::from_str("ImageFilePath");
-    return config.get(&key).and_then(|value| value.downcast_ref::<CFString>().map(ToString::to_string));
+    return cf_string(config.get(&key).as_deref());
 }
 
 pub fn is_empty(config: &CFDictionary<CFString, CFType>) -> bool {

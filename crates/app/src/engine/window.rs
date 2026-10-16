@@ -14,6 +14,12 @@ use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSOperationQueue};
 use objc2_quartz_core::CALayer;
 
+use crate::app::{Event, post};
+
+pub fn desktop_icon_level() -> i64 {
+    return i64::from(CGWindowLevelForKey(CGWindowLevelKey::DesktopIconWindowLevelKey)) - 1;
+}
+
 pub struct WallpaperWindow {
     window: Retained<NSWindow>,
     root: Retained<CALayer>,
@@ -31,8 +37,7 @@ impl WallpaperWindow {
                 false,
             )
         };
-        let level = CGWindowLevelForKey(CGWindowLevelKey::DesktopIconWindowLevelKey);
-        window.setLevel(isize::try_from(i64::from(level)).unwrap_or(0) - 1);
+        window.setLevel(isize::try_from(desktop_icon_level()).unwrap_or(0));
         let mut behavior = NSWindowCollectionBehavior::Stationary
             | NSWindowCollectionBehavior::IgnoresCycle
             | NSWindowCollectionBehavior::FullScreenAuxiliary;
@@ -56,7 +61,7 @@ impl WallpaperWindow {
         window.orderFrontRegardless();
 
         let block = RcBlock::new(|_notification: NonNull<NSNotification>| {
-            crate::app::post(crate::app::Event::OcclusionChanged);
+            post(Event::OcclusionChanged);
         });
         let occlusion = unsafe {
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(

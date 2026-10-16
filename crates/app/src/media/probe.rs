@@ -1,23 +1,24 @@
-use std::ptr::NonNull;
+use std::fmt;
+use std::path::Path;
 
 use objc2::AnyThread;
-use objc2::rc::Retained;
 use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeAudio,
     AVMediaTypeVideo, AVURLAsset,
 };
-use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
+use objc2_core_foundation::{CFDictionary, CFString, CFType};
 use objc2_core_media::{
     CMFormatDescription, kCMFormatDescriptionExtension_BitsPerComponent, kCMFormatDescriptionExtension_ColorPrimaries,
     kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG,
     kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ, kCMVideoCodecType_AV1, kCMVideoCodecType_H264,
     kCMVideoCodecType_HEVC, kCMVideoCodecType_VP9,
 };
-use objc2_foundation::{NSArray, NSError, NSString, NSURL};
-use objc2_image_io::{CGImageSource, kCGImagePropertyPixelHeight, kCGImagePropertyPixelWidth};
+use objc2_image_io::CGImageSource;
 use objc2_video_toolbox::VTIsHardwareDecodeSupported;
 use serde::{Deserialize, Serialize};
 
+use crate::cf::{cf_file_url, cf_i64, cf_string, file_url};
+use crate::media::av::{format_description, image_size, load_track};
 use crate::model::ItemKind;
 
 const SAMPLE_LIMIT: usize = 4;
@@ -56,15 +57,11 @@ pub enum Reason {
     GifToVideo,
 }
 
-impl Reason {
-    pub fn label(self) -> &'static str {
-        return match self {
-            Reason::Av1WithoutHardware => "av1-without-hardware",
-            Reason::NonHardwareCodec => "non-hardware-codec",
-            Reason::FpsAboveLimit => "fps-above-limit",
-            Reason::ResolutionAboveDisplay => "resolution-above-display",
-            Reason::ContainerUnsupported => "container-unsupported",
-            Reason::GifToVideo => "gif-to-video",
+impl fmt::Display for Reason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        return match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(label)) => formatter.write_str(&label),
+            _ => Err(fmt::Error),
         };
     }
 }
@@ -93,11 +90,11 @@ pub fn supported_container(container: Option<&str>) -> bool {
     return container.is_some_and(|container| SUPPORTED_CONTAINERS.contains(&container));
 }
 
-fn container_of(path: &str) -> Option<String> {
-    return std::path::Path::new(path).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+fn container_of(path: &Path) -> Option<String> {
+    return path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
 }
 
-pub fn inspect(path: &str, kind: ItemKind) -> Probe {
+pub fn inspect(path: &Path, kind: ItemKind) -> Probe {
     return match kind {
         ItemKind::Video => video_probe(path),
         ItemKind::Gif | ItemKind::Image => image_probe(path, kind),
@@ -176,9 +173,8 @@ struct VideoFacts {
     bit_rate: Option<f64>,
 }
 
-fn video_probe(path: &str) -> Probe {
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
+fn video_probe(path: &Path) -> Probe {
+    let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&file_url(path), None) };
     let facts = load_video(&asset);
     let audio_codec = load_audio(&asset);
     let (facts, decode_error) = match facts {
@@ -208,50 +204,27 @@ fn video_probe(path: &str) -> Probe {
     };
 }
 
-fn load_video(asset: &Retained<AVURLAsset>) -> Result<VideoFacts, String> {
+fn load_video(asset: &AVURLAsset) -> Result<VideoFacts, String> {
     let Some(media_type) = (unsafe { AVMediaTypeVideo }) else {
         return Err("no video media type".to_string());
     };
-    let owned = Retained::clone(asset);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let block = block2::RcBlock::new(move |tracks: *mut NSArray<AVAssetTrack>, error: *mut NSError| {
-        let result = if error.is_null() {
-            NonNull::new(tracks)
-                .map(|tracks| unsafe { tracks.as_ref() })
-                .map_or_else(|| Err("no video track".to_string()), |tracks| read_video_facts(&owned, tracks))
-        } else {
-            Err(unsafe { error.as_ref() }.map_or_else(
-                || "cannot load video tracks".to_string(),
-                |error| error.localizedDescription().to_string(),
-            ))
-        };
-        let _ = sender.send(result);
-    });
-    unsafe { asset.loadTracksWithMediaType_completionHandler(media_type, &block) };
-    return receiver.recv().unwrap_or_else(|_| Err("video track load was dropped".to_string()));
+    return match load_track(asset, media_type)? {
+        Some(track) => read_video_facts(asset, &track),
+        None => Err("no video track".to_string()),
+    };
 }
 
-fn read_video_facts(asset: &AVAsset, tracks: &NSArray<AVAssetTrack>) -> Result<VideoFacts, String> {
-    if tracks.count() == 0 {
-        return Err("no video track".to_string());
-    }
-    let track = tracks.objectAtIndex(0);
+fn read_video_facts(asset: &AVAsset, track: &AVAssetTrack) -> Result<VideoFacts, String> {
     let size = unsafe { track.naturalSize() };
     let transform = unsafe { track.preferredTransform() };
     let width = size.width.abs() * transform.a.abs() + size.height.abs() * transform.c.abs();
     let height = size.height.abs() * transform.d.abs() + size.width.abs() * transform.b.abs();
     let fps = f64::from(unsafe { track.nominalFrameRate() });
     let duration = unsafe { track.timeRange().duration.seconds() };
-    let descriptions = unsafe { track.formatDescriptions() };
-    if descriptions.count() == 0 {
-        return Err("no format description".to_string());
-    }
-    let object = descriptions.objectAtIndex(0);
-    let pointer = NonNull::from(&*object).cast::<CMFormatDescription>();
-    let description = unsafe { CFRetained::retain(pointer) };
+    let description = format_description(track).ok_or_else(|| "no format description".to_string())?;
     let codec = fourcc(unsafe { description.media_sub_type() });
     let (bit_depth, color_primaries, transfer) = color_info(&description);
-    let (decodable, decode_error) = decode_check(asset, &track);
+    let (decodable, decode_error) = decode_check(asset, track);
     let bit_rate = unsafe { track.estimatedDataRate() };
     return Ok(VideoFacts {
         codec: Some(codec),
@@ -270,31 +243,8 @@ fn read_video_facts(asset: &AVAsset, tracks: &NSArray<AVAssetTrack>) -> Result<V
 
 fn load_audio(asset: &AVURLAsset) -> Option<String> {
     let media_type = (unsafe { AVMediaTypeAudio })?;
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let block = block2::RcBlock::new(move |tracks: *mut NSArray<AVAssetTrack>, error: *mut NSError| {
-        let codec = if error.is_null() {
-            NonNull::new(tracks).map(|tracks| unsafe { tracks.as_ref() }).and_then(read_audio_codec)
-        } else {
-            None
-        };
-        let _ = sender.send(codec);
-    });
-    unsafe { asset.loadTracksWithMediaType_completionHandler(media_type, &block) };
-    return receiver.recv().unwrap_or(None);
-}
-
-fn read_audio_codec(tracks: &NSArray<AVAssetTrack>) -> Option<String> {
-    if tracks.count() == 0 {
-        return None;
-    }
-    let track = tracks.objectAtIndex(0);
-    let descriptions = unsafe { track.formatDescriptions() };
-    if descriptions.count() == 0 {
-        return None;
-    }
-    let object = descriptions.objectAtIndex(0);
-    let pointer = NonNull::from(&*object).cast::<CMFormatDescription>();
-    let description = unsafe { CFRetained::retain(pointer) };
+    let track = load_track(asset, media_type).ok().flatten()?;
+    let description = format_description(&track)?;
     return Some(fourcc(unsafe { description.media_sub_type() }).trim().to_ascii_lowercase());
 }
 
@@ -330,7 +280,7 @@ fn reader_error(reader: &AVAssetReader) -> Option<String> {
     return unsafe { reader.error() }.map(|error| error.localizedDescription().to_string());
 }
 
-fn image_probe(path: &str, kind: ItemKind) -> Probe {
+fn image_probe(path: &Path, kind: ItemKind) -> Probe {
     let mut probe = Probe {
         kind,
         container: container_of(path),
@@ -351,7 +301,7 @@ fn image_probe(path: &str, kind: ItemKind) -> Probe {
         av1_hw: false,
         bit_rate: None,
     };
-    let Some(url) = CFURL::from_file_path(path) else {
+    let Some(url) = cf_file_url(path) else {
         probe.decode_error = Some("invalid path".to_string());
         return probe;
     };
@@ -364,15 +314,7 @@ fn image_probe(path: &str, kind: ItemKind) -> Probe {
         probe.decode_error = Some("image has no frames".to_string());
         return probe;
     }
-    if let Some(properties) = unsafe { source.properties_at_index(0, None) } {
-        let properties: &CFDictionary<CFString, CFType> = unsafe { properties.cast_unchecked() };
-        probe.width = cf_i64(properties.get(unsafe { kCGImagePropertyPixelWidth }).as_deref())
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0);
-        probe.height = cf_i64(properties.get(unsafe { kCGImagePropertyPixelHeight }).as_deref())
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0);
-    }
+    (probe.width, probe.height) = image_size(&source);
     probe.frames = Some(count);
     probe.decodable = true;
     return probe;
@@ -396,14 +338,6 @@ fn is_hdr(transfer: Option<&str>) -> bool {
     };
     return transfer == unsafe { kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ }.to_string()
         || transfer == unsafe { kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG }.to_string();
-}
-
-fn cf_string(value: Option<&CFType>) -> Option<String> {
-    return value.and_then(|value| value.downcast_ref::<CFString>()).map(ToString::to_string);
-}
-
-fn cf_i64(value: Option<&CFType>) -> Option<i64> {
-    return value.and_then(|value| value.downcast_ref::<CFNumber>()).and_then(CFNumber::as_i64);
 }
 
 fn fourcc(code: u32) -> String {
@@ -554,7 +488,7 @@ mod tests {
 
     #[test]
     fn container_is_lowercased_extension() {
-        assert_eq!(container_of("/a/b.MP4"), Some("mp4".to_string()));
-        assert_eq!(container_of("/a/b"), None);
+        assert_eq!(container_of(Path::new("/a/b.MP4")), Some("mp4".to_string()));
+        assert_eq!(container_of(Path::new("/a/b")), None);
     }
 }

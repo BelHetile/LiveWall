@@ -445,6 +445,7 @@ dependencies = [
  "dispatch2",
  "jiff",
  "libc",
+ "livewall",
  "livewall-proto",
  "objc2",
  "objc2-app-kit",
@@ -479,6 +480,7 @@ dependencies = [
 name = "livewall-proto"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "serde",
  "serde_json",
  "thiserror",

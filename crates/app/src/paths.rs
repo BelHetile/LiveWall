@@ -6,6 +6,36 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+const DIR_MODE: u32 = 0o700;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+impl Visibility {
+    pub fn opposite(self) -> Self {
+        return match self {
+            Self::Public => Self::Private,
+            Self::Private => Self::Public,
+        };
+    }
+}
+
+impl From<bool> for Visibility {
+    fn from(private: bool) -> Self {
+        return if private { Self::Private } else { Self::Public };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirKind {
+    Wallpapers,
+    Thumbs,
+    Stills,
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     base: PathBuf,
@@ -38,40 +68,31 @@ impl Paths {
     }
 
     pub fn wallpapers_dir(&self) -> PathBuf {
-        return self.join("Wallpapers");
+        return self.dir_for(DirKind::Wallpapers, Visibility::Public);
     }
 
     pub fn thumbs_dir(&self) -> PathBuf {
-        return self.join("Thumbs");
+        return self.dir_for(DirKind::Thumbs, Visibility::Public);
     }
 
     pub fn stills_dir(&self) -> PathBuf {
-        return self.join("Stills");
+        return self.dir_for(DirKind::Stills, Visibility::Public);
     }
 
-    pub fn private_dir(&self) -> PathBuf {
+    fn private_dir(&self) -> PathBuf {
         return self.join("private");
     }
 
-    pub fn wallpapers_for(&self, private: bool) -> PathBuf {
-        if private {
-            return self.private_dir().join("Wallpapers");
-        }
-        return self.wallpapers_dir();
-    }
-
-    pub fn thumbs_for(&self, private: bool) -> PathBuf {
-        if private {
-            return self.private_dir().join("Thumbs");
-        }
-        return self.thumbs_dir();
-    }
-
-    pub fn stills_for(&self, private: bool) -> PathBuf {
-        if private {
-            return self.private_dir().join("Stills");
-        }
-        return self.stills_dir();
+    pub fn dir_for(&self, kind: DirKind, visibility: Visibility) -> PathBuf {
+        let name = match kind {
+            DirKind::Wallpapers => "Wallpapers",
+            DirKind::Thumbs => "Thumbs",
+            DirKind::Stills => "Stills",
+        };
+        return match visibility {
+            Visibility::Public => self.join(name),
+            Visibility::Private => self.private_dir().join(name),
+        };
     }
 
     pub fn incoming_dir(&self) -> PathBuf {
@@ -89,9 +110,9 @@ impl Paths {
             self.thumbs_dir(),
             self.stills_dir(),
             self.private_dir(),
-            self.wallpapers_for(true),
-            self.thumbs_for(true),
-            self.stills_for(true),
+            self.dir_for(DirKind::Wallpapers, Visibility::Private),
+            self.dir_for(DirKind::Thumbs, Visibility::Private),
+            self.dir_for(DirKind::Stills, Visibility::Private),
             self.incoming_dir(),
             self.tools_dir(),
         ] {
@@ -125,7 +146,7 @@ fn data_dir() -> PathBuf {
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
     return Ok(());
 }
 
@@ -155,23 +176,23 @@ mod tests {
     fn ensure_builds_the_private_tree_hidden_and_unindexed() {
         let (_guard, paths) = paths();
         paths.ensure().expect("ensure");
-        for private in [false, true] {
-            assert!(paths.wallpapers_for(private).is_dir());
-            assert!(paths.thumbs_for(private).is_dir());
-            assert!(paths.stills_for(private).is_dir());
+        for visibility in [Visibility::Public, Visibility::Private] {
+            for kind in [DirKind::Wallpapers, DirKind::Thumbs, DirKind::Stills] {
+                assert!(paths.dir_for(kind, visibility).is_dir());
+            }
         }
         assert!(paths.private_dir().join(".metadata_never_index").is_file());
         let flags = fs::metadata(paths.private_dir()).expect("metadata").st_flags();
         assert_ne!(flags & libc::UF_HIDDEN, 0);
         let mode = fs::metadata(paths.private_dir()).expect("metadata").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
+        assert_eq!(mode, DIR_MODE);
     }
 
     #[test]
     fn ensure_is_idempotent_and_keeps_existing_files() {
         let (_guard, paths) = paths();
         paths.ensure().expect("first");
-        let kept = paths.wallpapers_for(true).join("a.bin");
+        let kept = paths.dir_for(DirKind::Wallpapers, Visibility::Private).join("a.bin");
         fs::write(&kept, b"x").expect("write");
         paths.ensure().expect("second");
         assert!(kept.exists());
@@ -179,13 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn dirs_for_pick_by_privacy() {
+    fn dir_for_picks_by_visibility() {
         let (_guard, paths) = paths();
-        assert_eq!(paths.wallpapers_for(false), paths.wallpapers_dir());
-        assert_eq!(paths.thumbs_for(false), paths.thumbs_dir());
-        assert_eq!(paths.stills_for(false), paths.stills_dir());
-        assert!(paths.wallpapers_for(true).starts_with(paths.private_dir()));
-        assert!(paths.thumbs_for(true).starts_with(paths.private_dir()));
-        assert!(paths.stills_for(true).starts_with(paths.private_dir()));
+        assert_eq!(paths.dir_for(DirKind::Wallpapers, Visibility::Public), paths.wallpapers_dir());
+        assert_eq!(paths.dir_for(DirKind::Thumbs, Visibility::Public), paths.thumbs_dir());
+        assert_eq!(paths.dir_for(DirKind::Stills, Visibility::Public), paths.stills_dir());
+        for kind in [DirKind::Wallpapers, DirKind::Thumbs, DirKind::Stills] {
+            assert!(paths.dir_for(kind, Visibility::Private).starts_with(paths.private_dir()));
+        }
+    }
+
+    #[test]
+    fn visibility_converts_from_the_private_flag_and_flips() {
+        assert_eq!(Visibility::from(true), Visibility::Private);
+        assert_eq!(Visibility::from(false), Visibility::Public);
+        assert_eq!(Visibility::Public.opposite(), Visibility::Private);
+        assert_eq!(Visibility::Private.opposite(), Visibility::Public);
     }
 }

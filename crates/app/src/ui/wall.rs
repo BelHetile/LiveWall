@@ -12,7 +12,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
-use objc2_foundation::{NSArray, NSNumber, NSString};
+use objc2_foundation::{NSArray, NSNumber};
 use objc2_quartz_core::{
     CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CATransaction, CATransform3D,
     CATransform3DIdentity, CATransition, kCAGravityResizeAspectFill, kCAMediaTimingFunctionEaseIn,
@@ -24,7 +24,9 @@ use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
 use crate::ui::view::{Download, Item, Library};
 use crate::ui::widgets::{self, Weight};
+use crate::ui::{actions, menus};
 
+pub const TILE_ASPECT: CGFloat = 10.0 / 16.0;
 const PADDING: CGFloat = 16.0;
 const MIN_TILE: CGFloat = 240.0;
 const COLUMN_GAP: CGFloat = 16.0;
@@ -100,7 +102,7 @@ define_class!(
             crate::ui::focus();
             crate::ui::select(Some(index));
             if event.clickCount() >= 2 {
-                crate::ui::apply(index);
+                actions::apply(index);
             }
         }
 
@@ -108,7 +110,7 @@ define_class!(
         fn menu_for_event(&self, _event: &NSEvent) -> Option<Retained<NSMenu>> {
             let index = self.ivars().index.get();
             crate::ui::select(Some(index));
-            crate::ui::context_menu(index)
+            menus::context_menu(self.mtm(), index)
         }
 
         #[unsafe(method(mouseEntered:))]
@@ -226,9 +228,9 @@ impl TileView {
         let width = frame.size.width;
         let chips = ivars.chips.fittingSize();
         let (art, radius) = if list {
-            (CGRect::new(CGPoint::new(10.0, 9.0), CGSize::new(ROW_ART, ROW_ART * 10.0 / 16.0)), 8.0)
+            (CGRect::new(CGPoint::new(10.0, 9.0), CGSize::new(ROW_ART, ROW_ART * TILE_ASPECT)), 8.0)
         } else {
-            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * 10.0 / 16.0)), RADIUS)
+            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * TILE_ASPECT)), RADIUS)
         };
         let ring = CGRect::new(
             CGPoint::new(art.origin.x - RING_GAP, art.origin.y - RING_GAP),
@@ -357,8 +359,8 @@ impl TileView {
         if let Some(thumb) = &item.image {
             unsafe { ivars.image.setContents(Some(thumb)) };
         }
-        ivars.name.setStringValue(&NSString::from_str(&item.title));
-        ivars.meta.setStringValue(&NSString::from_str(&meta_line(item)));
+        ivars.name.setStringValue(&widgets::ns(&item.title));
+        ivars.meta.setStringValue(&widgets::ns(&meta_line(item)));
         ivars.progress.set(item.progress);
         self.paint_progress();
         let marker_list = markers(library, index, scope);
@@ -377,7 +379,7 @@ impl TileView {
             fade.setType(unsafe { kCATransitionFade });
             fade.setDuration(CHIPS);
             fade.setTimingFunction(Some(&ease_in_out()));
-            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("chips")));
+            layer.addAnimation_forKey(&fade, Some(&widgets::ns("chips")));
         }
         for view in ivars.chip_views.borrow_mut().drain(..) {
             ivars.chips.removeArrangedSubview(&view);
@@ -441,7 +443,7 @@ impl TileView {
             fade.setType(unsafe { kCATransitionFade });
             fade.setDuration(SELECT);
             fade.setTimingFunction(Some(&ease_out()));
-            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("tint")));
+            layer.addAnimation_forKey(&fade, Some(&widgets::ns("tint")));
         }
         let color = if selected { ivars.accent.borrow().clone() } else { NSColor::labelColor() };
         ivars.name.setTextColor(Some(&color));
@@ -572,7 +574,19 @@ define_class!(
     }
 );
 
-const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
+mod keys {
+    pub const LEFT: u16 = 123;
+    pub const RIGHT: u16 = 124;
+    pub const DOWN: u16 = 125;
+    pub const UP: u16 = 126;
+    pub const RETURN: u16 = 36;
+    pub const ENTER: u16 = 76;
+    pub const SPACE: u16 = 49;
+    pub const COMMA: u16 = 43;
+    pub const PERIOD: u16 = 47;
+    pub const GRAVE: u16 = 50;
+    pub const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
+}
 
 impl WallView {
     pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
@@ -668,17 +682,17 @@ impl WallView {
         let columns = isize::try_from(self.ivars().columns.get()).unwrap_or(1);
         let code = event.keyCode();
         match code {
-            123 => self.step(-1),
-            124 => self.step(1),
-            125 => self.step(columns),
-            126 => self.step(-columns),
-            36 | 76 => crate::ui::apply_selection(),
-            49 => crate::ui::toggle_play(),
-            43 => crate::ui::frame(-1),
-            47 => crate::ui::frame(1),
-            50 => crate::ui::place(self.target(), Scope::All),
-            _ => match DIGITS.iter().position(|digit| *digit == code) {
-                Some(space) => crate::ui::place(self.target(), Scope::Space(space)),
+            keys::LEFT => self.step(-1),
+            keys::RIGHT => self.step(1),
+            keys::DOWN => self.step(columns),
+            keys::UP => self.step(-columns),
+            keys::RETURN | keys::ENTER => actions::apply_selection(),
+            keys::SPACE => crate::ui::toggle_play(),
+            keys::COMMA => crate::ui::frame(-1),
+            keys::PERIOD => crate::ui::frame(1),
+            keys::GRAVE => actions::place(self.target(), Scope::All),
+            _ => match keys::DIGITS.iter().position(|digit| *digit == code) {
+                Some(space) => actions::place(self.target(), Scope::Space(space)),
                 None => return false,
             },
         }
@@ -807,7 +821,7 @@ impl WallView {
             many => Some(format!("Downloading {} videos…", many.len())),
         };
         if let Some(text) = &text {
-            ivars.status_text.setStringValue(&NSString::from_str(text));
+            ivars.status_text.setStringValue(&widgets::ns(text));
         }
         let hidden = text.is_none();
         if ivars.status.isHidden() != hidden {
@@ -928,7 +942,7 @@ impl WallView {
         } else {
             let columns = ((usable + COLUMN_GAP) / (MIN_TILE + COLUMN_GAP)).floor().max(1.0);
             let tile = (usable - COLUMN_GAP * (columns - 1.0)) / columns;
-            (columns as usize, tile, tile * 10.0 / 16.0 + LABEL_HEIGHT, ROW_GAP)
+            (columns as usize, tile, tile * TILE_ASPECT + LABEL_HEIGHT, ROW_GAP)
         };
         ivars.columns.set(columns);
         let top = 14.0;

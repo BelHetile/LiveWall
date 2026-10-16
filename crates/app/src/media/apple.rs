@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::fmt;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -14,15 +13,13 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
     AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVAssetWriter, AVAssetWriterInput,
-    AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus, AVFileTypeMPEG4, AVMediaType, AVMediaTypeAudio,
-    AVMediaTypeVideo, AVURLAsset,
+    AVAssetWriterInputPixelBufferAdaptor, AVAssetWriterStatus, AVFileTypeMPEG4, AVMediaTypeAudio, AVMediaTypeVideo,
+    AVURLAsset,
 };
-use objc2_core_foundation::{
-    CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGAffineTransform, CGPoint, CGRect, CGSize,
-};
+use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType, CGAffineTransform, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGBitmapContextCreate, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
 use objc2_core_media::{
-    CMFormatDescription, CMTime, kCMFormatDescriptionExtension_ContentLightLevelInfo,
+    CMTime, kCMFormatDescriptionExtension_ContentLightLevelInfo,
     kCMFormatDescriptionExtension_MasteringDisplayColorVolume, kCMVideoCodecType_VP9,
 };
 use objc2_core_video::{
@@ -31,43 +28,30 @@ use objc2_core_video::{
     CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString};
 use objc2_image_io::{
     CGImageSource, kCGImagePropertyGIFDelayTime, kCGImagePropertyGIFDictionary, kCGImagePropertyGIFUnclampedDelayTime,
-    kCGImagePropertyPixelHeight, kCGImagePropertyPixelWidth, kCGImageSourceCreateThumbnailFromImageAlways,
-    kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceThumbnailMaxPixelSize,
 };
 use objc2_video_toolbox::{
     VTRegisterSupplementalVideoDecoderIfAvailable, kVTCompressionPropertyKey_ContentLightLevelInfo,
     kVTCompressionPropertyKey_MasteringDisplayColorVolume, kVTProfileLevel_HEVC_Main10_AutoLevel,
 };
 
-use crate::media::optimize::{Audio, GIF_DEFAULT_DELAY, GIF_MIN_DELAY, GifPlan, VideoPlan, bitrate, even, scale_dims};
+use crate::cf::{cf_f64, cf_file_url, downcast_dict, file_url, ns_string, object};
+use crate::media::TranscodeError;
+use crate::media::av::{CM_TIMESCALE, format_description, image_size, load_track, thumbnail_options};
+use crate::media::plan::{
+    AAC_BITRATE, AAC_CHANNELS, AAC_SAMPLE_RATE, Audio, GIF_DEFAULT_DELAY, GIF_MIN_DELAY, GifPlan, VideoPlan, bitrate,
+    even, scale_dims,
+};
 
 const AAC: u32 = u32::from_be_bytes(*b"aac ");
 const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
 const POLL: Duration = Duration::from_millis(200);
 const GRACE: Duration = Duration::from_secs(2);
 
-type Progress = Arc<dyn Fn(f64) + Send + Sync>;
+pub type Progress = Arc<dyn Fn(f64) + Send + Sync>;
 type Extra = Vec<(&'static CFString, CFRetained<CFType>)>;
-
-#[derive(Debug)]
-pub enum AppleError {
-    Cancelled,
-    NoVideo,
-    Failed(String),
-}
-
-impl fmt::Display for AppleError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        return match self {
-            AppleError::Cancelled => formatter.write_str("optimize cancelled"),
-            AppleError::NoVideo => formatter.write_str("the file has no video track"),
-            AppleError::Failed(message) => formatter.write_str(message),
-        };
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Codec {
@@ -84,18 +68,21 @@ pub fn register_vp9() {
     unsafe { VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9) };
 }
 
-pub fn run(task: &Task, progress: &Progress, cancel: &Arc<AtomicBool>) -> Result<(), AppleError> {
+pub fn run(task: &Task, progress: &Progress, cancel: &Arc<AtomicBool>) -> Result<(), TranscodeError> {
     return match task {
         Task::Video(plan) => with_fallback(plan.hevc, |codec| encode_video(plan, codec, progress, cancel)),
         Task::Gif(plan) => with_fallback(true, |codec| encode_gif(plan, codec, progress, cancel)),
     };
 }
 
-fn with_fallback(hevc: bool, mut encode: impl FnMut(Codec) -> Result<(), AppleError>) -> Result<(), AppleError> {
+fn with_fallback(
+    hevc: bool,
+    mut encode: impl FnMut(Codec) -> Result<(), TranscodeError>,
+) -> Result<(), TranscodeError> {
     if hevc {
         match encode(Codec::Hevc) {
             Ok(()) => return Ok(()),
-            Err(error @ (AppleError::Cancelled | AppleError::NoVideo)) => return Err(error),
+            Err(error @ (TranscodeError::Cancelled | TranscodeError::NoVideo)) => return Err(error),
             Err(error) => tracing::warn!(%error, "HEVC encode failed; retrying with H.264"),
         }
     }
@@ -107,17 +94,17 @@ fn encode_video(
     codec: Codec,
     progress: &Progress,
     cancel: &Arc<AtomicBool>,
-) -> Result<(), AppleError> {
+) -> Result<(), TranscodeError> {
     let chain: &[Audio] = match plan.audio {
         Audio::Copy => &[Audio::Copy, Audio::Encode, Audio::Drop],
         Audio::Encode => &[Audio::Encode, Audio::Drop],
         Audio::Drop => &[Audio::Drop],
     };
-    let mut last = AppleError::Failed("cannot encode this video".to_string());
+    let mut last = TranscodeError::Failed("cannot encode this video".to_string());
     for audio in chain {
         match encode_once(plan, codec, *audio, progress, cancel) {
             Ok(()) => return Ok(()),
-            Err(error @ (AppleError::Cancelled | AppleError::NoVideo)) => return Err(error),
+            Err(error @ (TranscodeError::Cancelled | TranscodeError::NoVideo)) => return Err(error),
             Err(error) => {
                 tracing::warn!(%error, ?audio, "encode attempt failed");
                 last = error;
@@ -134,7 +121,7 @@ fn encode_once(
     audio: Audio,
     progress: &Progress,
     cancel: &Arc<AtomicBool>,
-) -> Result<(), AppleError> {
+) -> Result<(), TranscodeError> {
     let _ = std::fs::remove_file(&plan.output);
     let pipeline = Pipeline::open(plan, codec, audio)?;
     pipeline.start()?;
@@ -151,10 +138,12 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    fn open(plan: &VideoPlan, codec: Codec, audio: Audio) -> Result<Self, AppleError> {
+    fn open(plan: &VideoPlan, codec: Codec, audio: Audio) -> Result<Self, TranscodeError> {
         let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&file_url(&plan.input), None) };
-        let track =
-            load_track(&asset, unsafe { AVMediaTypeVideo }.expect("video media type")).ok_or(AppleError::NoVideo)?;
+        let track = load_track(&asset, unsafe { AVMediaTypeVideo }.expect("video media type"))
+            .ok()
+            .flatten()
+            .ok_or(TranscodeError::NoVideo)?;
         let reader = unsafe { AVAssetReader::initWithAsset_error(AVAssetReader::alloc(), &asset) }
             .map_err(|error| ns_error(&error))?;
         let video_out = unsafe {
@@ -166,7 +155,7 @@ impl Pipeline {
         };
         unsafe { video_out.setAlwaysCopiesSampleData(false) };
         if !unsafe { reader.canAddOutput(&video_out) } {
-            return Err(AppleError::Failed("cannot read this video".to_string()));
+            return Err(TranscodeError::Failed("cannot read this video".to_string()));
         }
         unsafe { reader.addOutput(&video_out) };
 
@@ -176,14 +165,14 @@ impl Pipeline {
         let video_in = video_input(plan, codec, (width, height), &hdr_metadata(&track));
         unsafe { video_in.setTransform(transform) };
         if !unsafe { writer.canAddInput(&video_in) } {
-            return Err(AppleError::Failed("the video encoder is not available".to_string()));
+            return Err(TranscodeError::Failed("the video encoder is not available".to_string()));
         }
         unsafe { writer.addInput(&video_in) };
 
         let audio = if audio == Audio::Drop { None } else { audio_setup(&asset, audio) };
         if let Some((audio_out, audio_in)) = &audio {
             if !unsafe { writer.canAddInput(audio_in) } || !unsafe { reader.canAddOutput(audio_out) } {
-                return Err(AppleError::Failed("cannot transfer the audio track".to_string()));
+                return Err(TranscodeError::Failed("cannot transfer the audio track".to_string()));
             }
             unsafe {
                 audio_in.setExpectsMediaDataInRealTime(false);
@@ -194,7 +183,7 @@ impl Pipeline {
         return Ok(Self { reader, writer, video_out, video_in, audio });
     }
 
-    fn start(&self) -> Result<(), AppleError> {
+    fn start(&self) -> Result<(), TranscodeError> {
         if !unsafe { self.reader.startReading() } {
             return Err(reader_error(&self.reader));
         }
@@ -202,7 +191,7 @@ impl Pipeline {
             unsafe { self.reader.cancelReading() };
             return Err(writer_error(&self.writer));
         }
-        unsafe { self.writer.startSessionAtSourceTime(CMTime::new(0, 600)) };
+        unsafe { self.writer.startSessionAtSourceTime(CMTime::new(0, CM_TIMESCALE)) };
         return Ok(());
     }
 
@@ -243,9 +232,9 @@ impl Pipeline {
             || unsafe { self.writer.status() } == AVAssetWriterStatus::Failed;
     }
 
-    fn close(&self, plan: &VideoPlan, progress: &Progress, cancel: &AtomicBool) -> Result<(), AppleError> {
+    fn close(&self, plan: &VideoPlan, progress: &Progress, cancel: &AtomicBool) -> Result<(), TranscodeError> {
         let failure = if cancel.load(Ordering::SeqCst) {
-            Some(AppleError::Cancelled)
+            Some(TranscodeError::Cancelled)
         } else if unsafe { self.reader.status() } == AVAssetReaderStatus::Failed {
             Some(reader_error(&self.reader))
         } else if unsafe { self.writer.status() } == AVAssetWriterStatus::Failed {
@@ -259,7 +248,7 @@ impl Pipeline {
             return Err(error);
         }
         if plan.duration > 0.0 {
-            unsafe { self.writer.endSessionAtSourceTime(CMTime::with_seconds(plan.duration, 600)) };
+            unsafe { self.writer.endSessionAtSourceTime(CMTime::with_seconds(plan.duration, CM_TIMESCALE)) };
         }
         if !finish_writing(&self.writer) {
             return Err(writer_error(&self.writer));
@@ -351,11 +340,7 @@ fn stored_dims(width: u32, height: u32, transform: CGAffineTransform) -> (u32, u
     return (width, height);
 }
 
-fn file_url(path: &Path) -> Retained<NSURL> {
-    return NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
-}
-
-fn new_writer(output: &Path) -> Result<Retained<AVAssetWriter>, AppleError> {
+fn new_writer(output: &Path) -> Result<Retained<AVAssetWriter>, TranscodeError> {
     let writer = unsafe {
         AVAssetWriter::initWithURL_fileType_error(
             AVAssetWriter::alloc(),
@@ -411,10 +396,6 @@ fn hdr_metadata(track: &AVAssetTrack) -> Extra {
         .collect();
 }
 
-fn bridged<T, U>(value: &T) -> &U {
-    return unsafe { &*std::ptr::from_ref(value).cast::<U>() };
-}
-
 fn compression_settings(plan: &VideoPlan, codec: Codec, extra: &Extra) -> Retained<NSDictionary<NSString, AnyObject>> {
     let bit_rate = NSNumber::numberWithUnsignedLongLong(plan.bitrate);
     let frame_rate = NSNumber::numberWithInteger(fps_integer(plan.fps));
@@ -432,8 +413,8 @@ fn compression_settings(plan: &VideoPlan, codec: Codec, extra: &Extra) -> Retain
     }
     if codec == Codec::Hevc && plan.hdr {
         for (key, value) in extra {
-            keys.push(bridged::<CFString, NSString>(key));
-            values.push(bridged::<CFType, AnyObject>(value));
+            keys.push(ns_string(key));
+            values.push(object(&**value));
         }
     }
     return NSDictionary::from_slices(&keys, &values);
@@ -505,7 +486,7 @@ fn audio_setup(
     audio: Audio,
 ) -> Option<(Retained<AVAssetReaderTrackOutput>, Retained<AVAssetWriterInput>)> {
     let media = unsafe { AVMediaTypeAudio }?;
-    let track = load_track(asset, media)?;
+    let track = load_track(asset, media).ok().flatten()?;
     return match audio {
         Audio::Copy => {
             let hint = format_description(&track);
@@ -544,8 +525,8 @@ fn pcm_reader_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
     let float = NSNumber::numberWithBool(false);
     let big_endian = NSNumber::numberWithBool(false);
     let non_interleaved = NSNumber::numberWithBool(false);
-    let rate = NSNumber::numberWithUnsignedInt(48_000);
-    let channels = NSNumber::numberWithUnsignedInt(2);
+    let rate = NSNumber::numberWithUnsignedInt(AAC_SAMPLE_RATE);
+    let channels = NSNumber::numberWithUnsignedInt(AAC_CHANNELS);
     let keys: [&NSString; 7] = [
         &NSString::from_str("AVFormatIDKey"),
         &NSString::from_str("AVLinearPCMBitDepthKey"),
@@ -561,9 +542,9 @@ fn pcm_reader_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
 
 fn aac_writer_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
     let format = NSNumber::numberWithUnsignedInt(AAC);
-    let rate = NSNumber::numberWithUnsignedInt(48_000);
-    let channels = NSNumber::numberWithUnsignedInt(2);
-    let bit_rate = NSNumber::numberWithUnsignedInt(176_000);
+    let rate = NSNumber::numberWithUnsignedInt(AAC_SAMPLE_RATE);
+    let channels = NSNumber::numberWithUnsignedInt(AAC_CHANNELS);
+    let bit_rate = NSNumber::numberWithUnsignedInt(AAC_BITRATE);
     let keys: [&NSString; 4] = [
         &NSString::from_str("AVFormatIDKey"),
         &NSString::from_str("AVSampleRateKey"),
@@ -574,44 +555,20 @@ fn aac_writer_settings() -> Retained<NSDictionary<NSString, AnyObject>> {
     return NSDictionary::from_slices(&keys, &values);
 }
 
-fn load_track(asset: &AVURLAsset, media: &AVMediaType) -> Option<Retained<AVAssetTrack>> {
-    let (sender, receiver) = mpsc::channel();
-    let block = RcBlock::new(move |tracks: *mut NSArray<AVAssetTrack>, error: *mut NSError| {
-        let result = if error.is_null() {
-            NonNull::new(tracks)
-                .map(|tracks| unsafe { tracks.as_ref() })
-                .and_then(|tracks| if tracks.count() == 0 { None } else { Some(tracks.objectAtIndex(0)) })
-        } else {
-            None
-        };
-        let _ = sender.send(result);
-    });
-    unsafe { asset.loadTracksWithMediaType_completionHandler(media, &block) };
-    return receiver.recv().unwrap_or(None);
+fn ns_error(error: &NSError) -> TranscodeError {
+    return TranscodeError::Failed(error.localizedDescription().to_string());
 }
 
-fn format_description(track: &AVAssetTrack) -> Option<CFRetained<CMFormatDescription>> {
-    let descriptions = unsafe { track.formatDescriptions() };
-    if descriptions.count() == 0 {
-        return None;
-    }
-    let object = descriptions.objectAtIndex(0);
-    let pointer = NonNull::from(&*object).cast::<CMFormatDescription>();
-    return Some(unsafe { CFRetained::retain(pointer) });
-}
-
-fn ns_error(error: &NSError) -> AppleError {
-    return AppleError::Failed(error.localizedDescription().to_string());
-}
-
-fn reader_error(reader: &AVAssetReader) -> AppleError {
+fn reader_error(reader: &AVAssetReader) -> TranscodeError {
     return unsafe { reader.error() }
-        .map_or_else(|| AppleError::Failed("cannot read this video".to_string()), |error| ns_error(&error));
+        .map_or_else(|| TranscodeError::Failed("cannot read this video".to_string()), |error| ns_error(&error));
 }
 
-fn writer_error(writer: &AVAssetWriter) -> AppleError {
-    return unsafe { writer.error() }
-        .map_or_else(|| AppleError::Failed("cannot write the optimized video".to_string()), |error| ns_error(&error));
+fn writer_error(writer: &AVAssetWriter) -> TranscodeError {
+    return unsafe { writer.error() }.map_or_else(
+        || TranscodeError::Failed("cannot write the optimized video".to_string()),
+        |error| ns_error(&error),
+    );
 }
 
 fn finish_writing(writer: &AVAssetWriter) -> bool {
@@ -632,15 +589,15 @@ struct Gif {
 
 impl Gif {
     #[allow(clippy::cast_precision_loss)]
-    fn open(plan: &GifPlan) -> Result<Self, AppleError> {
+    fn open(plan: &GifPlan) -> Result<Self, TranscodeError> {
         let source = open_image(&plan.input)?;
         let count = unsafe { source.count() };
         if count == 0 {
-            return Err(AppleError::Failed("the GIF has no frames".to_string()));
+            return Err(TranscodeError::Failed("the GIF has no frames".to_string()));
         }
         let (source_width, source_height) = image_size(&source);
         if source_width == 0 || source_height == 0 {
-            return Err(AppleError::Failed("cannot read the GIF size".to_string()));
+            return Err(TranscodeError::Failed("cannot read the GIF size".to_string()));
         }
         let (width, height) = scale_dims(source_width, source_height, plan.max_pixels)
             .unwrap_or_else(|| (even(f64::from(source_width)), even(f64::from(source_height))));
@@ -672,21 +629,21 @@ impl Gif {
         adaptor: &AVAssetWriterInputPixelBufferAdaptor,
         progress: &Progress,
         cancel: &AtomicBool,
-    ) -> Result<(), AppleError> {
+    ) -> Result<(), TranscodeError> {
         let Some(pool) = (unsafe { adaptor.pixelBufferPool() }) else {
-            return Err(AppleError::Failed("cannot allocate video frames".to_string()));
+            return Err(TranscodeError::Failed("cannot allocate video frames".to_string()));
         };
         let (width, height) = (self.plan.width, self.plan.height);
         let mut elapsed = 0.0f64;
         for (index, delay) in self.delays.iter().enumerate() {
             if cancel.load(Ordering::SeqCst) {
-                return Err(AppleError::Cancelled);
+                return Err(TranscodeError::Cancelled);
             }
             let image = thumbnail(&self.source, index, width.max(height))?;
             let buffer = pooled_buffer(&pool)?;
             draw(&buffer, &image)?;
             wait_ready(writer, input, cancel)?;
-            let time = unsafe { CMTime::with_seconds(elapsed, 600) };
+            let time = unsafe { CMTime::with_seconds(elapsed, CM_TIMESCALE) };
             if !unsafe { adaptor.appendPixelBuffer_withPresentationTime(&buffer, time) } {
                 return Err(writer_error(writer));
             }
@@ -699,13 +656,18 @@ impl Gif {
     }
 }
 
-fn encode_gif(plan: &GifPlan, codec: Codec, progress: &Progress, cancel: &Arc<AtomicBool>) -> Result<(), AppleError> {
+fn encode_gif(
+    plan: &GifPlan,
+    codec: Codec,
+    progress: &Progress,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), TranscodeError> {
     let _ = std::fs::remove_file(&plan.output);
     let gif = Gif::open(plan)?;
     let writer = new_writer(&plan.output)?;
     let input = video_input(&gif.plan, codec, (gif.plan.width, gif.plan.height), &Vec::new());
     if !unsafe { writer.canAddInput(&input) } {
-        return Err(AppleError::Failed("the video encoder is not available".to_string()));
+        return Err(TranscodeError::Failed("the video encoder is not available".to_string()));
     }
     unsafe { writer.addInput(&input) };
     let adaptor = unsafe {
@@ -717,7 +679,7 @@ fn encode_gif(plan: &GifPlan, codec: Codec, progress: &Progress, cancel: &Arc<At
     if !unsafe { writer.startWriting() } {
         return Err(writer_error(&writer));
     }
-    unsafe { writer.startSessionAtSourceTime(CMTime::new(0, 600)) };
+    unsafe { writer.startSessionAtSourceTime(CMTime::new(0, CM_TIMESCALE)) };
     if let Err(error) = gif.write(&writer, &input, &adaptor, progress, cancel) {
         unsafe { writer.cancelWriting() };
         let _ = std::fs::remove_file(&plan.output);
@@ -725,7 +687,7 @@ fn encode_gif(plan: &GifPlan, codec: Codec, progress: &Progress, cancel: &Arc<At
     }
     unsafe { input.markAsFinished() };
     if gif.plan.duration > 0.0 {
-        unsafe { writer.endSessionAtSourceTime(CMTime::with_seconds(gif.plan.duration, 600)) };
+        unsafe { writer.endSessionAtSourceTime(CMTime::with_seconds(gif.plan.duration, CM_TIMESCALE)) };
     }
     if !finish_writing(&writer) {
         return Err(writer_error(&writer));
@@ -734,10 +696,10 @@ fn encode_gif(plan: &GifPlan, codec: Codec, progress: &Progress, cancel: &Arc<At
     return Ok(());
 }
 
-fn wait_ready(writer: &AVAssetWriter, input: &AVAssetWriterInput, cancel: &AtomicBool) -> Result<(), AppleError> {
+fn wait_ready(writer: &AVAssetWriter, input: &AVAssetWriterInput, cancel: &AtomicBool) -> Result<(), TranscodeError> {
     while !unsafe { input.isReadyForMoreMediaData() } {
         if cancel.load(Ordering::SeqCst) {
-            return Err(AppleError::Cancelled);
+            return Err(TranscodeError::Cancelled);
         }
         if unsafe { writer.status() } == AVAssetWriterStatus::Failed {
             return Err(writer_error(writer));
@@ -747,26 +709,12 @@ fn wait_ready(writer: &AVAssetWriter, input: &AVAssetWriterInput, cancel: &Atomi
     return Ok(());
 }
 
-fn open_image(path: &Path) -> Result<CFRetained<CGImageSource>, AppleError> {
-    let Some(url) = objc2_core_foundation::CFURL::from_file_path(path.to_string_lossy().into_owned()) else {
-        return Err(AppleError::Failed("invalid GIF path".to_string()));
+fn open_image(path: &Path) -> Result<CFRetained<CGImageSource>, TranscodeError> {
+    let Some(url) = cf_file_url(path) else {
+        return Err(TranscodeError::Failed("invalid GIF path".to_string()));
     };
     return unsafe { CGImageSource::with_url(&url, None) }
-        .ok_or_else(|| AppleError::Failed("cannot open the GIF".to_string()));
-}
-
-fn image_size(source: &CGImageSource) -> (u32, u32) {
-    let Some(properties) = (unsafe { source.properties_at_index(0, None) }) else {
-        return (0, 0);
-    };
-    let properties: &CFDictionary<CFString, CFType> = unsafe { properties.cast_unchecked() };
-    let width = cf_i64(properties.get(unsafe { kCGImagePropertyPixelWidth }).as_deref())
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(0);
-    let height = cf_i64(properties.get(unsafe { kCGImagePropertyPixelHeight }).as_deref())
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(0);
-    return (width, height);
+        .ok_or_else(|| TranscodeError::Failed("cannot open the GIF".to_string()));
 }
 
 fn frame_delay(source: &CGImageSource, index: usize) -> f64 {
@@ -777,27 +725,19 @@ fn frame_delay(source: &CGImageSource, index: usize) -> f64 {
     let Some(gif) = properties.get(unsafe { kCGImagePropertyGIFDictionary }) else {
         return GIF_DEFAULT_DELAY;
     };
-    let gif = unsafe { CFRetained::cast_unchecked::<CFDictionary<CFString, CFType>>(gif) };
+    let Some(gif) = downcast_dict(Some(&gif)) else {
+        return GIF_DEFAULT_DELAY;
+    };
     let delay = cf_f64(gif.get(unsafe { kCGImagePropertyGIFUnclampedDelayTime }).as_deref())
         .or_else(|| cf_f64(gif.get(unsafe { kCGImagePropertyGIFDelayTime }).as_deref()));
     return delay.filter(|value| *value > 0.0).map_or(GIF_DEFAULT_DELAY, |value| value.max(GIF_MIN_DELAY));
 }
 
-fn thumbnail(source: &CGImageSource, index: usize, max_pixel: u32) -> Result<CFRetained<CGImage>, AppleError> {
-    let keys: [&CFString; 3] = unsafe {
-        [
-            kCGImageSourceCreateThumbnailFromImageAlways,
-            kCGImageSourceCreateThumbnailWithTransform,
-            kCGImageSourceThumbnailMaxPixelSize,
-        ]
-    };
-    let truthy: &CFType = CFBoolean::new(true).as_ref();
-    let size = CFNumber::new_i64(i64::from(max_pixel));
-    let values: [&CFType; 3] = [truthy, truthy, size.as_ref()];
-    let options = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+fn thumbnail(source: &CGImageSource, index: usize, max_pixel: u32) -> Result<CFRetained<CGImage>, TranscodeError> {
+    let options = thumbnail_options(max_pixel as usize);
     let options: &CFDictionary = unsafe { options.cast_unchecked() };
     return unsafe { source.thumbnail_at_index(index, Some(options)) }
-        .ok_or_else(|| AppleError::Failed("cannot decode a GIF frame".to_string()));
+        .ok_or_else(|| TranscodeError::Failed("cannot decode a GIF frame".to_string()));
 }
 
 fn pixel_buffer_attributes(width: u32, height: u32) -> Retained<NSDictionary<NSString, AnyObject>> {
@@ -810,17 +750,17 @@ fn pixel_buffer_attributes(width: u32, height: u32) -> Retained<NSDictionary<NSS
     return NSDictionary::from_slices(&keys, &values);
 }
 
-fn pooled_buffer(pool: &CVPixelBufferPool) -> Result<CFRetained<CVPixelBuffer>, AppleError> {
+fn pooled_buffer(pool: &CVPixelBufferPool) -> Result<CFRetained<CVPixelBuffer>, TranscodeError> {
     let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
     let status = unsafe { CVPixelBufferPool::create_pixel_buffer(None, pool, NonNull::from(&mut out)) };
     let Some(buffer) = NonNull::new(out).filter(|_| status == 0) else {
-        return Err(AppleError::Failed("cannot allocate a video frame".to_string()));
+        return Err(TranscodeError::Failed("cannot allocate a video frame".to_string()));
     };
     return Ok(unsafe { CFRetained::from_raw(buffer) });
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn draw(buffer: &CVPixelBuffer, image: &CGImage) -> Result<(), AppleError> {
+fn draw(buffer: &CVPixelBuffer, image: &CGImage) -> Result<(), TranscodeError> {
     unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::empty()) };
     let result = (|| {
         let width = CVPixelBufferGetWidth(buffer);
@@ -828,12 +768,12 @@ fn draw(buffer: &CVPixelBuffer, image: &CGImage) -> Result<(), AppleError> {
         let bytes = CVPixelBufferGetBytesPerRow(buffer);
         let base = CVPixelBufferGetBaseAddress(buffer);
         let Some(space) = objc2_core_graphics::CGColorSpace::new_device_rgb() else {
-            return Err(AppleError::Failed("cannot create a color space".to_string()));
+            return Err(TranscodeError::Failed("cannot create a color space".to_string()));
         };
         let info = CGImageByteOrderInfo::Order32Little.0 | CGImageAlphaInfo::PremultipliedFirst.0;
         let Some(context) = (unsafe { CGBitmapContextCreate(base, width, height, 8, bytes, Some(&space), info) })
         else {
-            return Err(AppleError::Failed("cannot create a drawing context".to_string()));
+            return Err(TranscodeError::Failed("cannot create a drawing context".to_string()));
         };
         let rect = CGRect::new(CGPoint::ZERO, CGSize::new(width as f64, height as f64));
         CGContext::set_rgb_fill_color(Some(&context), 0.0, 0.0, 0.0, 1.0);
@@ -853,18 +793,10 @@ fn fps_integer(fps: f64) -> isize {
     return fps.round().min(240.0) as isize;
 }
 
-fn cf_i64(value: Option<&CFType>) -> Option<i64> {
-    return value.and_then(|value| value.downcast_ref::<CFNumber>()).and_then(CFNumber::as_i64);
-}
-
-fn cf_f64(value: Option<&CFType>) -> Option<f64> {
-    return value.and_then(|value| value.downcast_ref::<CFNumber>()).and_then(CFNumber::as_f64);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::optimize::{Source, Target, video_plan};
+    use crate::media::plan::{Source, Target, build_args, video_plan};
     use crate::media::probe;
     use crate::model::ItemKind;
     use std::path::PathBuf;
@@ -944,16 +876,8 @@ mod tests {
     }
 
     fn transcode_video(input: &Path, output: &Path, max_pixels: u32, fps_limit: u32) {
-        let probe = probe::inspect(&input.to_string_lossy(), ItemKind::Video);
-        let source = Source {
-            width: probe.width,
-            height: probe.height,
-            fps: probe.fps,
-            bit_depth: probe.bit_depth,
-            hdr: probe.hdr,
-            transfer: probe.transfer.clone(),
-            audio: crate::media::optimize::audio_plan(probe.audio_codec.as_deref(), true),
-        };
+        let probe = probe::inspect(input, ItemKind::Video);
+        let source = Source::from(&probe);
         let target = Target { fps_limit, max_pixels, hevc: true };
         let plan = video_plan(input, output, Some(&probe), &source, &target, probe.duration);
         let progress: Arc<dyn Fn(f64) + Send + Sync> = Arc::new(|_| {});
@@ -982,7 +906,7 @@ mod tests {
             assert_eq!((width, height), (2560, 1440));
             assert!(fps <= 30.0, "fps {fps}");
             assert!(size > 0);
-            assert!(probe::inspect(&four_k.to_string_lossy(), ItemKind::Video).decodable);
+            assert!(probe::inspect(&four_k, ItemKind::Video).decodable);
         }
 
         if only.is_empty() || only == "hevc" {
@@ -993,7 +917,7 @@ mod tests {
             assert_eq!((width, height), (1920, 1080));
             assert!(fps <= 30.0, "fps {fps}");
             assert!((duration - 3.0).abs() < 0.5, "duration {duration}");
-            assert!(probe::inspect(&hevc.to_string_lossy(), ItemKind::Video).decodable);
+            assert!(probe::inspect(&hevc, ItemKind::Video).decodable);
         }
 
         if only.is_empty() || only == "sixty" {
@@ -1003,7 +927,7 @@ mod tests {
             assert_eq!(codec, "hevc");
             assert_eq!((width, height), (1280, 720));
             assert!(fps <= 30.0, "fps {fps}");
-            assert!(probe::inspect(&sixty.to_string_lossy(), ItemKind::Video).decodable);
+            assert!(probe::inspect(&sixty, ItemKind::Video).decodable);
         }
 
         if only.is_empty() || only == "tenbit" {
@@ -1015,7 +939,7 @@ mod tests {
                 assert_eq!(codec, "hevc");
                 assert_eq!((width, height), (1920, 1080));
                 assert!(pix_fmt(&out).contains("10"), "pix_fmt {}", pix_fmt(&out));
-                assert!(probe::inspect(&out.to_string_lossy(), ItemKind::Video).decodable);
+                assert!(probe::inspect(&out, ItemKind::Video).decodable);
             }
         }
 
@@ -1027,23 +951,15 @@ mod tests {
                 let (codec, _, _, _, _, _) = probe_output(&out);
                 assert_eq!(codec, "hevc");
                 assert_eq!(audio_codec(&out), "aac");
-                assert!(probe::inspect(&out.to_string_lossy(), ItemKind::Video).decodable);
+                assert!(probe::inspect(&out, ItemKind::Video).decodable);
             }
         }
 
         if only.is_empty() || only == "h264" {
             let input = fixtures.join("clip-hevc-1080p30.mp4");
             let out = dir.join("h264.mp4");
-            let probe = probe::inspect(&input.to_string_lossy(), ItemKind::Video);
-            let source = Source {
-                width: probe.width,
-                height: probe.height,
-                fps: probe.fps,
-                bit_depth: probe.bit_depth,
-                hdr: probe.hdr,
-                transfer: probe.transfer.clone(),
-                audio: crate::media::optimize::audio_plan(probe.audio_codec.as_deref(), true),
-            };
+            let probe = probe::inspect(&input, ItemKind::Video);
+            let source = Source::from(&probe);
             let target = Target { fps_limit: 30, max_pixels: 2560, hevc: false };
             let plan = video_plan(&input, &out, Some(&probe), &source, &target, probe.duration);
             let progress: Arc<dyn Fn(f64) + Send + Sync> = Arc::new(|_| {});
@@ -1052,31 +968,23 @@ mod tests {
             let (codec, width, height, _, _, _) = probe_output(&out);
             assert_eq!(codec, "h264");
             assert_eq!((width, height), (1920, 1080));
-            assert!(probe::inspect(&out.to_string_lossy(), ItemKind::Video).decodable);
+            assert!(probe::inspect(&out, ItemKind::Video).decodable);
         }
 
         if only.is_empty() || only == "webm" {
             let input = fixtures.join("clip-vp9.webm");
             if input.exists() {
                 let out = dir.join("webm.mp4");
-                let probe = probe::inspect(&input.to_string_lossy(), ItemKind::Video);
-                let source = Source {
-                    width: probe.width,
-                    height: probe.height,
-                    fps: probe.fps,
-                    bit_depth: probe.bit_depth,
-                    hdr: probe.hdr,
-                    transfer: probe.transfer.clone(),
-                    audio: crate::media::optimize::audio_plan(probe.audio_codec.as_deref(), true),
-                };
+                let probe = probe::inspect(&input, ItemKind::Video);
+                let source = Source::from(&probe);
                 let target = Target { fps_limit: 30, max_pixels: 2560, hevc: true };
-                let args = crate::media::optimize::build_args(&input, &out, &source, &target);
+                let args = build_args(&input, &out, &source, &target);
                 let status = Command::new("ffmpeg").args(&args).status().expect("ffmpeg");
                 assert!(status.success());
                 let (codec, width, height, _, _, _) = probe_output(&out);
                 assert_eq!(codec, "hevc");
                 assert!(width > 0 && height > 0);
-                assert!(probe::inspect(&out.to_string_lossy(), ItemKind::Video).decodable);
+                assert!(probe::inspect(&out, ItemKind::Video).decodable);
             }
         }
 
@@ -1091,7 +999,7 @@ mod tests {
             assert!(width > 0 && height > 0);
             assert!(duration > 0.0);
             assert!(size > 0);
-            assert!(probe::inspect(&gif.to_string_lossy(), ItemKind::Video).decodable);
+            assert!(probe::inspect(&gif, ItemKind::Video).decodable);
         }
     }
 }

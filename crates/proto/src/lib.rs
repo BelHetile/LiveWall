@@ -36,6 +36,7 @@ pub struct ErrorBody {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 pub enum FillMode {
     #[default]
@@ -85,6 +86,7 @@ impl KeyCombo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 pub enum HotkeyAction {
     Next,
@@ -111,28 +113,34 @@ impl HotkeyAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default = "Hotkeys::with_default_lock")]
 pub struct Hotkeys {
-    #[serde(default)]
     pub next: Option<KeyCombo>,
-    #[serde(default)]
     pub previous: Option<KeyCombo>,
-    #[serde(default)]
     pub pause: Option<KeyCombo>,
-    #[serde(default)]
     pub mute: Option<KeyCombo>,
-    #[serde(default)]
     pub random: Option<KeyCombo>,
-    #[serde(default)]
     pub volume_up: Option<KeyCombo>,
-    #[serde(default)]
     pub volume_down: Option<KeyCombo>,
-    #[serde(default = "Hotkeys::default_lock")]
     pub lock: Option<KeyCombo>,
 }
 
 impl Hotkeys {
-    fn default_lock() -> Option<KeyCombo> {
-        return Self::default().lock;
+    fn unbound() -> Self {
+        return Self {
+            next: None,
+            previous: None,
+            pause: None,
+            mute: None,
+            random: None,
+            volume_up: None,
+            volume_down: None,
+            lock: None,
+        };
+    }
+
+    fn with_default_lock() -> Self {
+        return Self { lock: Self::default().lock, ..Self::unbound() };
     }
 
     pub fn get(&self, action: HotkeyAction) -> Option<&KeyCombo> {
@@ -164,16 +172,7 @@ impl Hotkeys {
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        let mut hotkeys = Self {
-            next: None,
-            previous: None,
-            pause: None,
-            mute: None,
-            random: None,
-            volume_up: None,
-            volume_down: None,
-            lock: None,
-        };
+        let mut hotkeys = Self::unbound();
         hotkeys.set(HotkeyAction::Next, Some(KeyCombo::default_combo("right")));
         hotkeys.set(HotkeyAction::Previous, Some(KeyCombo::default_combo("left")));
         hotkeys.set(HotkeyAction::TogglePause, Some(KeyCombo::default_combo("p")));
@@ -194,6 +193,7 @@ pub enum ApplyTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 pub enum TransitionKind {
     None,
@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(combo.modifiers, vec![Modifier::Control, Modifier::Option, Modifier::Command]);
         let cleared: Hotkeys = serde_json::from_str(r#"{"lock":null}"#).expect("null");
         assert!(cleared.lock.is_none());
-        assert_eq!(Hotkeys::default().get(HotkeyAction::Lock), Hotkeys::default_lock().as_ref());
+        assert_eq!(Hotkeys::default().get(HotkeyAction::Lock), Hotkeys::with_default_lock().lock.as_ref());
     }
 
     #[test]

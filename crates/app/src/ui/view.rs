@@ -6,7 +6,6 @@ use std::time::SystemTime;
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2_app_kit::NSImage;
-use objc2_foundation::NSString;
 use proto::{FillMode, Geometry};
 use uuid::Uuid;
 
@@ -14,7 +13,9 @@ use crate::app::App;
 use crate::engine::still;
 use crate::media::thumb;
 use crate::model::{self, ItemId, ItemKind};
+use crate::paths::DirKind;
 use crate::ui::state::Scope;
+use crate::ui::widgets::ns;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -129,7 +130,7 @@ pub struct Thumbs {
 
 impl Thumbs {
     fn image(&mut self, app: &App, item: &model::Item) -> Option<Retained<NSImage>> {
-        let file = thumb::file(&app.paths().thumbs_for(app.library().is_private(item)), item.id);
+        let file = thumb::file(&app.paths().dir_for(DirKind::Thumbs, app.library().visibility(item)), item.id);
         let Ok(stamp) = fs::metadata(&file).and_then(|meta| meta.modified()) else {
             if self.requested.insert(item.id) {
                 app.ensure_thumbnail(item);
@@ -147,8 +148,8 @@ impl Thumbs {
     }
 
     fn still(&mut self, app: &App, item: &model::Item, time: f32) -> Option<Retained<NSImage>> {
-        let key = still::cache_key(&item.path, still::mtime_secs(&item.path), time);
-        let file = still::cache_file(&app.paths().stills_for(app.library().is_private(item)), &key);
+        let key = still::cache_key(&item.path, still::mtime_secs(&item.path), f64::from(time));
+        let file = still::cache_file(&app.paths().dir_for(DirKind::Stills, app.library().visibility(item)), &key);
         if let Some(image) = self.stills.get(&file) {
             return Some(image.clone());
         }
@@ -159,7 +160,7 @@ impl Thumbs {
 }
 
 fn load(file: &std::path::Path) -> Option<Retained<NSImage>> {
-    return NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&file.to_string_lossy()));
+    return NSImage::initWithContentsOfFile(NSImage::alloc(), &ns(&file.to_string_lossy()));
 }
 
 pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
