@@ -533,6 +533,7 @@ pub struct WallIvars {
     status_text: Retained<NSTextField>,
     tiles: RefCell<Vec<Retained<TileView>>>,
     shown: RefCell<(Vec<ItemId>, bool)>,
+    unlocked: Cell<bool>,
     list: Cell<bool>,
     columns: Cell<usize>,
     keyboard: Cell<bool>,
@@ -635,6 +636,7 @@ impl WallView {
             status_text,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
+            unlocked: Cell::new(false),
             list: Cell::new(false),
             columns: Cell::new(1),
             keyboard: Cell::new(false),
@@ -774,6 +776,7 @@ impl WallView {
         let ivars = self.ivars();
         let key = (visible.iter().map(|index| library.items[*index].id).collect::<Vec<_>>(), list);
         let morph = *ivars.shown.borrow() != key;
+        let sealing = ivars.unlocked.replace(library.unlocked) && !library.unlocked;
         *ivars.shown.borrow_mut() = key;
         self.show_downloads(&library.downloads);
         let mut previous: HashMap<ItemId, Retained<TileView>> = ivars
@@ -800,7 +803,11 @@ impl WallView {
             tiles.push(tile);
         }
         for tile in previous.into_values() {
-            tile.fade(false);
+            if sealing {
+                tile.removeFromSuperview();
+            } else {
+                tile.fade(false);
+            }
         }
         *ivars.tiles.borrow_mut() = tiles;
         ivars.list.set(list);

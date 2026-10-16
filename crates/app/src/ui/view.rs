@@ -9,7 +9,7 @@ use objc2_app_kit::NSImage;
 use proto::{FillMode, Geometry};
 use uuid::Uuid;
 
-use crate::app::App;
+use crate::app::{self, App};
 use crate::engine::still;
 use crate::media::thumb;
 use crate::model::{self, ItemId, ItemKind};
@@ -66,11 +66,20 @@ pub struct Download {
     pub percent: f64,
 }
 
+#[derive(Clone, Copy)]
+pub struct FolderLock {
+    pub locked: bool,
+    pub hidden: bool,
+}
+
 pub struct Library {
     pub items: Vec<Item>,
     pub lock: Option<Lock>,
     pub folders: Vec<String>,
     pub folder_ids: Vec<Uuid>,
+    pub locks: Vec<FolderLock>,
+    pub unlocked: bool,
+    pub has_locked: bool,
     pub spaces: Vec<String>,
     pub desktops: usize,
     pub current: usize,
@@ -119,6 +128,10 @@ impl Library {
     pub fn position(&self, id: ItemId) -> Option<usize> {
         return self.items.iter().position(|item| item.id == id);
     }
+
+    pub fn sealed(&self, folder: usize) -> bool {
+        return !self.unlocked && self.locks.get(folder).is_some_and(|lock| lock.locked);
+    }
 }
 
 #[derive(Default)]
@@ -166,10 +179,11 @@ fn load(file: &std::path::Path) -> Option<Retained<NSImage>> {
 pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     let model = app.library();
     let defaults = app.settings();
-    let folder_ids: Vec<Uuid> = model.folders.iter().map(|folder| folder.id).collect();
-    let items: Vec<Item> = model
-        .items
-        .iter()
+    let unlocked = app.is_unlocked();
+    let folders = app::visible_folders(model, unlocked);
+    let folder_ids: Vec<Uuid> = folders.iter().map(|folder| folder.id).collect();
+    let items: Vec<Item> = app::visible_items(model, unlocked)
+        .into_iter()
         .map(|item| {
             let geometry = item.geometry();
             let changed = item.volume.to_bits() != defaults.volume.to_bits()
@@ -211,20 +225,26 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
 
     let (spaces, current) = app.desktops();
     let placement = &model.placement;
-    let position = |id: Option<ItemId>| id.and_then(|id| model.items.iter().position(|item| item.id == id));
+    let position = |id: Option<ItemId>, space: Option<&str>| {
+        let id = id?;
+        let shown = if unlocked || !model.is_private_id(id) { id } else { model.replacement(space)? };
+        return items.iter().position(|item| item.id == shown);
+    };
     let mut assignments: Vec<(Target, usize)> = Vec::new();
-    if let Some(index) = position(placement.default.item) {
+    if let Some(index) = position(placement.default.item, None) {
         assignments.push((Target::All, index));
     }
     for (space, uuid) in spaces.iter().enumerate() {
-        if let Some(index) = position(placement.spaces.get(uuid).and_then(|assignment| assignment.item)) {
+        let assigned = placement.spaces.get(uuid).and_then(|assignment| assignment.item);
+        if let Some(index) = position(assigned, Some(uuid.as_str())) {
             assignments.push((Target::Desktop(space), index));
         }
     }
     let lock = placement.lock.and_then(|lock| {
-        let index = position(Some(lock.item))?;
+        let index = items.iter().position(|item| item.id == lock.item)?;
         assignments.push((Target::Lock, index));
-        let image = thumbs.still(app, &model.items[index], lock.time);
+        let entry = model.items.iter().find(|entry| entry.id == lock.item)?;
+        let image = thumbs.still(app, entry, lock.time);
         return Some(Lock { time: f64::from(lock.time), image });
     });
     let downloads = app.download_progress().into_iter().map(|report| Download { percent: report.progress }).collect();
@@ -232,8 +252,11 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     return Library {
         items,
         lock,
-        folders: model.folders.iter().map(|folder| folder.name.clone()).collect(),
+        folders: folders.iter().map(|folder| folder.name.clone()).collect(),
         folder_ids,
+        locks: folders.iter().map(|folder| FolderLock { locked: folder.locked, hidden: folder.hidden }).collect(),
+        unlocked,
+        has_locked: model.folders.iter().any(|folder| folder.locked),
         desktops: spaces.len(),
         spaces,
         current,

@@ -4,9 +4,9 @@ use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
 use proto::HotkeyAction;
 
-use crate::ui::actions::Actions;
-use crate::ui::state::{TAG_ALL, TAG_NEW_FOLDER};
-use crate::ui::widgets::{menu_item, ns};
+use crate::ui::actions::{Actions, PRIVACY_KEY};
+use crate::ui::state::{TAG_ALL, TAG_NEW_FOLDER, folder_glyph, privacy_title};
+use crate::ui::widgets::{lock_mark, menu_item, ns};
 use crate::ui::{UI, inspector, settings, toolbar};
 
 fn submenu(mtm: MainThreadMarker, bar: &NSMenu, title: &str, items: &[Retained<NSMenuItem>]) -> Retained<NSMenu> {
@@ -49,6 +49,14 @@ pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
             menu_item(mtm, "About LiveWall", sel!(orderFrontStandardAboutPanel:), None, 0, None),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Settings…", sel!(showSettings:), Some(target), 0, Some((",", command))),
+            menu_item(
+                mtm,
+                privacy_title(false),
+                sel!(togglePrivacy:),
+                Some(target),
+                0,
+                Some((PRIVACY_KEY, option | NSEventModifierFlags::Control)),
+            ),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Hide LiveWall", sel!(hide:), None, 0, Some(("h", command))),
             NSMenuItem::separatorItem(mtm),
@@ -192,7 +200,8 @@ pub fn context_menu(mtm: MainThreadMarker, index: usize) -> Option<Retained<NSMe
         folders.addItem(&NSMenuItem::separatorItem(mtm));
         for (position, name) in ui.library.folders.iter().enumerate() {
             let entry = item(name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL));
-            entry.setState(isize::from(current == Some(position)));
+            lock_mark(&entry, folder_glyph(&ui.library, position), current == Some(position));
+            entry.setEnabled(!ui.library.sealed(position));
             folders.addItem(&entry);
         }
         folders.addItem(&NSMenuItem::separatorItem(mtm));

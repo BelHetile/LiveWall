@@ -35,6 +35,8 @@ use crate::tools;
 
 mod privacy;
 
+pub use privacy::{visible_folders, visible_items};
+
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 const VOLUME_STEP: f32 = 0.1;
 const IDLE_POLL_SECONDS: f64 = 10.0;

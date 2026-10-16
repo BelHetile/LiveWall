@@ -1,9 +1,9 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBeep, NSControlStateValueOn, NSEventType, NSMenuItem, NSPopUpButton, NSSearchField,
-    NSSegmentedControl, NSSlider, NSSwitch, NSWindowDelegate,
+    NSApplication, NSBeep, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation, NSPopUpButton,
+    NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
@@ -12,8 +12,10 @@ use serde_json::json;
 use crate::app::{self, Event, post};
 use crate::model::ItemId;
 use crate::ui::settings::{self, Change, Input};
-use crate::ui::state::{KINDS, Scope, Sort, TAG_NEW_FOLDER, TAG_RESET};
-use crate::ui::widgets::NumberField;
+use crate::ui::state::{
+    KINDS, Scope, Sort, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RESET, TAG_UNLOCK_FOLDER, privacy_title,
+};
+use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
     UI, Ui, busy, commit, dialogs, inspector, later, patch, report, reveal, selected_id, selected_index, send, submit,
     sync_inspector, toolbar, update, view,
@@ -21,6 +23,7 @@ use crate::ui::{
 
 const VOLUME_ON: f64 = 0.6;
 const MODE_NAMES: [&str; 3] = ["system", "light", "dark"];
+pub const PRIVACY_KEY: &str = "x";
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -43,7 +46,42 @@ define_class!(
                 dialogs::new_folder(self.mtm(), None);
                 return;
             }
-            commit(|ui| ui.filter.folder = usize::try_from(tag).ok());
+            let folder = usize::try_from(tag).ok();
+            if folder.is_some_and(sealed) {
+                unlock();
+                return;
+            }
+            commit(|ui| ui.filter.folder = folder);
+        }
+
+        #[unsafe(method(folderLock:))]
+        fn folder_lock(&self, sender: &NSMenuItem) {
+            let tag = sender.tag();
+            let Some((id, lock)) = UI.with_borrow(|ui| {
+                let ui = ui.as_ref()?;
+                let index = ui.filter.folder?;
+                return Some((*ui.library.folder_ids.get(index)?, *ui.library.locks.get(index)?));
+            }) else {
+                return;
+            };
+            let (locked, hidden) = match tag {
+                TAG_LOCK_FOLDER => (Some(true), None),
+                TAG_UNLOCK_FOLDER => (Some(false), None),
+                _ => (None, Some(!lock.hidden)),
+            };
+            submit(move |app| Some(app.set_folder_lock(id, locked, hidden)));
+        }
+
+        #[unsafe(method(togglePrivacy:))]
+        fn toggle_privacy(&self, _sender: Option<&AnyObject>) {
+            submit(|app| {
+                if app.is_unlocked() {
+                    app.lock();
+                } else {
+                    app.request_unlock();
+                }
+                return None;
+            });
         }
 
         #[unsafe(method(sort:))]
@@ -324,6 +362,13 @@ define_class!(
         }
     }
 
+    unsafe impl NSMenuItemValidation for Actions {
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
+            validate(item)
+        }
+    }
+
     unsafe impl NSWindowDelegate for Actions {
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
@@ -341,6 +386,31 @@ impl Actions {
         let this = Self::alloc(mtm).set_ivars(());
         return unsafe { msg_send![super(this), init] };
     }
+}
+
+fn validate(item: &NSMenuItem) -> bool {
+    if item.action() != Some(sel!(togglePrivacy:)) {
+        return true;
+    }
+    if let Some((unlocked, guarded)) =
+        app::with(|app| (app.is_unlocked(), app.library().folders.iter().any(|folder| folder.locked)))
+    {
+        item.setTitle(&ns(privacy_title(unlocked)));
+        item.setKeyEquivalent(&ns(if unlocked { PRIVACY_KEY } else { "" }));
+        item.setHidden(!guarded);
+    }
+    return true;
+}
+
+fn sealed(folder: usize) -> bool {
+    return UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.library.sealed(folder)));
+}
+
+fn unlock() {
+    submit(|app| {
+        app.request_unlock();
+        return None;
+    });
 }
 
 fn tag_index(sender: &NSMenuItem) -> usize {

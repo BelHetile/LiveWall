@@ -24,7 +24,7 @@ use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::palette::Theme;
-use crate::ui::state::{Filter, Scope, TAG_RESET, markers};
+use crate::ui::state::{Filter, Scope, TAG_RESET, folder_glyph, markers};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
 use crate::ui::wall::{TILE_ASPECT, duration, kind_name, resolution};
@@ -616,6 +616,9 @@ fn library_row(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSStackVi
         folder.setTarget(Some(target));
         folder.setAction(Some(sel!(moveFolder:)));
     }
+    if let Some(menu) = folder.menu() {
+        menu.setAutoenablesItems(false);
+    }
     folder.setControlSize(NSControlSize::Small);
     folder.setFont(Some(&widgets::font(12.0, &Weight::Regular)));
     folder.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
@@ -715,6 +718,15 @@ fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>)
     let mut titles: Vec<Retained<NSString>> = vec![widgets::ns("Unfiled")];
     titles.extend(library.folders.iter().map(|name| widgets::ns(name)));
     popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+    for index in 0..library.folders.len() {
+        let Some(item) = isize::try_from(index + 1).ok().and_then(|position| popup.itemAtIndex(position)) else {
+            continue;
+        };
+        item.setEnabled(!library.sealed(index));
+        if let Some(image) = folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)) {
+            item.setImage(Some(&image));
+        }
+    }
     popup.selectItemAtIndex(folder.map_or(0, |index| isize::try_from(index + 1).unwrap_or(0)));
 }
 

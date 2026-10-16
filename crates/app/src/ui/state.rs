@@ -5,6 +5,18 @@ use crate::ui::wall::duration;
 pub const TAG_ALL: isize = -1;
 pub const TAG_NEW_FOLDER: isize = -2;
 pub const TAG_RESET: isize = -100;
+pub const TAG_LOCK_FOLDER: isize = 1;
+pub const TAG_UNLOCK_FOLDER: isize = 2;
+pub const TAG_HIDE_FOLDER: isize = 3;
+
+pub fn folder_glyph(library: &Library, folder: usize) -> Option<&'static str> {
+    let lock = library.locks.get(folder)?;
+    return lock.locked.then_some(if library.unlocked { "lock.open.fill" } else { "lock.fill" });
+}
+
+pub fn privacy_title(unlocked: bool) -> &'static str {
+    return if unlocked { "Lock Private Folders" } else { "Unlock Private Folders…" };
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {

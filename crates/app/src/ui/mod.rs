@@ -82,7 +82,9 @@ impl Ui {
         self.values = values;
         self.hotkeys = hotkeys;
         self.selected = selected.and_then(|id| self.library.position(id));
-        self.filter.folder = folder.and_then(|id| self.library.folder_ids.iter().position(|other| *other == id));
+        self.filter.folder = folder
+            .and_then(|id| self.library.folder_ids.iter().position(|other| *other == id))
+            .filter(|index| !self.library.sealed(*index));
         self.filter.list = appearance.list;
         if let Scope::Space(space) = self.filter.scope
             && space >= self.library.desktops

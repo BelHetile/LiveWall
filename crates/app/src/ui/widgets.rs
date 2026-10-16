@@ -7,12 +7,12 @@ use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
     NSAppearanceNameDarkAqua, NSApplication, NSBezelStyle, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor,
-    NSControl, NSControlBorderShape, NSControlSize, NSControlTextEditingDelegate, NSEventModifierFlags,
-    NSFocusRingType, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular,
-    NSFontWeightSemibold, NSForegroundColorAttributeName, NSGlassEffectView, NSImage, NSImageSymbolConfiguration,
-    NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenuItem, NSStackView, NSStackViewDistribution,
-    NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView, NSTintProminence, NSTitlePosition,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSControl, NSControlBorderShape, NSControlSize, NSControlStateValueMixed, NSControlTextEditingDelegate,
+    NSEventModifierFlags, NSFocusRingType, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightMedium,
+    NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName, NSGlassEffectView, NSImage,
+    NSImageSymbolConfiguration, NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenuItem, NSStackView,
+    NSStackViewDistribution, NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView, NSTintProminence,
+    NSTitlePosition, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGFloat;
 use objc2_core_graphics::CGColor;
@@ -454,6 +454,20 @@ pub fn icon_button(mtm: MainThreadMarker, name: &str, action: Sel, target: &AnyO
 pub fn set_icon(button: &NSButton, name: &str) {
     if let Some(image) = symbol(name, 13.0) {
         button.setImage(Some(&image));
+    }
+}
+
+pub fn lock_mark(item: &NSMenuItem, icon: Option<&str>, checked: bool) {
+    item.setState(isize::from(checked));
+    let Some(image) = icon.and_then(|name| symbol(name, 12.0)) else {
+        return;
+    };
+    unsafe {
+        item.setOnStateImage(Some(&image));
+        item.setMixedStateImage(Some(&image));
+    }
+    if !checked {
+        item.setState(NSControlStateValueMixed);
     }
 }
 

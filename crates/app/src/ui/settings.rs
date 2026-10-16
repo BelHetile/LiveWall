@@ -39,6 +39,10 @@ const FRAME_RATE: isize = 14;
 const RELEASE: isize = 15;
 const STYLE: isize = 16;
 const EVERY: isize = 17;
+const LOCK_SCREEN: isize = 18;
+const LOCK_DISPLAY: isize = 19;
+const LOCK_IDLE: isize = 22;
+const IDLE_AFTER: isize = 23;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
 pub const ACCENT: isize = 1;
@@ -56,6 +60,8 @@ const RELEASES: [(&str, u32); 5] = [
 const STYLES: [(&str, &str); 4] = [("Fade", "fade"), ("Wipe", "wipe"), ("Grow", "grow"), ("Wave", "wave")];
 const INTERVALS: [(&str, u32); 5] =
     [("5 Minutes", 5), ("15 Minutes", 15), ("1 Hour", 60), ("Daily", 1440), ("On Login", 0)];
+const IDLE_MINUTES: [(&str, u32); 5] =
+    [("1 Minute", 1), ("5 Minutes", 5), ("15 Minutes", 15), ("30 Minutes", 30), ("1 Hour", 60)];
 const PAUSE_KEYS: [&str; 4] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot", "pause_when_focused"];
 
 type Knob = (Retained<NSSlider>, Retained<NumberField>);
@@ -83,6 +89,9 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
         (OPTIMIZE, Input::Flag(on)) => patch(json!({ "optimize_on_import": on })),
         (SOUND, Input::Flag(on)) => patch(json!({ "muted": !on })),
         (SHUFFLE, Input::Flag(on)) => patch(json!({ "shuffle": on })),
+        (LOCK_SCREEN, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
+        (LOCK_DISPLAY, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_display": on } })),
+        (LOCK_IDLE, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_idle": on } })),
         (ROTATE, Input::Flag(on)) => patch(json!({ "auto_rotate": on })),
         (PAUSE, Input::Flag(on)) => {
             let mut map = serde_json::Map::new();
@@ -105,6 +114,9 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
         }
         (STYLE, Input::Index(index)) => {
             STYLES.get(*index).and_then(|(_, kind)| patch(json!({ "transition": { "kind": kind } })))
+        }
+        (IDLE_AFTER, Input::Index(index)) => {
+            IDLE_MINUTES.get(*index).and_then(|(_, minutes)| patch(json!({ "privacy": { "idle_minutes": minutes } })))
         }
         (EVERY, Input::Index(index)) => {
             INTERVALS.get(*index).filter(|(_, minutes)| *minutes > 0).and_then(|(_, minutes)| {
@@ -320,6 +332,7 @@ pub struct Settings {
     rotate: Vec<Retained<NSView>>,
     transition: Vec<Retained<NSView>>,
     pause: Vec<Retained<NSView>>,
+    idle: Vec<Retained<NSView>>,
     recorders: Vec<Retained<RecorderView>>,
     tabs: Retained<NSTabViewController>,
 }
@@ -327,6 +340,13 @@ pub struct Settings {
 struct General {
     page: Retained<NSView>,
     pause: Vec<Retained<NSView>>,
+    switches: Vec<Retained<NSSwitch>>,
+    popups: Vec<Retained<NSPopUpButton>>,
+}
+
+struct Locking {
+    page: Retained<NSView>,
+    idle: Vec<Retained<NSView>>,
     switches: Vec<Retained<NSSwitch>>,
     popups: Vec<Retained<NSPopUpButton>>,
 }
@@ -339,6 +359,9 @@ impl Settings {
         popups.extend(more_popups);
         let (appearance, mode, swatches, accent, canvas) = appearance(mtm, look, target);
         let (shortcuts, recorders) = shortcuts(mtm, target);
+        let Locking { page: privacy, idle, switches: lock_switches, popups: lock_popups } = locking(mtm, target);
+        switches.extend(lock_switches);
+        popups.extend(lock_popups);
         let tabs = NSTabViewController::new(mtm);
         tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
         tabs.setCanPropagateSelectedChildViewControllerTitle(true);
@@ -348,6 +371,7 @@ impl Settings {
             ("Appearance", "paintpalette", &appearance),
             ("Playback", "play.rectangle", &playback),
             ("Shortcuts", "keyboard", &shortcuts),
+            ("Privacy", "lock", &privacy),
         ];
         let height = pages
             .iter()
@@ -383,6 +407,7 @@ impl Settings {
             rotate,
             transition,
             pause,
+            idle,
             recorders,
             tabs,
         };
@@ -416,6 +441,8 @@ impl Settings {
     pub fn sync(&self, values: &Value) {
         let flag = |key: &str| values.get(key).and_then(Value::as_bool).unwrap_or(false);
         let number = |key: &str| values.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        let privacy = values.get("privacy");
+        let locks = |key: &str| privacy.and_then(|map| map.get(key)).and_then(Value::as_bool).unwrap_or(false);
         let transition = values.get("transition");
         let kind = transition.and_then(|map| map.get("kind")).and_then(Value::as_str);
         let master = PAUSE_KEYS.iter().any(|key| flag(key));
@@ -435,6 +462,9 @@ impl Settings {
                 TRANSITION => animate,
                 ROTATE => rotate,
                 SHUFFLE => flag("shuffle"),
+                LOCK_SCREEN => locks("lock_on_screen_lock"),
+                LOCK_DISPLAY => locks("lock_on_display"),
+                LOCK_IDLE => locks("lock_on_idle"),
                 _ => continue,
             };
             switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
@@ -444,8 +474,19 @@ impl Settings {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (rate, release, interval) =
             (number("optimize_fps_limit") as u32, number("stop_after_seconds") as u32, number("rotate_minutes") as u32);
+        let idle_minutes = privacy
+            .and_then(|map| map.get("idle_minutes"))
+            .and_then(Value::as_u64)
+            .and_then(|minutes| u32::try_from(minutes).ok())
+            .unwrap_or(0);
         for popup in &self.popups {
             match popup.tag() {
+                IDLE_AFTER => show_choice(
+                    popup,
+                    IDLE_MINUTES.len(),
+                    IDLE_MINUTES.iter().position(|(_, value)| *value == idle_minutes),
+                    &format!("{idle_minutes} Minutes"),
+                ),
                 LANGUAGE => {
                     show_choice(popup, LANGUAGES.len(), LANGUAGES.iter().position(|(_, code)| *code == language), "?");
                 }
@@ -489,6 +530,7 @@ impl Settings {
         self.toggled(PAUSE, master);
         self.toggled(TRANSITION, animate);
         self.toggled(ROTATE, rotate);
+        self.toggled(LOCK_IDLE, locks("lock_on_idle"));
     }
 
     pub fn toggled(&self, tag: isize, on: bool) {
@@ -496,6 +538,7 @@ impl Settings {
             ROTATE => &self.rotate,
             TRANSITION => &self.transition,
             PAUSE => &self.pause,
+            LOCK_IDLE => &self.idle,
             _ => return,
         };
         for view in group {
@@ -801,6 +844,36 @@ fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Ve
         &[line(mtm, "Set on Desktop", None, &keys("1 – 9")), line(mtm, "Set on All Desktops", None, &keys("`"))],
     );
     return (page(mtm, &[&global, &footer, &library]), recorders);
+}
+
+fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
+    let screen = switch(mtm, LOCK_SCREEN, target);
+    let display = switch(mtm, LOCK_DISPLAY, target);
+    let idle = switch(mtm, LOCK_IDLE, target);
+    let after = choice(mtm, &IDLE_MINUTES.map(|(title, _)| title), IDLE_AFTER, target);
+    let automatic = form(
+        mtm,
+        "Lock Automatically",
+        &[
+            line(mtm, "Screen Locks or Sleeps", Some("Includes the screen saver"), &screen),
+            line(mtm, "External Display Connects", Some("Includes AirPlay and mirroring"), &display),
+            line(mtm, "After Inactivity", None, &idle),
+            line(mtm, "Inactive For", None, &after),
+        ],
+    );
+    let hint = widgets::label(
+        mtm,
+        "Always locked at launch and quit. Unlocking needs Touch ID or your password.",
+        11.0,
+        &Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    return Locking {
+        page: page(mtm, &[&automatic, &hint]),
+        idle: vec![widgets::view(&after)],
+        switches: vec![screen, display, idle],
+        popups: vec![after],
+    };
 }
 
 type AppearancePage = (

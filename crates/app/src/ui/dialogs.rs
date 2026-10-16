@@ -91,7 +91,7 @@ pub fn confirm_delete(mtm: MainThreadMarker) {
 pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns("New Folder"));
-    alert.setInformativeText(&ns("Folders only organise the library; files are not moved."));
+    alert.setInformativeText(&ns("Locked folders keep their wallpapers hidden until you unlock them with Touch ID."));
     let field = NSTextField::initWithFrame(
         NSTextField::alloc(mtm),
         CGRect::new(CGPoint::ZERO, CGSize::new(NAME_WIDTH, FIELD_HEIGHT)),

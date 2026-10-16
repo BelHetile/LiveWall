@@ -14,7 +14,10 @@ use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString}
 use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
 use crate::ui::palette::Look;
-use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_NEW_FOLDER, lock_tip, showing};
+use crate::ui::state::{
+    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_UNLOCK_FOLDER,
+    folder_glyph, lock_tip, privacy_title, showing,
+};
 use crate::ui::view::Library;
 use crate::ui::widgets::{self, Weight};
 
@@ -516,11 +519,40 @@ fn folder_menu(
     ];
     for (index, name) in library.folders.iter().enumerate() {
         let tag = isize::try_from(index).unwrap_or(TAG_ALL);
-        items.push(entry(mtm, name, action, tag, current == Some(index), target));
+        let item = entry(mtm, name, action, tag, current == Some(index), target);
+        widgets::lock_mark(&item, folder_glyph(library, index), current == Some(index));
+        items.push(item);
     }
     items.push(separator(mtm));
     items.push(entry(mtm, "New Folder", action, TAG_NEW_FOLDER, false, target));
+    items.extend(privacy_entries(mtm, library, current, target));
     return menu(mtm, &items);
+}
+
+fn privacy_entries(
+    mtm: MainThreadMarker,
+    library: &Library,
+    current: Option<usize>,
+    target: &AnyObject,
+) -> Vec<Retained<NSMenuItem>> {
+    let mut items = Vec::new();
+    let selected = current.and_then(|index| library.folders.get(index).zip(library.locks.get(index)));
+    if let Some((name, lock)) = selected {
+        let action = sel!(folderLock:);
+        items.push(separator(mtm));
+        items.push(header(mtm, name));
+        if lock.locked {
+            items.push(entry(mtm, "Remove Lock", action, TAG_UNLOCK_FOLDER, false, target));
+            items.push(entry(mtm, "Hide When Locked", action, TAG_HIDE_FOLDER, lock.hidden, target));
+        } else {
+            items.push(entry(mtm, "Lock Folder", action, TAG_LOCK_FOLDER, false, target));
+        }
+    }
+    if library.has_locked {
+        items.push(separator(mtm));
+        items.push(entry(mtm, privacy_title(library.unlocked), sel!(togglePrivacy:), 0, false, target));
+    }
+    return items;
 }
 
 fn sort_menu(mtm: MainThreadMarker, filter: &Filter, target: &AnyObject) -> Retained<NSMenu> {
