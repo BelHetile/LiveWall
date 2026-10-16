@@ -513,5 +513,5 @@ pub fn launched() {
 }
 
 pub fn reopen() {
-    update(|ui, mtm| ui.open(mtm));
+    later(|ui, mtm| ui.open(mtm));
 }

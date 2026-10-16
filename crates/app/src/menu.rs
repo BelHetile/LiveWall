@@ -24,10 +24,12 @@ pub enum MenuAction {
     ToggleMute = 5,
     ToggleLaunchAtLogin = 6,
     Quit = 7,
+    OpenLibrary = 8,
 }
 
 impl MenuAction {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
+        Self::OpenLibrary,
         Self::TogglePause,
         Self::Next,
         Self::Previous,
@@ -83,6 +85,7 @@ pub struct Menu {
     root: Retained<NSMenu>,
     _target: Retained<MenuTarget>,
     title: Retained<NSMenuItem>,
+    library: Retained<NSMenuItem>,
     pause: Retained<NSMenuItem>,
     next: Retained<NSMenuItem>,
     previous: Retained<NSMenuItem>,
@@ -104,6 +107,8 @@ impl Menu {
         let title = make_item(mtm, "", None, &target);
         title.setEnabled(false);
         root.addItem(&title);
+        let library = make_item(mtm, "", Some(MenuAction::OpenLibrary), &target);
+        root.addItem(&library);
         root.addItem(&NSMenuItem::separatorItem(mtm));
         let pause = make_item(mtm, "", Some(MenuAction::TogglePause), &target);
         let next = make_item(mtm, "", Some(MenuAction::Next), &target);
@@ -124,7 +129,20 @@ impl Menu {
 
         status_item.setMenu(Some(&root));
 
-        let menu = Self { status_item, root, _target: target, title, pause, next, previous, random, mute, login, quit };
+        let menu = Self {
+            status_item,
+            root,
+            _target: target,
+            title,
+            library,
+            pause,
+            next,
+            previous,
+            random,
+            mute,
+            login,
+            quit,
+        };
         menu.update(state, strings);
         return menu;
     }
@@ -132,6 +150,7 @@ impl Menu {
     pub fn update(&self, state: &MenuState, strings: &Strings) {
         let title = state.title.clone().unwrap_or_else(|| strings.get("No wallpaper"));
         self.title.setTitle(&NSString::from_str(&title));
+        self.library.setTitle(&NSString::from_str(&strings.get("Open library")));
         self.pause.setTitle(&NSString::from_str(&if state.paused {
             strings.get("Resume")
         } else {

@@ -636,6 +636,7 @@ impl App {
                 let enabled = !self.settings.launch_at_login;
                 let _ = self.set_login_item(enabled);
             }
+            MenuAction::OpenLibrary => crate::ui::reopen(),
             MenuAction::Quit => self.shutdown(),
         }
     }
