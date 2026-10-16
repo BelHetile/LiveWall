@@ -309,7 +309,6 @@ pub fn reserved(combo: &KeyCombo) -> Option<&'static str> {
     return RESERVED.iter().find(|(name, needed, _)| *name == key && *needed == mask).map(|(_, _, owner)| *owner);
 }
 
-/// Checks that apply to every shortcut: a known key, a modifier (or an F-key), not one macOS keeps for itself.
 pub fn validate_shape(candidate: &KeyCombo) -> Result<(), ValidationError> {
     if keycode(&candidate.key).is_none() {
         return Err(ValidationError::UnknownKey(candidate.key.clone()));
@@ -324,7 +323,6 @@ pub fn validate_shape(candidate: &KeyCombo) -> Result<(), ValidationError> {
     return Ok(());
 }
 
-/// A wallpaper shortcut may not take a global action's combination; another wallpaper's is moved over.
 pub fn validate_item(candidate: &KeyCombo, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
     validate_shape(candidate)?;
     for action in HotkeyAction::ALL {
@@ -337,7 +335,6 @@ pub fn validate_item(candidate: &KeyCombo, hotkeys: &Hotkeys) -> Result<(), Vali
     return Ok(());
 }
 
-/// What the settings call each global action.
 pub fn title(action: HotkeyAction) -> &'static str {
     return match action {
         HotkeyAction::Next => "Next Wallpaper",
@@ -351,7 +348,6 @@ pub fn title(action: HotkeyAction) -> &'static str {
     };
 }
 
-/// Registration ids of wallpaper shortcuts start here, after the global actions.
 pub const ITEM_BASE: u32 = 1000;
 
 pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -> Result<(), ValidationError> {

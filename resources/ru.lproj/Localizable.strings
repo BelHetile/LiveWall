@@ -772,8 +772,6 @@
 	<string>Играет</string>
 	<key>Playing · %@</key>
 	<string>Играет · %@</string>
-	<key>Press once to switch to it, again to switch back.</key>
-	<string>Первое нажатие ставит эти обои, второе — возвращает прежние.</string>
 	<key>Press once to switch to this wallpaper, press again to return to the previous one</key>
 	<string>Нажмите — поставятся эти обои, нажмите ещё раз — вернутся прежние</string>
 	<key>Press shortcut…</key>
@@ -1010,8 +1008,6 @@
 	<string>Обои внутри (%ld) переместятся в «Без папки».</string>
 	<key>The HEVC encoder is not available.</key>
 	<string>Кодировщик HEVC недоступен.</string>
-	<key>The current accent and canvas colours are saved under this name.</key>
-	<string>Текущие цвета акцента и фона сохранятся под этим названием.</string>
 	<key>The download could not be verified: no checksum was published for it.</key>
 	<string>Не удалось проверить загрузку: контрольная сумма не опубликована.</string>
 	<key>The downloaded file failed its integrity check.</key>

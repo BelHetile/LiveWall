@@ -125,9 +125,6 @@ pub struct App {
     previewing: Option<ItemId>,
     rotating: std::collections::HashSet<ItemId>,
     item_hotkey_failures: std::collections::BTreeMap<ItemId, String>,
-    /// What a wallpaper shortcut switches back to: the desktop's and the lock screen's previous wallpaper.
-    hotkey_back: Option<ItemId>,
-    lock_back: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,8 +291,6 @@ impl App {
             previewing: None,
             rotating: std::collections::HashSet::new(),
             item_hotkey_failures: std::collections::BTreeMap::new(),
-            hotkey_back: None,
-            lock_back: None,
             paths: paths.clone(),
         };
         app.register_item_hotkeys();
@@ -908,7 +903,6 @@ impl App {
         };
     }
 
-    /// Whether the desktop shows private wallpapers right now.
     pub fn reveals_desktop(&self) -> bool {
         return privacy::reveals_desktop(self.unlocked, &self.settings.privacy);
     }
@@ -1238,7 +1232,6 @@ impl App {
         return ok(&serde_json::json!({ "lock": item.to_string(), "time": time }));
     }
 
-    /// Saves a style under a free name, selects it and returns that name.
     pub fn save_style(&mut self, style: crate::model::Style, reserved: &[&str]) -> String {
         let name = self.settings.appearance.add_style(style, reserved);
         self.settings.appearance.theme.clone_from(&name);
@@ -1285,14 +1278,12 @@ impl App {
         return ok(&serde_json::json!({ "id": id.to_string(), "icon": icon }));
     }
 
-    /// Turns one of the user's images into a folder icon and returns its `image:` value.
     pub fn import_icon(&self, path: &std::path::Path) -> Result<String, String> {
         let file = format!("{}.png", Uuid::new_v4());
         crate::media::orient::write_png(path, &self.paths.icons_dir().join(&file), ICON_PX)?;
         return Ok(format!("{}{file}", crate::model::IMAGE_PREFIX));
     }
 
-    /// The user's own icons, oldest first.
     pub fn custom_icons(&self) -> Vec<String> {
         let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(self.paths.icons_dir())
             .into_iter()
@@ -1587,7 +1578,6 @@ impl App {
         return self.item_hotkey_failures.get(&item).map(String::as_str);
     }
 
-    /// Binds (or with `None` clears) the shortcut of one wallpaper. A combination another wallpaper used moves here.
     pub fn set_item_hotkey(&mut self, item: ItemId, combo: Option<&str>, scope: proto::HotkeyScope) -> Response {
         if !self.library.items.iter().any(|entry| entry.id == item) {
             return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
@@ -1667,8 +1657,6 @@ impl App {
         }
     }
 
-    /// A wallpaper shortcut: the first press switches to the wallpaper, the next press switches back.
-    /// Works for wallpapers in locked folders too, without unlocking.
     pub fn toggle_item(&mut self, item: ItemId) {
         let Some(entry) = self.library.items.iter().find(|entry| entry.id == item && entry.playable) else {
             return;
@@ -1679,18 +1667,16 @@ impl App {
             scope,
             back,
             self.library.placement.lock.map(|lock| lock.item) == Some(item),
-            self.hotkey_back,
-            self.lock_back,
+            self.library.placement.shortcut_back,
+            self.library.placement.shortcut_lock_back,
         );
         if let Some(desktop) = plan.desktop {
             let target = self.hotkey_target();
             if !back {
-                self.hotkey_back = self.showing_raw().filter(|current| *current != item);
+                self.library.placement.shortcut_back = self.showing_raw().filter(|current| *current != item);
             }
             let next = desktop.resolve(item).filter(|id| self.library.items.iter().any(|entry| entry.id == *id));
-            if back && next.is_none() {
-                // Nothing to go back to: the wallpaper stays.
-            } else {
+            if !back || next.is_some() {
                 self.apply_target(next, &target);
                 self.persist_library();
                 self.reapply();
@@ -1701,13 +1687,13 @@ impl App {
             match lock {
                 LockMove::Show => {
                     if self.library.placement.lock.map(|lock| lock.item) != Some(item) {
-                        self.lock_back = self.library.placement.lock;
+                        self.library.placement.shortcut_lock_back = self.library.placement.lock;
                     }
                     let _ = self.set_lock(Some((item, None)));
                 }
                 LockMove::Restore(previous) => {
                     let previous = previous.filter(|lock| self.library.items.iter().any(|entry| entry.id == lock.item));
-                    self.lock_back = Some(LockAssignment { item, time: 0.0 });
+                    self.library.placement.shortcut_lock_back = Some(LockAssignment { item, time: 0.0 });
                     match previous {
                         Some(lock) => {
                             let _ = self.set_lock(Some((lock.item, Some(lock.time))));
@@ -1721,14 +1707,12 @@ impl App {
         }
     }
 
-    /// The wallpaper assigned to the current desktop, private or not.
     fn showing_raw(&self) -> Option<ItemId> {
         let (spaces, current) = self.desktops();
         let space = spaces.into_iter().nth(current);
         return self.library.resolve(space.as_deref(), true);
     }
 
-    /// Where a wallpaper shortcut puts the wallpaper: the current desktop when it has its own, else every desktop.
     fn hotkey_target(&self) -> ApplyTarget {
         let (spaces, current) = self.desktops();
         return spaces
@@ -1922,6 +1906,9 @@ impl App {
             assignment.item = clear_if_removed(assignment.item, &parsed);
         }
         self.library.placement.lock = self.library.placement.lock.filter(|lock| !parsed.contains(&lock.item));
+        self.library.placement.shortcut_back = clear_if_removed(self.library.placement.shortcut_back, &parsed);
+        self.library.placement.shortcut_lock_back =
+            self.library.placement.shortcut_lock_back.filter(|lock| !parsed.contains(&lock.item));
         self.library.forget_safe(&parsed);
         return before - self.library.items.len();
     }
@@ -1970,7 +1957,6 @@ impl App {
     }
 }
 
-/// Where a wallpaper shortcut sends the desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DesktopMove {
     Show,
@@ -1998,8 +1984,6 @@ struct Toggle {
     lock: Option<LockMove>,
 }
 
-/// What one press of a wallpaper shortcut does. `on_desktop` and `on_lock` say whether the wallpaper is already
-/// showing there; for `Both` the desktop decides the direction, as in version 1.
 fn hotkey_toggle(
     scope: proto::HotkeyScope,
     on_desktop: bool,
@@ -2294,6 +2278,32 @@ mod tests {
         );
         assert_eq!(hotkey_toggle(HotkeyScope::Lock, false, true, None, None).lock, Some(LockMove::Restore(None)));
         assert_eq!(hotkey_toggle(HotkeyScope::Lock, true, true, None, None).desktop, None);
+    }
+
+    #[test]
+    fn the_second_press_goes_back_after_a_restart() {
+        let (before, shortcut) = (Uuid::new_v4(), Uuid::new_v4());
+        let earlier_lock = LockAssignment { item: before, time: 2.0 };
+        let mut library = Library::default();
+        library.placement.default.item = Some(shortcut);
+        library.placement.lock = Some(LockAssignment { item: shortcut, time: 0.0 });
+        library.placement.shortcut_back = Some(before);
+        library.placement.shortcut_lock_back = Some(earlier_lock);
+        let saved = serde_json::to_string(&library).expect("save");
+        let restarted: Library = serde_json::from_str(&saved).expect("load");
+        let toggle = hotkey_toggle(
+            HotkeyScope::Both,
+            true,
+            true,
+            restarted.placement.shortcut_back,
+            restarted.placement.shortcut_lock_back,
+        );
+        assert_eq!(toggle.desktop.map(|step| step.resolve(shortcut)), Some(Some(before)));
+        assert_eq!(toggle.lock, Some(LockMove::Restore(Some(earlier_lock))));
+        let empty = serde_json::to_string(&Library::default()).expect("save");
+        assert!(!empty.contains("shortcut"), "{empty}");
+        let older: Library = serde_json::from_str(r#"{"placement":{"default":{"item":null}}}"#).expect("older");
+        assert!(older.placement.shortcut_back.is_none() && older.placement.shortcut_lock_back.is_none());
     }
 
     #[test]

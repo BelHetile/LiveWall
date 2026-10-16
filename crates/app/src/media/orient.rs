@@ -8,11 +8,9 @@ use crate::cf::{cf_file_url, cf_i64};
 use crate::media::av::thumbnail_options;
 use crate::model::ItemKind;
 
-/// EXIF orientations in the order of clockwise quarter turns, without and with a horizontal mirror.
 const TURNS: [u32; 4] = [1, 6, 3, 8];
 const MIRRORED_TURNS: [u32; 4] = [2, 7, 4, 5];
 
-/// Turns an EXIF orientation by `turns` clockwise quarter turns.
 pub fn turn_exif(orientation: u32, turns: u8) -> u32 {
     let step = usize::from(turns % 4);
     for table in [TURNS, MIRRORED_TURNS] {
@@ -23,13 +21,10 @@ pub fn turn_exif(orientation: u32, turns: u8) -> u32 {
     return TURNS[step];
 }
 
-/// EXIF orientations 5–8 put the stored rows on their side, so width and height swap on screen.
 pub fn swaps_axes(orientation: u32) -> bool {
     return (5..=8).contains(&orientation);
 }
 
-/// Moves a track transform so the transformed `width` × `height` frame starts at the origin. A transform copied
-/// from a source of another size keeps its rotation but carries the old size in its translation.
 pub fn fit(transform: CGAffineTransform, width: f64, height: f64) -> CGAffineTransform {
     let corners = [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)];
     let xs = corners.map(|(x, y)| transform.a * x + transform.c * y);
@@ -38,11 +33,9 @@ pub fn fit(transform: CGAffineTransform, width: f64, height: f64) -> CGAffineTra
     return CGAffineTransform { tx: -min(xs), ty: -min(ys), ..transform };
 }
 
-/// Adds `turns` clockwise quarter turns (on screen) to a track transform for a `width` × `height` frame.
 pub fn turn(transform: CGAffineTransform, width: f64, height: f64, turns: u8) -> CGAffineTransform {
     let mut out = transform;
     for _ in 0..turns % 4 {
-        // Followed by (x, y) → (−y, x): a clockwise quarter turn with y pointing down.
         out = CGAffineTransform { a: -out.b, b: out.a, c: -out.d, d: out.c, tx: -out.ty, ty: out.tx };
     }
     return fit(out, width, height);
@@ -59,7 +52,6 @@ pub fn orientation(source: &CGImageSource) -> u32 {
         .unwrap_or(1);
 }
 
-/// The first image of a file drawn the way it is meant to be seen: EXIF orientation applied, full size.
 pub fn upright_image(path: &Path) -> Option<CFRetained<CGImage>> {
     let url = cf_file_url(path)?;
     let source = unsafe { CGImageSource::with_url(&url, None) }?;
@@ -70,7 +62,6 @@ pub fn upright_image(path: &Path) -> Option<CFRetained<CGImage>> {
     return unsafe { source.thumbnail_at_index(0, Some(options)) };
 }
 
-/// Writes an upright PNG of `input` that fits in `max_px` × `max_px`.
 pub fn write_png(input: &Path, output: &Path, max_px: usize) -> Result<(), String> {
     let source_url = cf_file_url(input).ok_or("invalid image path")?;
     let source = unsafe { CGImageSource::with_url(&source_url, None) }.ok_or("cannot open the image")?;
@@ -88,8 +79,6 @@ pub fn write_png(input: &Path, output: &Path, max_px: usize) -> Result<(), Strin
     return Ok(());
 }
 
-/// Writes `input` to `output` with its EXIF orientation turned by `turns` clockwise quarter turns. The pixels are
-/// copied as they are, so nothing is recompressed.
 pub fn rotate_image(input: &Path, output: &Path, turns: u8) -> Result<(), String> {
     let source_url = cf_file_url(input).ok_or("invalid image path")?;
     let source = unsafe { CGImageSource::with_url(&source_url, None) }.ok_or("cannot open the image")?;
@@ -110,8 +99,6 @@ pub fn rotate_image(input: &Path, output: &Path, turns: u8) -> Result<(), String
     return Ok(());
 }
 
-/// Turns a wallpaper file in place by `turns` clockwise quarter turns and returns where it now lives: a video is
-/// rewritten as a movie next to the original (its samples untouched), an image keeps its path.
 pub fn rotate_file(input: &Path, kind: ItemKind, turns: u8) -> Result<PathBuf, String> {
     let dir = input.parent().ok_or("the wallpaper has no folder")?;
     let stem = input.file_stem().and_then(|stem| stem.to_str()).ok_or("the wallpaper has no file name")?;
@@ -140,7 +127,6 @@ pub fn rotate_file(input: &Path, kind: ItemKind, turns: u8) -> Result<PathBuf, S
 mod tests {
     use super::*;
 
-    /// Quarter turns a track transform applies on screen, if it is a plain rotation.
     fn quarter_turns(transform: CGAffineTransform) -> Option<u8> {
         const ROTATIONS: [[f64; 4]; 4] =
             [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, -1.0, 0.0], [-1.0, 0.0, 0.0, -1.0], [0.0, -1.0, 1.0, 0.0]];
@@ -186,7 +172,6 @@ mod tests {
 
     #[test]
     fn fit_recomputes_the_translation_for_a_smaller_frame() {
-        // Rotated source of 3024×1964 rescaled to 2704×1756: the copied tx = 1964 pushed the frame off screen.
         let source = transform(0.0, 1.0, -1.0, 0.0, 1964.0, 0.0);
         assert!(same(fit(source, 2704.0, 1756.0), transform(0.0, 1.0, -1.0, 0.0, 1756.0, 0.0)));
         assert!(same(
@@ -217,7 +202,6 @@ mod tests {
     }
 
     fn png(dir: &Path) -> std::path::PathBuf {
-        // 2×1 RGB image: wider than tall.
         const BYTES: [u8; 70] = [
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
             0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x7b, 0x40, 0xe8, 0xdd, 0x00, 0x00, 0x00,
@@ -251,7 +235,6 @@ mod tests {
     }
 
     fn wide_png(dir: &Path) -> PathBuf {
-        // 64×32: red left half, blue right half.
         const BYTES: [u8; 116] = [
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
             0x00, 0x40, 0x00, 0x00, 0x00, 0x20, 0x08, 0x02, 0x00, 0x00, 0x00, 0x2d, 0xff, 0xe9, 0xd3, 0x00, 0x00, 0x00,

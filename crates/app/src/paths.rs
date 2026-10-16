@@ -103,7 +103,6 @@ impl Paths {
         return self.join("Tools");
     }
 
-    /// Folder icons made from the user's own images.
     pub fn icons_dir(&self) -> PathBuf {
         return self.join("Icons");
     }

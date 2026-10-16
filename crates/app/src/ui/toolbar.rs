@@ -179,8 +179,6 @@ impl Toolbar {
         search.centerYAnchor().constraintEqualToAnchor(&search_box.centerYAnchor()).setActive(true);
         search_box.widthAnchor().constraintEqualToConstant(SEARCH_WIDTH).setActive(true);
         search_box.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
-        // An accent "+" circle: with the inspector collapsed, the items after the tracking separator only get
-        // room for a few icons, and a titled button pushed Settings into the overflow menu.
         let add = widgets::button(mtm, "", Some("plus"), sel!(showAdd:), target);
         add.setToolTip(Some(&widgets::ns("Add wallpapers from files, a folder or a video link")));
         add.widthAnchor().constraintEqualToConstant(ADD_WIDTH).setActive(true);
@@ -223,7 +221,6 @@ impl Toolbar {
         ];
         let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
         let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
-        // Everything after the tracking separator sits above the inspector, so the library side keeps its room.
         let tracking = unsafe { NSToolbarInspectorTrackingSeparatorItemIdentifier };
         let order: Vec<Retained<NSString>> = vec![
             widgets::ns("scope"),
@@ -420,8 +417,6 @@ fn describe(status: &Status) -> (Light, String, String) {
 }
 
 impl Toolbar {
-    /// `AppKit` makes the inspector toggle itself once the toolbar is on a window; keep it out of the overflow menu
-    /// when the inspector is collapsed and the items after the tracking separator have little room.
     pub fn keep_toggle_visible(&self) {
         let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
         for item in self.bar.items().to_vec() {

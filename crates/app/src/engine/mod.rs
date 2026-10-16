@@ -70,7 +70,6 @@ pub struct Playback {
     pub muted: bool,
     pub stop_after: u32,
     pub verdict: rules::Verdict,
-    /// Private wallpapers stay on the desktop: unlocked, or locked with `hide_desktop` off.
     pub reveal: bool,
     pub silenced: Option<ItemId>,
 }

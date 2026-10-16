@@ -112,7 +112,6 @@ impl HotkeyAction {
     ];
 }
 
-/// What a wallpaper's own shortcut switches: the desktop, the lock screen or both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "kebab-case")]
@@ -537,17 +536,14 @@ pub enum Request {
     OptimizeCancel {
         id: String,
     },
-    /// Turns a wallpaper by `turns` clockwise quarter turns (1–3).
     Rotate {
         id: String,
         turns: u8,
     },
-    /// Sets a folder's icon: `symbol:<SF Symbol>`, `image:<file in the icons folder>`, or none.
     FolderIcon {
         id: String,
         icon: Option<String>,
     },
-    /// Binds a shortcut that switches to this wallpaper, or clears it.
     ItemHotkey {
         item: String,
         combo: Option<String>,

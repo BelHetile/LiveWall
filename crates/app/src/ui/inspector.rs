@@ -347,7 +347,6 @@ impl Inspector {
         });
     }
 
-    /// The shortcut scope picked in the inspector, used when a new shortcut is recorded.
     pub fn scope(&self) -> proto::HotkeyScope {
         return self.controls.as_ref().map_or_else(proto::HotkeyScope::default, |controls| {
             return scope_at(controls.scope.indexOfSelectedItem());
@@ -708,17 +707,7 @@ fn shortcut(
     }
     let key_row = widgets::row(mtm, "Keys", &recorder);
     let scope_row = widgets::row(mtm, "Switches", &scope);
-    let hint = widgets::label(
-        mtm,
-        "Press once to switch to it, again to switch back.",
-        11.0,
-        &Weight::Regular,
-        &NSColor::tertiaryLabelColor(),
-    );
-    hint.setMaximumNumberOfLines(2);
-    hint.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
-    hint.setPreferredMaxLayoutWidth(WIDTH - 2.0 * INSET);
-    let section = widgets::section(mtm, "Shortcut", &[&key_row, &scope_row, &hint]);
+    let section = widgets::section(mtm, "Shortcut", &[&key_row, &scope_row]);
     return (section, recorder, scope);
 }
 

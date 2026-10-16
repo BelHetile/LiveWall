@@ -4,31 +4,26 @@ All notable changes to LiveWall are listed here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.1.0] - 2026-10-16
 
 ### Added
-- The library window, inspector, settings and dialogs are translated into Russian, and changing the language in
-  Settings rebuilds them at once (the menu bar item follows immediately too).
-- Your own styles: save the Custom colours under a name, delete them, and import or export `.livewall-style` files.
-- Folder icons: an SF Symbol or your own image (PNG, JPEG, HEIC…) per folder; `lwctl folder icon`.
-- A shortcut for any wallpaper: the first press switches the desktop, the lock screen or both to it, the next
-  press switches back; a combination another wallpaper used moves over. `lwctl item-hotkey`.
-- Rotate a video or image by 90° from the inspector, the context menu or `lwctl rotate`; videos are rewritten
-  without re-encoding.
+- The whole app is in Russian as well as English, and a language picked in Settings applies at once.
+- Your own styles: save the current colours under a name, and import or export them as `.livewall-style` files.
+- Folder icons: an SF Symbol or one of your own images for any folder.
+- A shortcut for any wallpaper: the first press puts it on the desktop, the lock screen or both, the next press
+  brings back what was there before. It works for wallpapers in private folders without unlocking them.
+- Turn a video or image that is stored on its side by 90°, from the inspector or the context menu.
 - Settings → Privacy → *Take Private Wallpapers off the Desktop*.
-- Settings → General → *Show in Dock*: turn it off to keep LiveWall in the menu bar only, also while the library
-  window is open; it applies at once.
+- Settings → General → *Show in Dock*: turn it off to keep LiveWall in the menu bar only.
+- `lwctl rotate`, `lwctl item-hotkey` and `lwctl folder icon`.
 
 ### Fixed
-- Locking a private folder no longer swaps the wallpaper on the desktop; rotation waits while a private wallpaper
-  is showing on a locked desktop, so it is still there after unlocking.
-- Photos with an EXIF orientation showed on their side on the desktop; images now load upright and report their
-  real width and height.
-- Optimizing a rotated video copied the source's translation into the smaller output, shifting the picture.
-- Liquid Glass: the toolbar no longer pushes Add, Search and Settings into the overflow menu, the main button
-  keeps a readable title when the window is inactive, and long Russian labels fit.
-- macOS 15: glass-only calls (border shape, tint prominence) are skipped instead of being sent to controls that
-  don't have them.
+- Locking a private folder no longer takes its wallpaper off the desktop, and automatic change leaves it there
+  until you unlock.
+- Photos taken in portrait no longer show on their side on the desktop.
+- Some optimized videos showed shifted or turned.
+- The toolbar fits again on macOS 26: Add, Search and Settings no longer hide behind ». Buttons stay readable
+  when the window is in the background, and Russian labels are no longer cut off.
 
 ## [2.0.0] - 2026-10-16
 

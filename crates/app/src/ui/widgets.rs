@@ -170,12 +170,10 @@ impl Weight {
     }
 }
 
-/// Interface text: looked up in the active language's table, so every literal passed here is translated.
 pub fn ns(text: &str) -> Retained<NSString> {
     return NSString::from_str(&crate::i18n::tr(text));
 }
 
-/// User content (titles, folder names, paths, queries) that must never be translated.
 pub fn raw(text: &str) -> Retained<NSString> {
     return NSString::from_str(text);
 }
@@ -392,12 +390,10 @@ pub fn card(mtm: MainThreadMarker, fill: &NSColor, radius: CGFloat) -> Retained<
     return card;
 }
 
-/// Liquid Glass (macOS 26 and newer): `NSGlassEffectView`, the glass bezel, border shapes and tint prominence.
 pub fn liquid_glass() -> bool {
     return AnyClass::get(c"NSGlassEffectView").is_some();
 }
 
-/// Glass bezel with a capsule border where the system has it, the regular rounded bezel before macOS 26.
 pub fn glass_bezel(button: &NSButton) {
     if !liquid_glass() {
         button.setBezelStyle(NSBezelStyle::Push);
@@ -469,8 +465,6 @@ pub fn secondary(button: &NSButton) {
     button.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
 }
 
-/// The accent-filled main action. The title and symbol keep the system colours: with Liquid Glass an inactive window
-/// drops the tint, and a hard-coded light-on-accent (or dark-on-accent) title turned unreadable on the clear glass.
 pub fn prominent(button: &NSButton, theme: &Theme) {
     button.setBezelColor(Some(&theme.accent_fill));
     if liquid_glass() && button.respondsToSelector(sel!(setTintProminence:)) {

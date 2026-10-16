@@ -127,13 +127,11 @@ enum Command {
         id: String,
     },
     Downloads,
-    /// Turn a wallpaper clockwise by quarter turns
     Rotate {
         id: String,
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
         turns: u8,
     },
-    /// Bind a shortcut that switches to a wallpaper; omit the combo to clear it
     ItemHotkey {
         item: String,
         #[arg(help = "Combo such as ctrl+opt+1; omit to clear the binding")]
@@ -185,7 +183,6 @@ enum FolderCommand {
         #[arg(long, action = clap::ArgAction::Set)]
         hidden: Option<bool>,
     },
-    /// Set a folder icon: symbol:<SF Symbol name> or image:<file>; omit to reset
     Icon {
         id: String,
         icon: Option<String>,

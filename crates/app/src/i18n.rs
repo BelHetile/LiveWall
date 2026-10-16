@@ -361,7 +361,6 @@ mod tests {
         ("ui/windows.rs", include_str!("ui/windows.rs")),
     ];
 
-    /// Not interface text: format patterns and names that read the same in every language.
     const UNTRANSLATED: [&str; 1] = ["%-d.%m.%Y"];
 
     fn literals(source: &str) -> Vec<String> {

@@ -75,7 +75,6 @@ pub struct Item {
     pub hotkey: Option<ItemHotkey>,
 }
 
-/// A shortcut that switches to one wallpaper and back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemHotkey {
     pub combo: KeyCombo,
@@ -95,7 +94,6 @@ pub struct Folder {
     pub hidden: bool,
 }
 
-/// A folder icon: an SF Symbol, or a PNG the user added to the icons folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon<'a> {
     Symbol(&'a str),
@@ -161,6 +159,10 @@ pub struct Placement {
     pub safe_default: Option<ItemId>,
     #[serde(default)]
     pub safe: BTreeMap<String, ItemId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_back: Option<ItemId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_lock_back: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,7 +218,6 @@ impl Library {
         return true;
     }
 
-    /// Forgets an icon file everywhere it is used.
     pub fn drop_icon(&mut self, icon: &str) -> usize {
         let mut cleared = 0;
         for folder in &mut self.folders {
@@ -295,8 +296,6 @@ pub struct Privacy {
     pub lock_on_display: bool,
     pub lock_on_idle: bool,
     pub idle_minutes: u32,
-    /// Locking also takes private wallpapers off the desktop. Off: locking only hides them in the library,
-    /// the menu bar and the lock screen, and the desktop keeps playing them.
     pub hide_desktop: bool,
 }
 
@@ -321,7 +320,6 @@ pub enum AppearanceMode {
     Dark,
 }
 
-/// A colour style the user saved, imported or shares as a `.livewall-style` file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Style {
     pub name: String,
@@ -358,7 +356,6 @@ impl Style {
         return Ok(Self { name: name.chars().take(40).collect(), accent: colour(accent)?, canvas: colour(canvas)? });
     }
 
-    /// The file a style is shared as.
     pub fn export(&self) -> String {
         let value = serde_json::json!({
             "livewall_style": STYLE_FORMAT,
@@ -369,7 +366,6 @@ impl Style {
         return serde_json::to_string_pretty(&value).unwrap_or_default();
     }
 
-    /// Reads one style, a `{"styles": [...]}` bundle or a bare list of styles.
     pub fn import(text: &str) -> Result<Vec<Self>, String> {
         let value: Value = serde_json::from_str(text).map_err(|_| "the file is not a LiveWall style".to_string())?;
         let entries: Vec<Value> = match &value {
@@ -393,7 +389,6 @@ impl Style {
 }
 
 impl Appearance {
-    /// Adds a style under a name no other style (built-in or saved) uses and returns that name.
     pub fn add_style(&mut self, mut style: Style, taken: &[&str]) -> String {
         let base = style.name.clone();
         let used = |name: &str, styles: &[Style]| {
@@ -453,7 +448,6 @@ pub struct Settings {
     pub stop_after_seconds: u32,
     pub launch_at_login: bool,
     pub open_library_at_launch: bool,
-    /// Off: the app stays in the menu bar only, also while the library window is open.
     pub dock_icon: bool,
     pub language: Option<Language>,
     pub hotkeys: Hotkeys,

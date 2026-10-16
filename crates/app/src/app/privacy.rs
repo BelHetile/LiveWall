@@ -110,8 +110,6 @@ pub fn reveals_desktop(unlocked: bool, privacy: &Privacy) -> bool {
     return unlocked || !privacy.hide_desktop;
 }
 
-/// A private wallpaper stays on the desktop while locked: rotation must not replace it behind the user's back,
-/// since the next one can only come from the public part of the library.
 pub fn holds_private(library: &Library, unlocked: bool, privacy: &Privacy) -> bool {
     return !unlocked
         && reveals_desktop(unlocked, privacy)
@@ -124,7 +122,6 @@ pub enum Title {
     Private,
 }
 
-/// What the menu bar names as the current wallpaper: never the name of a private one while locked.
 pub fn menu_title(library: &Library, unlocked: bool, privacy: &Privacy) -> Option<Title> {
     let reveal = reveals_desktop(unlocked, privacy);
     let id = library.resolve(None, reveal)?;

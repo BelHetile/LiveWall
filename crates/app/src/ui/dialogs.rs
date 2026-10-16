@@ -239,10 +239,8 @@ const SYMBOLS: [&str; 32] = [
 ];
 const ICONS_PER_ROW: usize = 8;
 const ICON_BUTTON: f64 = 34.0;
-/// Picker buttons carry `PICK_TAG + index`; `pickIcon:` ends the picker with `PICK_RESPONSE + index`.
 pub const PICK_TAG: isize = 1000;
 pub const PICK_RESPONSE: isize = 5000;
-/// `removeIcon:` ends the picker with this so it opens again without the removed icon.
 pub const REOPEN_RESPONSE: isize = 4000;
 
 thread_local! {
@@ -310,7 +308,6 @@ fn icon_grid(
     return widgets::view(&grid);
 }
 
-/// Lets the user pick a folder icon: an SF Symbol, one of their own images, a new image, or none.
 pub fn icon_picker(mtm: MainThreadMarker, folder: Uuid) {
     let Some((current, mine, icons_dir)) = app::with(|app| {
         let current =
@@ -412,11 +409,9 @@ fn choose_icon_image(mtm: MainThreadMarker) -> Option<Result<String, String>> {
     return app::with(|app| app.import_icon(Path::new(&path)));
 }
 
-/// Asks for a name and saves the current palette as a style.
 pub fn save_style(mtm: MainThreadMarker) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns("Save Style"));
-    alert.setInformativeText(&ns("The current accent and canvas colours are saved under this name."));
     let field = widgets::input(mtm, "Style name", NAME_WIDTH);
     field.setStringValue(&ns("My Style"));
     alert.setAccessoryView(Some(&field));

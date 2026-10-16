@@ -111,7 +111,6 @@ fn run(fixtures: &Fixtures) {
     assert_eq!(vp9["verdict"]["verdict"].as_str(), Some("needs-optimize"), "VP9 verdict: {vp9}");
     let vp9_id = id_of(vp9);
 
-    // M3 and newer decode AV1 in hardware and play it as is; older chips convert it to HEVC first.
     let av1_id = fixtures.av1.as_ref().and_then(|av1| {
         let name = av1.file_name().and_then(|value| value.to_str()).expect("name");
         let entry = result_for(&results, name);

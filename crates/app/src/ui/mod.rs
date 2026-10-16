@@ -133,8 +133,6 @@ impl Ui {
         self.tick();
     }
 
-    /// Applies the Dock setting right away while the library is open; turning the icon off keeps the window in
-    /// front instead of letting it fall behind the previous app.
     fn sync_dock(&self, mtm: MainThreadMarker) {
         let allowed = self.values.get("dock_icon").and_then(Value::as_bool).unwrap_or(true);
         if DOCK_ICON.swap(allowed, Ordering::SeqCst) == allowed || !self.window.isVisible() {
@@ -306,10 +304,8 @@ fn submit(work: impl FnOnce(&mut App) -> Option<Response> + Send + 'static) {
     });
 }
 
-/// Whether the user allows a Dock icon while the library is open (Settings → General).
 static DOCK_ICON: AtomicBool = AtomicBool::new(true);
 
-/// A Dock icon only while the library window is open, and only if the user wants one.
 pub fn wants_dock(window_open: bool, allowed: bool) -> bool {
     return window_open && allowed;
 }
@@ -624,8 +620,6 @@ pub fn launched() {
     });
 }
 
-/// Rebuilds the library window, its toolbar, the main menu and the settings sheet in the active language,
-/// keeping the window frame, the filter, the selection and the open settings tab.
 pub fn relocalize() {
     DispatchQueue::main().exec_async(|| {
         let Some(mtm) = MainThreadMarker::new() else {

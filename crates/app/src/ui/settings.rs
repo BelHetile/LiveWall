@@ -134,7 +134,6 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
     };
 }
 
-/// What a shortcut recorder binds: a global action or one wallpaper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bind {
     Action(HotkeyAction),

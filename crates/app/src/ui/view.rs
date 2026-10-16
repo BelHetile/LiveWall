@@ -170,7 +170,6 @@ impl Library {
         return self.items.iter().position(|item| item.id == id);
     }
 
-    /// The folder's own icon at menu size, if it has one.
     pub fn folder_image(&self, folder: usize) -> Option<Retained<NSImage>> {
         let icon = self.icons.get(folder)?.as_deref()?;
         return icon_image(icon, &self.icons_dir, MENU_ICON);
@@ -221,7 +220,6 @@ impl Thumbs {
 
 const MENU_ICON: f64 = 16.0;
 
-/// Draws a folder icon value (`symbol:` or `image:`) at `size` points.
 pub fn icon_image(icon: &str, icons_dir: &std::path::Path, size: f64) -> Option<Retained<NSImage>> {
     let image = match model::Icon::parse(icon)? {
         model::Icon::Symbol(name) => widgets::symbol(name, size * 0.8)?,

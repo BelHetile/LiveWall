@@ -126,7 +126,6 @@ impl Theme {
 
 pub const CUSTOM: &str = "Custom";
 
-/// Names a saved style cannot take.
 pub fn reserved_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Palette::BUILT_IN.iter().map(|(name, _)| *name).collect();
     names.push(CUSTOM);
@@ -175,7 +174,6 @@ impl Look {
         return self.themes.len() - 1;
     }
 
-    /// Saved styles sit between the built-in themes and the editable Custom slot.
     pub fn is_saved(&self, index: usize) -> bool {
         return index >= Palette::BUILT_IN.len() && index < self.custom_index();
     }

@@ -75,8 +75,6 @@ pub fn run(task: &Task, progress: &Progress, cancel: &Arc<AtomicBool>) -> Result
     };
 }
 
-/// Rewrites a video with its samples untouched and its picture turned by `turns` clockwise quarter turns: only the
-/// track transform changes, so nothing is decoded or recompressed.
 pub fn reorient_video(input: &Path, output: &Path, turns: u8) -> Result<(), TranscodeError> {
     let _ = std::fs::remove_file(output);
     let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&file_url(input), None) };
