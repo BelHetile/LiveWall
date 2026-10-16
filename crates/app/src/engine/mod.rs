@@ -63,6 +63,7 @@ pub struct Engine {
     playing: usize,
     occlusion: Occlusion,
     wake: Wake,
+    reveal: bool,
 }
 
 pub struct Playback {
@@ -102,6 +103,7 @@ impl Engine {
             playing: 0,
             occlusion: Occlusion::default(),
             wake: Wake::default(),
+            reveal: true,
         };
     }
 
@@ -122,6 +124,7 @@ impl Engine {
         playback: &Playback,
         transition: Option<&transition::ResolvedTransition>,
     ) {
+        self.reveal = playback.reveal;
         self.apply_assignments(library, transition.is_some(), playback.reveal);
         self.apply_frames(library);
         self.begin_transitions(transition);

@@ -917,7 +917,7 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
         &[line(
             mtm,
             "Take Private Wallpapers off the Desktop",
-            Some("Off: the desktop keeps playing them; the library, menu bar and lock screen still hide them"),
+            Some("Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them"),
             &hide,
         )],
     );

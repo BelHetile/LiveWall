@@ -684,8 +684,8 @@
 	<string>Выключено — включите в настройках или выберите обои</string>
 	<key>Off: LiveWall stays in the menu bar only, also while the library is open</key>
 	<string>Выкл.: только значок в строке меню, даже с открытой библиотекой</string>
-	<key>Off: the desktop keeps playing them; the library, menu bar and lock screen still hide them</key>
-	<string>Выкл.: рабочий стол продолжает их показывать; библиотека, строка меню и экран блокировки их скрывают</string>
+	<key>Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them</key>
+	<string>Выкл.: рабочий стол и экран блокировки показывают их; библиотека и меню скрывают</string>
 	<key>On %@</key>
 	<string>На: %@</string>
 	<key>On Login</key>

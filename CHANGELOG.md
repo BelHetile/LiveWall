@@ -20,6 +20,8 @@ All notable changes to LiveWall are listed here. The format is based on
 ### Fixed
 - Locking a private folder no longer takes its wallpaper off the desktop, and automatic change leaves it there
   until you unlock.
+- A private wallpaper on the desktop or picked for the lock screen is no longer swapped for another one on the
+  lock screen, in Mission Control and after quitting LiveWall.
 - Photos taken in portrait no longer show on their side on the desktop.
 - Some optimized videos showed shifted or turned.
 - The toolbar fits again on macOS 26: Add, Search and Settings no longer hide behind ». Buttons stay readable
