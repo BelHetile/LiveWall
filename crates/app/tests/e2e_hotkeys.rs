@@ -104,7 +104,11 @@ fn in_process(mtm: MainThreadMarker) {
     let duplicate =
         exchange(&socket, Request::HotkeysSet { action: HotkeyAction::Next, combo: Some("ctrl+opt+cmd+f18".into()) });
     let body = expect_error(duplicate, ErrorCode::Invalid);
-    assert!(body.contains("another action"), "duplicate reason was {body:?}");
+    // The reason names the action that owns the combination, in the app's language.
+    assert!(
+        body.contains("⌃⌥⌘F18") && (body.contains("Play / Pause") || body.contains("Пуск / пауза")),
+        "duplicate reason was {body:?}"
+    );
 
     assert!(!status(&socket)["paused"].as_bool().unwrap_or(true));
     assert!(synthesize_press(HotkeyAction::TogglePause), "synthetic hotkey event was not delivered");
