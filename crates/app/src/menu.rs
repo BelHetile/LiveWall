@@ -1,15 +1,18 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString};
 use serde::Serialize;
 
 use crate::app::{Event, post};
 use crate::i18n::Strings;
+
+const STATUS_ICON: &[u8] = include_bytes!("../../../resources/status-icon@2x.png");
+const STATUS_ICON_POINTS: f64 = 18.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -222,13 +225,10 @@ fn make_quit_item(mtm: MainThreadMarker, target: &MenuTarget) -> Retained<NSMenu
 }
 
 fn set_status_icon(status_item: &NSStatusItem, mtm: MainThreadMarker) {
-    let image = NSImage::imageNamed(&NSString::from_str("status-icon")).or_else(|| {
-        NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("photo.on.rectangle"),
-            Some(&NSString::from_str("LiveWall")),
-        )
-    });
-    let Some(image) = image else { return };
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(STATUS_ICON)) else {
+        return;
+    };
+    image.setSize(NSSize::new(STATUS_ICON_POINTS, STATUS_ICON_POINTS));
     image.setTemplate(true);
     if let Some(button) = status_item.button(mtm) {
         button.setImage(Some(&image));
