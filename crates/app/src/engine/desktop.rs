@@ -233,6 +233,7 @@ impl Desktop {
             post(Event::DesktopVerify);
         });
         let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(VERIFY_INTERVAL, true, &block) };
+        crate::platform::apply_timer_tolerance(&timer, VERIFY_INTERVAL);
         self.timer = Some(timer);
     }
 

@@ -2,6 +2,7 @@ use std::mem::size_of;
 use std::ptr::{self, NonNull};
 
 use block2::RcBlock;
+use objc2::rc::Retained;
 use objc2_app_kit::NSWorkspace;
 use objc2_core_audio::{
     AudioObjectAddPropertyListenerBlock, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
@@ -14,17 +15,42 @@ use objc2_core_graphics::{
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
     kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
 };
+use objc2_foundation::NSTimer;
 
 use crate::app::{Event, post};
 use crate::rules;
 
 pub const FULLSCREEN_TOLERANCE: f64 = 2.0;
+pub const AUDIO_ACTIVE_DELAY: f64 = 0.5;
+pub const AUDIO_SILENCE_DELAY: f64 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AudioStep {
+    Cancel,
+    Hold,
+    Arm(f64),
+}
+
+pub fn audio_step(active: bool, raw: bool, settling: bool) -> AudioStep {
+    if raw == active {
+        return AudioStep::Cancel;
+    }
+    if settling {
+        return AudioStep::Hold;
+    }
+    return AudioStep::Arm(if raw { AUDIO_ACTIVE_DELAY } else { AUDIO_SILENCE_DELAY });
+}
 
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Signals {
     pub display_asleep: bool,
     pub screen_locked: bool,
+    pub screensaver: bool,
+    pub occluded: bool,
+    pub thermal_hot: bool,
     pub low_power: bool,
+    pub other_app_audio: bool,
 }
 
 pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
@@ -38,11 +64,14 @@ pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
         frame,
         fullscreen,
         coverage,
-        other_app_audio: external_audio_playing(),
+        other_app_audio: signals.other_app_audio,
         frontmost: frontmost_bundle(),
         running_apps: running_bundles(),
         display_asleep: signals.display_asleep,
         screen_locked: signals.screen_locked,
+        screensaver: signals.screensaver,
+        occluded: signals.occluded,
+        thermal_hot: signals.thermal_hot,
         low_power: signals.low_power,
     };
 }
@@ -328,9 +357,57 @@ impl AudioListener {
     }
 }
 
+struct AudioGate {
+    active: bool,
+    timer: Option<Retained<NSTimer>>,
+}
+
+impl AudioGate {
+    fn new() -> Self {
+        return Self { active: false, timer: None };
+    }
+
+    fn active(&self) -> bool {
+        return self.active;
+    }
+
+    fn observe(&mut self, raw: bool) {
+        match audio_step(self.active, raw, self.timer.is_some()) {
+            AudioStep::Cancel => self.cancel(),
+            AudioStep::Hold => {}
+            AudioStep::Arm(delay) => self.arm(delay),
+        }
+    }
+
+    fn arm(&mut self, delay: f64) {
+        let block = RcBlock::new(|_timer: NonNull<NSTimer>| {
+            post(Event::AudioSettled);
+        });
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block) };
+        crate::platform::apply_timer_tolerance(&timer, delay);
+        self.timer = Some(timer);
+    }
+
+    fn settle(&mut self) {
+        self.timer = None;
+        let raw = external_audio_playing();
+        if raw != self.active {
+            self.active = raw;
+            tracing::info!(active = raw, "other-app audio rule settled");
+        }
+    }
+
+    fn cancel(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            timer.invalidate();
+        }
+    }
+}
+
 pub struct AudioMonitor {
     processes: Vec<(AudioObjectID, AudioListener)>,
     process_list: Option<AudioListener>,
+    gate: AudioGate,
 }
 
 impl AudioMonitor {
@@ -338,9 +415,23 @@ impl AudioMonitor {
         let mut monitor = Self {
             processes: Vec::new(),
             process_list: AudioListener::add(system_object(), kAudioHardwarePropertyProcessObjectList),
+            gate: AudioGate::new(),
         };
         monitor.rebind();
+        monitor.refresh();
         return monitor;
+    }
+
+    pub fn refresh(&mut self) {
+        self.gate.observe(external_audio_playing());
+    }
+
+    pub fn settle(&mut self) {
+        self.gate.settle();
+    }
+
+    pub fn active(&self) -> bool {
+        return self.gate.active();
     }
 
     pub fn rebind(&mut self) {
@@ -455,5 +546,24 @@ mod tests {
     fn degenerate_rects_are_never_fullscreen() {
         let screen = rect(0.0, 0.0, 1920.0, 1080.0);
         assert!(!approximately_covers(rect(0.0, 0.0, 0.0, 0.0), screen, FULLSCREEN_TOLERANCE));
+    }
+
+    #[test]
+    fn audio_activation_waits_before_pausing() {
+        assert_eq!(audio_step(false, true, false), AudioStep::Arm(AUDIO_ACTIVE_DELAY));
+        assert_eq!(audio_step(false, true, true), AudioStep::Hold);
+    }
+
+    #[test]
+    fn audio_silence_waits_longer_before_resuming() {
+        assert_eq!(audio_step(true, false, false), AudioStep::Arm(AUDIO_SILENCE_DELAY));
+        assert_eq!(audio_step(true, false, true), AudioStep::Hold);
+    }
+
+    #[test]
+    fn audio_matching_the_settled_state_cancels() {
+        assert_eq!(audio_step(false, false, false), AudioStep::Cancel);
+        assert_eq!(audio_step(true, true, false), AudioStep::Cancel);
+        assert_eq!(audio_step(true, true, true), AudioStep::Cancel);
     }
 }

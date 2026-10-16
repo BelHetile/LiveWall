@@ -67,7 +67,7 @@ fn in_process(mtm: MainThreadMarker) {
 
     let report = ok(&socket, Request::HotkeysGet);
     let entries = report.as_array().expect("hotkeys array");
-    assert_eq!(entries.len(), 5, "five actions reported: {report}");
+    assert_eq!(entries.len(), HotkeyAction::ALL.len(), "every action reported: {report}");
     for action in HotkeyAction::ALL {
         let entry = entry_for(&report, action);
         assert!(entry["combo"].is_object(), "{action:?} has a default combo");

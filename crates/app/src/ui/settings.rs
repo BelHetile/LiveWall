@@ -11,11 +11,10 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_foundation::{NSArray, NSString};
-
-use proto::KeyCombo;
+use proto::HotkeyAction;
+use serde_json::{Value, json};
 
 use crate::hotkey;
-use crate::ui::hotkeys::{Command, Hotkeys};
 use crate::ui::palette::{Look, Rgb, Theme};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
@@ -23,15 +22,100 @@ const WIDTH: CGFloat = 540.0;
 pub const ROTATE: isize = 1;
 pub const TRANSITION: isize = 2;
 pub const PAUSE: isize = 3;
-pub const ACCENT: isize = 1;
-pub const CANVAS: isize = 2;
+const LOGIN: isize = 4;
+const OPEN_LIBRARY: isize = 5;
+const DOCK: isize = 6;
+const FULLSCREEN: isize = 7;
+const COVERED: isize = 8;
+const HOT: isize = 9;
+const OPTIMIZE: isize = 10;
+const SOUND: isize = 11;
+const SHUFFLE: isize = 12;
+const LANGUAGE: isize = 13;
+const FRAME_RATE: isize = 14;
+const RELEASE: isize = 15;
+const STYLE: isize = 16;
+const EVERY: isize = 17;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
+pub const ACCENT: isize = 1;
+pub const CANVAS: isize = 2;
+
+const LANGUAGES: [(&str, Option<&str>); 3] = [("System", None), ("English", Some("en")), ("Русский", Some("ru"))];
+const FRAME_RATES: [u32; 6] = [24, 30, 48, 60, 90, 120];
+const RELEASES: [(&str, u32); 5] = [
+    ("Never", 0),
+    ("After 15 Seconds", 15),
+    ("After 30 Seconds", 30),
+    ("After 1 Minute", 60),
+    ("After 5 Minutes", 300),
+];
+const STYLES: [(&str, &str); 4] = [("Fade", "fade"), ("Wipe", "wipe"), ("Grow", "grow"), ("Wave", "wave")];
+const INTERVALS: [(&str, u32); 5] =
+    [("5 Minutes", 5), ("15 Minutes", 15), ("1 Hour", 60), ("Daily", 1440), ("On Login", 0)];
+const PAUSE_KEYS: [&str; 4] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot", "pause_when_focused"];
 
 type Knob = (Retained<NSSlider>, Retained<NumberField>);
 
+pub enum Input {
+    Flag(bool),
+    Index(usize),
+    Number(f64),
+}
+
+pub enum Change {
+    Patch(Value),
+    Login(bool),
+}
+
+pub fn change(tag: isize, input: &Input) -> Option<Change> {
+    let patch = |value: Value| Some(Change::Patch(value));
+    return match (tag, input) {
+        (LOGIN, Input::Flag(on)) => Some(Change::Login(*on)),
+        (OPEN_LIBRARY, Input::Flag(on)) => patch(json!({ "open_library_at_launch": on })),
+        (DOCK, Input::Flag(on)) => patch(json!({ "show_in_dock": on })),
+        (FULLSCREEN, Input::Flag(on)) => patch(json!({ "pause_when_fullscreen": on })),
+        (COVERED, Input::Flag(on)) => patch(json!({ "pause_when_maximized": on })),
+        (HOT, Input::Flag(on)) => patch(json!({ "pause_when_hot": on })),
+        (OPTIMIZE, Input::Flag(on)) => patch(json!({ "optimize_on_import": on })),
+        (SOUND, Input::Flag(on)) => patch(json!({ "muted": !on })),
+        (SHUFFLE, Input::Flag(on)) => patch(json!({ "shuffle": on })),
+        (ROTATE, Input::Flag(on)) => patch(json!({ "auto_rotate": on })),
+        (PAUSE, Input::Flag(on)) => {
+            let mut map = serde_json::Map::new();
+            for key in PAUSE_KEYS {
+                map.insert(key.to_string(), json!(*on && key != "pause_when_focused"));
+            }
+            patch(Value::Object(map))
+        }
+        (TRANSITION, Input::Flag(on)) => {
+            patch(json!({ "transition": { "kind": if *on { Value::Null } else { json!("none") } } }))
+        }
+        (LANGUAGE, Input::Index(index)) => LANGUAGES.get(*index).and_then(|(_, code)| {
+            return patch(json!({ "language": code }));
+        }),
+        (FRAME_RATE, Input::Index(index)) => {
+            FRAME_RATES.get(*index).and_then(|rate| patch(json!({ "optimize_fps_limit": rate })))
+        }
+        (RELEASE, Input::Index(index)) => {
+            RELEASES.get(*index).and_then(|(_, seconds)| patch(json!({ "stop_after_seconds": seconds })))
+        }
+        (STYLE, Input::Index(index)) => {
+            STYLES.get(*index).and_then(|(_, kind)| patch(json!({ "transition": { "kind": kind } })))
+        }
+        (EVERY, Input::Index(index)) => {
+            INTERVALS.get(*index).filter(|(_, minutes)| *minutes > 0).and_then(|(_, minutes)| {
+                return patch(json!({ "rotate_minutes": minutes }));
+            })
+        }
+        (VOLUME, Input::Number(value)) => patch(json!({ "volume": (value / 100.0).clamp(0.0, 1.0) })),
+        (DURATION, Input::Number(value)) => patch(json!({ "transition": { "duration": value.max(0.0) / 1000.0 } })),
+        _ => None,
+    };
+}
+
 pub struct RecorderIvars {
-    command: Command,
+    action: HotkeyAction,
     label: Retained<NSTextField>,
     recording: Cell<bool>,
 }
@@ -85,10 +169,10 @@ define_class!(
 );
 
 impl RecorderView {
-    fn new(mtm: MainThreadMarker, command: Command) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, action: HotkeyAction) -> Retained<Self> {
         let label = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
         label.setAlignment(NSTextAlignment::Center);
-        let this = Self::alloc(mtm).set_ivars(RecorderIvars { command, label, recording: Cell::new(false) });
+        let this = Self::alloc(mtm).set_ivars(RecorderIvars { action, label, recording: Cell::new(false) });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
         if let Some(layer) = this.layer() {
@@ -107,7 +191,7 @@ impl RecorderView {
         return this;
     }
 
-    fn show(&self, combo: Option<&KeyCombo>) {
+    fn show(&self, combo: Option<&proto::KeyCombo>) {
         if self.ivars().recording.get() {
             return;
         }
@@ -157,12 +241,12 @@ impl RecorderView {
     }
 
     fn key(&self, event: &NSEvent) {
-        let command = self.ivars().command;
+        let action = self.ivars().action;
         let code = u32::from(event.keyCode());
         match code {
             53 => return self.finish(),
             51 | 117 => {
-                let _ = crate::ui::rebind(command, None);
+                let _ = crate::ui::rebind(action, None);
                 return self.finish();
             }
             _ => {}
@@ -182,14 +266,23 @@ impl RecorderView {
         .map(|(_, part)| part)
         .collect();
         parts.push(name);
-        let Ok(combo) = hotkey::parse(&parts.join("+")) else {
-            return;
-        };
-        match crate::ui::rebind(command, Some(combo)) {
+        match crate::ui::rebind(action, Some(parts.join("+"))) {
             Ok(()) => self.finish(),
             Err(message) => self.paint(&message, &NSColor::systemRedColor(), Some(&NSColor::systemRedColor())),
         }
     }
+}
+
+pub fn action_title(action: HotkeyAction) -> &'static str {
+    return match action {
+        HotkeyAction::Next => "Next Wallpaper",
+        HotkeyAction::Previous => "Previous Wallpaper",
+        HotkeyAction::VolumeUp => "Volume Up",
+        HotkeyAction::VolumeDown => "Volume Down",
+        HotkeyAction::TogglePause => "Play / Pause",
+        HotkeyAction::ToggleMute => "Mute",
+        HotkeyAction::Random => "Random Wallpaper",
+    };
 }
 
 pub struct SwatchIvars {
@@ -217,18 +310,29 @@ pub struct Settings {
     swatches: Vec<Retained<SwatchView>>,
     accent: Retained<NSColorWell>,
     canvas: Retained<NSColorWell>,
+    switches: Vec<Retained<NSSwitch>>,
+    popups: Vec<Retained<NSPopUpButton>>,
+    knobs: Vec<Knob>,
     rotate: Vec<Retained<NSView>>,
     transition: Vec<Retained<NSView>>,
     pause: Vec<Retained<NSView>>,
-    knobs: Vec<Knob>,
     recorders: Vec<Retained<RecorderView>>,
     tabs: Retained<NSTabViewController>,
 }
 
+struct General {
+    page: Retained<NSView>,
+    pause: Vec<Retained<NSView>>,
+    switches: Vec<Retained<NSSwitch>>,
+    popups: Vec<Retained<NSPopUpButton>>,
+}
+
 impl Settings {
-    pub fn new(mtm: MainThreadMarker, look: &Look, hotkeys: &Hotkeys, target: &AnyObject) -> Self {
-        let (general, pause) = general(mtm, target);
-        let (playback, rotate, transition, knobs) = playback(mtm, target);
+    pub fn new(mtm: MainThreadMarker, look: &Look, location: &str, target: &AnyObject) -> Self {
+        let General { page: general, pause, mut switches, mut popups } = general(mtm, location, target);
+        let (playback, rotate, transition, knobs, more_switches, more_popups) = playback(mtm, target);
+        switches.extend(more_switches);
+        popups.extend(more_popups);
         let (appearance, mode, swatches, accent, canvas) = appearance(mtm, look, target);
         let (shortcuts, recorders) = shortcuts(mtm, target);
         let tabs = NSTabViewController::new(mtm);
@@ -263,11 +367,21 @@ impl Settings {
         window.setToolbarStyle(NSWindowToolbarStyle::Preference);
         unsafe { window.setReleasedWhenClosed(false) };
         window.setContentSize(size);
-        let this = Self { window, mode, swatches, accent, canvas, rotate, transition, pause, knobs, recorders, tabs };
-        this.sync(look);
-        this.sync_shortcuts(hotkeys);
-        this.toggled(ROTATE, false);
-        return this;
+        return Self {
+            window,
+            mode,
+            swatches,
+            accent,
+            canvas,
+            switches,
+            popups,
+            knobs,
+            rotate,
+            transition,
+            pause,
+            recorders,
+            tabs,
+        };
     }
 
     pub fn show(&self, tab: Option<isize>) {
@@ -281,7 +395,7 @@ impl Settings {
         self.window.makeFirstResponder(None);
     }
 
-    pub fn sync(&self, look: &Look) {
+    pub fn sync_look(&self, look: &Look) {
         self.mode.setSelectedSegmentBezelColor(Some(&look.colors.accent));
         self.mode.setSelectedSegment(isize::try_from(look.mode).unwrap_or(0));
         for swatch in &self.swatches {
@@ -293,6 +407,84 @@ impl Settings {
         let custom = look.theme == look.custom_index();
         self.accent.setEnabled(custom);
         self.canvas.setEnabled(custom);
+    }
+
+    pub fn sync(&self, values: &Value) {
+        let flag = |key: &str| values.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let number = |key: &str| values.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        let transition = values.get("transition");
+        let kind = transition.and_then(|map| map.get("kind")).and_then(Value::as_str);
+        let master = PAUSE_KEYS.iter().any(|key| flag(key));
+        let animate = kind != Some("none");
+        let rotate = flag("auto_rotate");
+        for switch in &self.switches {
+            let on = match switch.tag() {
+                LOGIN => flag("launch_at_login"),
+                OPEN_LIBRARY => flag("open_library_at_launch"),
+                DOCK => flag("show_in_dock"),
+                PAUSE => master,
+                FULLSCREEN => flag("pause_when_fullscreen"),
+                COVERED => flag("pause_when_maximized"),
+                HOT => flag("pause_when_hot"),
+                OPTIMIZE => flag("optimize_on_import"),
+                SOUND => !flag("muted"),
+                TRANSITION => animate,
+                ROTATE => rotate,
+                SHUFFLE => flag("shuffle"),
+                _ => continue,
+            };
+            switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+        }
+        let language = values.get("language").and_then(Value::as_str);
+        let style = STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (rate, release, interval) =
+            (number("optimize_fps_limit") as u32, number("stop_after_seconds") as u32, number("rotate_minutes") as u32);
+        for popup in &self.popups {
+            match popup.tag() {
+                LANGUAGE => {
+                    show_choice(popup, LANGUAGES.len(), LANGUAGES.iter().position(|(_, code)| *code == language), "?");
+                }
+                FRAME_RATE => show_choice(
+                    popup,
+                    FRAME_RATES.len(),
+                    FRAME_RATES.iter().position(|value| *value == rate),
+                    &format!("{rate} fps"),
+                ),
+                RELEASE => show_choice(
+                    popup,
+                    RELEASES.len(),
+                    RELEASES.iter().position(|(_, value)| *value == release),
+                    &format!("After {release} Seconds"),
+                ),
+                STYLE => show_choice(popup, STYLES.len(), style, "Fade"),
+                EVERY => show_choice(
+                    popup,
+                    INTERVALS.len(),
+                    INTERVALS.iter().position(|(_, value)| *value == interval && *value > 0),
+                    &format!("{interval} Minutes"),
+                ),
+                _ => {}
+            }
+        }
+        for (slider, field) in &self.knobs {
+            let value = match slider.tag() {
+                VOLUME => values.get("volume").and_then(Value::as_f64).unwrap_or(1.0) * 100.0,
+                DURATION => {
+                    transition
+                        .and_then(|map| map.get("duration"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(proto::Transition::DEFAULT_DURATION)
+                        * 1000.0
+                }
+                _ => continue,
+            };
+            slider.setDoubleValue(value);
+            field.show(value.round());
+        }
+        self.toggled(PAUSE, master);
+        self.toggled(TRANSITION, animate);
+        self.toggled(ROTATE, rotate);
     }
 
     pub fn toggled(&self, tag: isize, on: bool) {
@@ -310,9 +502,9 @@ impl Settings {
         }
     }
 
-    pub fn sync_shortcuts(&self, hotkeys: &Hotkeys) {
+    pub fn sync_shortcuts(&self, hotkeys: &proto::Hotkeys) {
         for recorder in &self.recorders {
-            recorder.show(hotkeys.combo(recorder.ivars().command));
+            recorder.show(hotkeys.get(recorder.ivars().action));
         }
     }
 
@@ -322,16 +514,30 @@ impl Settings {
         }
     }
 
-    pub fn typed(&self, tag: isize, value: f64) {
-        let value = if tag == VOLUME { value.clamp(0.0, 100.0) } else { value.max(0.0) };
+    pub fn typed(&self, tag: isize, value: f64) -> f64 {
+        let value = if tag == VOLUME { value.clamp(0.0, 100.0) } else { value.clamp(200.0, 3000.0) };
         if let Some((slider, field)) = self.knobs.iter().find(|(slider, _)| slider.tag() == tag) {
             slider.setDoubleValue(value);
             field.show(value);
         }
+        return value;
     }
 
     pub fn custom_colors(&self) -> Option<(Rgb, Rgb)> {
         return Some((Rgb::from_color(&self.accent.color())?, Rgb::from_color(&self.canvas.color())?));
+    }
+}
+
+fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: &str) {
+    let base = isize::try_from(base).unwrap_or(0);
+    while popup.numberOfItems() > base {
+        popup.removeItemAtIndex(base);
+    }
+    if let Some(index) = index.and_then(|index| isize::try_from(index).ok()) {
+        popup.selectItemAtIndex(index);
+    } else {
+        popup.addItemWithTitle(&NSString::from_str(extra));
+        popup.selectItemAtIndex(base);
     }
 }
 
@@ -400,9 +606,8 @@ fn line(mtm: MainThreadMarker, title: &str, note: Option<&str>, control: &NSView
     return widgets::view(&row);
 }
 
-fn switch(mtm: MainThreadMarker, on: bool, tag: isize, target: &AnyObject) -> Retained<NSSwitch> {
+fn switch(mtm: MainThreadMarker, tag: isize, target: &AnyObject) -> Retained<NSSwitch> {
     let control = NSSwitch::new(mtm);
-    control.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
     control.setControlSize(NSControlSize::Small);
     control.setTag(tag);
     unsafe {
@@ -412,14 +617,25 @@ fn switch(mtm: MainThreadMarker, on: bool, tag: isize, target: &AnyObject) -> Re
     return control;
 }
 
-fn choice(mtm: MainThreadMarker, items: &[&str], selected: isize, target: &AnyObject) -> Retained<NSPopUpButton> {
+fn fixed_switch(mtm: MainThreadMarker) -> Retained<NSSwitch> {
+    let control = NSSwitch::new(mtm);
+    control.setControlSize(NSControlSize::Small);
+    control.setState(NSControlStateValueOn);
+    control.setEnabled(false);
+    return control;
+}
+
+fn choice(mtm: MainThreadMarker, items: &[&str], tag: isize, target: &AnyObject) -> Retained<NSPopUpButton> {
     let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+    if let Some(menu) = popup.menu() {
+        menu.setAutoenablesItems(false);
+    }
     let titles: Vec<Retained<NSString>> = items.iter().map(|title| NSString::from_str(title)).collect();
     popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-    popup.selectItemAtIndex(selected);
+    popup.setTag(tag);
     unsafe {
         popup.setTarget(Some(target));
-        popup.setAction(Some(sel!(noop:)));
+        popup.setAction(Some(sel!(choose:)));
     }
     return popup;
 }
@@ -444,101 +660,126 @@ fn pair(mtm: MainThreadMarker, knob: &Knob) -> Retained<NSView> {
     return widgets::view(&widgets::stack(mtm, &[&knob.0, &knob.1], false, 8.0));
 }
 
-fn general(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Vec<Retained<NSView>>) {
+fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General {
+    let login = switch(mtm, LOGIN, target);
+    let open_library = switch(mtm, OPEN_LIBRARY, target);
+    let dock = switch(mtm, DOCK, target);
+    let language = choice(mtm, &LANGUAGES.map(|(title, _)| title), LANGUAGE, target);
     let startup = form(
         mtm,
         "Startup",
         &[
-            line(mtm, "Open at Login", None, &switch(mtm, true, 0, target)),
-            line(mtm, "Show in Menu Bar", None, &switch(mtm, true, 0, target)),
-            line(
-                mtm,
-                "Show in Dock",
-                Some("Hide to keep LiveWall in the menu bar only"),
-                &switch(mtm, false, 0, target),
-            ),
+            line(mtm, "Open at Login", None, &login),
+            line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
+            line(mtm, "Show in Menu Bar", None, &fixed_switch(mtm)),
+            line(mtm, "Show in Dock", Some("Hide to keep LiveWall in the menu bar only"), &dock),
+            line(mtm, "Language", None, &language),
         ],
     );
-    let battery = switch(mtm, true, 0, target);
-    let fullscreen = switch(mtm, true, 0, target);
-    let covered = switch(mtm, false, 0, target);
-    let pause = vec![widgets::view(&battery), widgets::view(&fullscreen), widgets::view(&covered)];
+    let master = switch(mtm, PAUSE, target);
+    let fullscreen = switch(mtm, FULLSCREEN, target);
+    let covered = switch(mtm, COVERED, target);
+    let hot = switch(mtm, HOT, target);
+    let release = choice(mtm, &RELEASES.map(|(title, _)| title), RELEASE, target);
+    let pause = vec![widgets::view(&fullscreen), widgets::view(&covered), widgets::view(&hot)];
     let power = form(
         mtm,
         "Pause Playback",
         &[
-            line(mtm, "Pause Automatically", None, &switch(mtm, true, PAUSE, target)),
-            line(mtm, "On Battery Power", None, &battery),
+            line(mtm, "Pause Automatically", None, &master),
             line(mtm, "When an App Is Full Screen", None, &fullscreen),
             line(mtm, "When the Desktop Is Covered", Some("Uses more battery to keep track of windows"), &covered),
+            line(mtm, "When the Mac Gets Hot", None, &hot),
+            line(mtm, "Free Memory When Paused", Some("Swaps a paused video for a still frame"), &release),
         ],
     );
-    let location = widgets::label(mtm, "~/Movies/LiveWall", 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    let change = unsafe {
-        NSButton::buttonWithTitle_target_action(&NSString::from_str("Change…"), Some(target), Some(sel!(noop:)), mtm)
-    };
+    let place = widgets::label(mtm, location, 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
+    let change = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str("Change…"), None, None, mtm) };
     change.setControlSize(NSControlSize::Small);
-    let library_row = widgets::stack(mtm, &[&location, &change], false, 8.0);
+    change.setEnabled(false);
+    let library_row = widgets::stack(mtm, &[&place, &change], false, 8.0);
+    let optimize = switch(mtm, OPTIMIZE, target);
+    let frame_rate =
+        choice(mtm, &FRAME_RATES.map(|rate| format!("{rate} fps")).each_ref().map(String::as_str), FRAME_RATE, target);
     let library = form(
         mtm,
         "Library",
         &[
             line(mtm, "Location", None, &library_row),
-            line(mtm, "Copy Added Files into Library", None, &switch(mtm, true, 0, target)),
+            line(mtm, "Copy Added Files into Library", None, &fixed_switch(mtm)),
+            line(mtm, "Optimize on Import", Some("Convert videos that need it for smooth playback"), &optimize),
+            line(mtm, "Frame Rate Limit", None, &frame_rate),
         ],
     );
-    return (page(mtm, &[&startup, &power, &library]), pause);
+    return General {
+        page: page(mtm, &[&startup, &power, &library]),
+        pause,
+        switches: vec![login, open_library, dock, master, fullscreen, covered, hot, optimize],
+        popups: vec![language, release, frame_rate],
+    };
 }
 
-type PlaybackPage = (Retained<NSView>, Vec<Retained<NSView>>, Vec<Retained<NSView>>, Vec<Knob>);
+type PlaybackPage = (
+    Retained<NSView>,
+    Vec<Retained<NSView>>,
+    Vec<Retained<NSView>>,
+    Vec<Knob>,
+    Vec<Retained<NSSwitch>>,
+    Vec<Retained<NSPopUpButton>>,
+);
 
 fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
-    let volume = knob(mtm, 60.0, 0.0, 100.0, VOLUME, target);
-    let sound = form(
+    let volume = knob(mtm, 100.0, 0.0, 100.0, VOLUME, target);
+    let sound = switch(mtm, SOUND, target);
+    let sound_card = form(
         mtm,
         "Sound",
-        &[
-            line(mtm, "Play Wallpaper Sound", None, &switch(mtm, false, 0, target)),
-            line(mtm, "Default Volume", None, &pair(mtm, &volume)),
-        ],
+        &[line(mtm, "Play Wallpaper Sound", None, &sound), line(mtm, "Default Volume", None, &pair(mtm, &volume))],
     );
-    let style = choice(mtm, &["Fade", "Wipe", "Grow", "Wave"], 0, target);
-    let length = knob(mtm, 800.0, 200.0, 3000.0, DURATION, target);
+    let animate = switch(mtm, TRANSITION, target);
+    let style = choice(mtm, &STYLES.map(|(title, _)| title), STYLE, target);
+    let length = knob(mtm, 1000.0, 200.0, 3000.0, DURATION, target);
     let transition_group = vec![widgets::view(&style), widgets::view(&length.0), widgets::view(&length.1)];
     let transitions = form(
         mtm,
         "Transitions",
         &[
-            line(mtm, "Animate Wallpaper Changes", None, &switch(mtm, true, TRANSITION, target)),
+            line(mtm, "Animate Wallpaper Changes", None, &animate),
             line(mtm, "Style", None, &style),
             line(mtm, "Duration", None, &pair(mtm, &length)),
         ],
     );
-    let every = choice(mtm, &["5 Minutes", "15 Minutes", "1 Hour", "Daily", "On Login"], 2, target);
-    let shuffle = switch(mtm, true, 0, target);
+    let every = choice(mtm, &INTERVALS.map(|(title, _)| title), EVERY, target);
+    if let Some(item) = every.itemAtIndex(4) {
+        item.setEnabled(false);
+    }
+    let shuffle = switch(mtm, SHUFFLE, target);
+    let rotate = switch(mtm, ROTATE, target);
     let rotate_group = vec![widgets::view(&every), widgets::view(&shuffle)];
     let rotation = form(
         mtm,
         "Rotation",
         &[
-            line(
-                mtm,
-                "Change Wallpaper",
-                Some("Cycles through the current folder"),
-                &switch(mtm, false, ROTATE, target),
-            ),
+            line(mtm, "Change Wallpaper", Some("Cycles through the current folder"), &rotate),
             line(mtm, "Every", None, &every),
             line(mtm, "Shuffle", None, &shuffle),
         ],
     );
-    return (page(mtm, &[&sound, &transitions, &rotation]), rotate_group, transition_group, vec![volume, length]);
+    return (
+        page(mtm, &[&sound_card, &transitions, &rotation]),
+        rotate_group,
+        transition_group,
+        vec![volume, length],
+        vec![sound, animate, shuffle, rotate],
+        vec![style, every],
+    );
 }
 
 fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Vec<Retained<RecorderView>>) {
     let recorders: Vec<Retained<RecorderView>> =
-        Command::ALL.iter().map(|command| RecorderView::new(mtm, *command)).collect();
+        HotkeyAction::ALL.iter().map(|action| RecorderView::new(mtm, *action)).collect();
     let rows: Vec<Retained<NSView>> =
-        recorders.iter().map(|recorder| line(mtm, recorder.ivars().command.title(), None, recorder)).collect();
+        recorders.iter().map(|recorder| line(mtm, action_title(recorder.ivars().action), None, recorder)).collect();
     let global = form(mtm, "Global", &rows);
     let restore = unsafe {
         NSButton::buttonWithTitle_target_action(

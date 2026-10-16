@@ -13,10 +13,6 @@ path = "src/lib.rs"
 name = "LiveWall"
 path = "src/main.rs"
 
-[[bin]]
-name = "lwui"
-path = "src/bin/lwui.rs"
-
 [[test]]
 name = "e2e_desktop"
 path = "tests/e2e_desktop.rs"
@@ -61,6 +57,9 @@ objc2-foundation = { workspace = true, features = [
   "NSData",
   "NSURL",
   "NSValue",
+  "NSBundle",
+  "NSAppleEventDescriptor",
+  "NSAppleEventManager",
   "NSGeometry",
   "NSOperation",
   "NSTimer",
@@ -166,6 +165,9 @@ objc2-core-graphics = { workspace = true, features = [
   "CGGeometry",
   "CGDirectDisplay",
   "CGImage",
+  "CGContext",
+  "CGColorSpace",
+  "CGBitmapContext",
 ] }
 objc2-core-media = { workspace = true, features = [
   "std",
@@ -173,7 +175,19 @@ objc2-core-media = { workspace = true, features = [
   "CMTime",
   "CMFormatDescription",
   "CMSampleBuffer",
+  "CMBlockBuffer",
   "objc2",
+] }
+objc2-core-video = { workspace = true, features = [
+  "std",
+  "CVBase",
+  "CVBuffer",
+  "CVImageBuffer",
+  "CVPixelBuffer",
+  "CVPixelBufferPool",
+  "CVReturn",
+  "objc2",
+  "objc2-core-graphics",
 ] }
 objc2-core-audio = { workspace = true, features = [
   "std",
@@ -198,7 +212,10 @@ objc2-av-foundation = { workspace = true, features = [
   "AVAssetReader",
   "AVAssetReaderOutput",
   "AVAssetImageGenerator",
+  "AVAssetWriter",
+  "AVAssetWriterInput",
   "AVMediaFormat",
+  "AVVideoSettings",
   "AVAsynchronousKeyValueLoading",
   "AVPlayer",
   "AVPlayerItem",
@@ -206,9 +223,11 @@ objc2-av-foundation = { workspace = true, features = [
   "AVPlayerLooper",
   "AVAnimation",
   "block2",
+  "dispatch2",
   "objc2-core-media",
   "objc2-core-foundation",
   "objc2-core-graphics",
+  "objc2-core-video",
   "objc2-quartz-core",
 ] }
 objc2-image-io = { workspace = true, features = [
@@ -230,6 +249,8 @@ objc2-video-toolbox = { workspace = true, features = [
   "objc2",
   "objc2-core-media",
   "VTDecompressionSession",
+  "VTCompressionProperties",
+  "VTUtilities",
 ] }
 plist.workspace = true
 block2.workspace = true

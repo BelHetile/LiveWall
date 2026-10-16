@@ -13,9 +13,9 @@ use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
-use crate::ui::fixture::Library;
 use crate::ui::palette::Look;
 use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, lock_tip, showing};
+use crate::ui::view::Library;
 use crate::ui::widgets::{self, Weight};
 
 const PILL_WIDTH: CGFloat = 124.0;
@@ -271,7 +271,7 @@ impl Toolbar {
         self.desktop.view.setToolTip(Some(&NSString::from_str(&tip)));
         let lock_index = library.lock();
         let screen = lock_index.map(|index| &library.items[index]).map(|entry| {
-            let image = library.still.as_ref().map_or(entry.image.as_deref(), |still| Some(&*still.image));
+            let image = library.lock.as_ref().and_then(|lock| lock.image.as_deref()).or(entry.image.as_deref());
             return (entry.title.clone(), image);
         });
         self.screen.update(lock_index, screen, "Lock Screen", 0, None);

@@ -1,33 +1,33 @@
-use std::path::Path;
 use std::ptr::NonNull;
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
 use objc2_foundation::NSArray;
-use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(try_from = "String")]
+use crate::model::{Appearance, AppearanceMode};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rgb {
     r: f64,
     g: f64,
     b: f64,
 }
 
-impl TryFrom<String> for Rgb {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
+impl Rgb {
+    pub fn parse(text: &str) -> Option<Self> {
         let hex = text.trim().trim_start_matches('#');
         if hex.len() != 6 {
-            return Err(format!("expected #RRGGBB, got '{text}'"));
+            return None;
         }
-        let value = u32::from_str_radix(hex, 16).map_err(|_| format!("invalid hex color '{text}'"))?;
-        return Ok(Self::hex(value));
+        return u32::from_str_radix(hex, 16).ok().map(Self::hex);
     }
-}
 
-impl Rgb {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn to_hex(self) -> String {
+        let byte = |channel: f64| (channel.clamp(0.0, 1.0) * 255.0).round() as u32;
+        return format!("#{:02X}{:02X}{:02X}", byte(self.r), byte(self.g), byte(self.b));
+    }
+
     const WHITE: Self = Self::hex(0x00FF_FFFF);
     const INK: Self = Self::hex(0x001A_181E);
     const PAPER: Self = Self::hex(0x00F4_F2F6);
@@ -69,18 +69,11 @@ impl Rgb {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub accent: Rgb,
     pub canvas: Rgb,
-    #[serde(default)]
     pub accent_dark: Option<Rgb>,
-}
-
-impl Default for Palette {
-    fn default() -> Self {
-        return Self::BUILT_IN[0].1;
-    }
 }
 
 impl Palette {
@@ -99,11 +92,6 @@ impl Palette {
 
     pub fn custom(accent: Rgb, canvas: Rgb) -> Self {
         return Self { accent, canvas, accent_dark: None };
-    }
-
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        return serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()));
     }
 }
 
@@ -146,14 +134,26 @@ pub struct Look {
 impl Look {
     pub const MODES: [&str; 3] = ["System", "Light", "Dark"];
 
-    pub fn new(mode: usize, custom: Option<Palette>) -> Self {
+    pub fn new(appearance: &Appearance) -> Self {
         let mut themes: Vec<(String, Palette)> =
             Palette::BUILT_IN.iter().map(|(name, palette)| ((*name).to_string(), *palette)).collect();
-        let selected = if custom.is_some() { themes.len() } else { 0 };
-        let custom = custom.unwrap_or_else(|| Palette::custom(Rgb::hex(0x0086_6A8C), Rgb::hex(0x0094_7C8E)));
-        themes.push(("Custom".to_string(), custom));
+        let accent = Rgb::parse(&appearance.accent).unwrap_or(Rgb::hex(0x0086_6A8C));
+        let canvas = Rgb::parse(&appearance.canvas).unwrap_or(Rgb::hex(0x0094_7C8E));
+        themes.push(("Custom".to_string(), Palette::custom(accent, canvas)));
+        let selected = themes.iter().position(|(name, _)| name.eq_ignore_ascii_case(&appearance.theme)).unwrap_or(0);
+        let mode = match appearance.mode {
+            AppearanceMode::System => 0,
+            AppearanceMode::Light => 1,
+            AppearanceMode::Dark => 2,
+        };
         let colors = Theme::new(themes[selected].1);
         return Self { mode, theme: selected, themes, colors };
+    }
+
+    pub fn differs(&self, other: &Self) -> bool {
+        return self.mode != other.mode
+            || self.theme != other.theme
+            || self.themes.iter().map(|(_, palette)| palette).ne(other.themes.iter().map(|(_, palette)| palette));
     }
 
     pub fn custom_index(&self) -> usize {
@@ -162,19 +162,6 @@ impl Look {
 
     pub fn palette(&self) -> Palette {
         return self.themes[self.theme].1;
-    }
-
-    pub fn select(&mut self, theme: usize) {
-        if let Some((_, palette)) = self.themes.get(theme) {
-            self.theme = theme;
-            self.colors = Theme::new(*palette);
-        }
-    }
-
-    pub fn set_custom(&mut self, palette: Palette) {
-        let index = self.custom_index();
-        self.themes[index].1 = palette;
-        self.select(index);
     }
 }
 

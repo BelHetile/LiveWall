@@ -91,15 +91,19 @@ pub enum HotkeyAction {
     TogglePause,
     ToggleMute,
     Random,
+    VolumeUp,
+    VolumeDown,
 }
 
 impl HotkeyAction {
-    pub const ALL: [HotkeyAction; 5] = [
+    pub const ALL: [HotkeyAction; 7] = [
         HotkeyAction::Next,
         HotkeyAction::Previous,
         HotkeyAction::TogglePause,
         HotkeyAction::ToggleMute,
         HotkeyAction::Random,
+        HotkeyAction::VolumeUp,
+        HotkeyAction::VolumeDown,
     ];
 }
 
@@ -115,6 +119,10 @@ pub struct Hotkeys {
     pub mute: Option<KeyCombo>,
     #[serde(default)]
     pub random: Option<KeyCombo>,
+    #[serde(default)]
+    pub volume_up: Option<KeyCombo>,
+    #[serde(default)]
+    pub volume_down: Option<KeyCombo>,
 }
 
 impl Hotkeys {
@@ -125,6 +133,8 @@ impl Hotkeys {
             HotkeyAction::TogglePause => self.pause.as_ref(),
             HotkeyAction::ToggleMute => self.mute.as_ref(),
             HotkeyAction::Random => self.random.as_ref(),
+            HotkeyAction::VolumeUp => self.volume_up.as_ref(),
+            HotkeyAction::VolumeDown => self.volume_down.as_ref(),
         };
     }
 
@@ -135,18 +145,30 @@ impl Hotkeys {
             HotkeyAction::TogglePause => self.pause = combo,
             HotkeyAction::ToggleMute => self.mute = combo,
             HotkeyAction::Random => self.random = combo,
+            HotkeyAction::VolumeUp => self.volume_up = combo,
+            HotkeyAction::VolumeDown => self.volume_down = combo,
         }
     }
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        let mut hotkeys = Self { next: None, previous: None, pause: None, mute: None, random: None };
+        let mut hotkeys = Self {
+            next: None,
+            previous: None,
+            pause: None,
+            mute: None,
+            random: None,
+            volume_up: None,
+            volume_down: None,
+        };
         hotkeys.set(HotkeyAction::Next, Some(KeyCombo::default_combo("right")));
         hotkeys.set(HotkeyAction::Previous, Some(KeyCombo::default_combo("left")));
         hotkeys.set(HotkeyAction::TogglePause, Some(KeyCombo::default_combo("p")));
         hotkeys.set(HotkeyAction::ToggleMute, Some(KeyCombo::default_combo("m")));
         hotkeys.set(HotkeyAction::Random, Some(KeyCombo::default_combo("r")));
+        hotkeys.set(HotkeyAction::VolumeUp, Some(KeyCombo::default_combo("up")));
+        hotkeys.set(HotkeyAction::VolumeDown, Some(KeyCombo::default_combo("down")));
         return hotkeys;
     }
 }

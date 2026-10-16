@@ -7,12 +7,13 @@ use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplicationDidChangeScreenParametersNotification, NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
     NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
-    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceScreensDidSleepNotification,
-    NSWorkspaceScreensDidWakeNotification,
+    NSWorkspaceDidTerminateApplicationNotification, NSWorkspaceDidWakeNotification,
+    NSWorkspaceScreensDidSleepNotification, NSWorkspaceScreensDidWakeNotification,
 };
 use objc2_foundation::{
     NSDistributedNotificationCenter, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior, NSObject,
-    NSObjectProtocol, NSOperationQueue, NSProcessInfoPowerStateDidChangeNotification, NSString,
+    NSObjectProtocol, NSOperationQueue, NSProcessInfoPowerStateDidChangeNotification,
+    NSProcessInfoThermalStateDidChangeNotification, NSString,
 };
 
 use crate::app::{Event, post};
@@ -36,6 +37,16 @@ define_class!(
         #[unsafe(method(screenUnlocked:))]
         fn screen_unlocked(&self, _notification: &NSNotification) {
             post(Event::ScreenUnlocked);
+        }
+
+        #[unsafe(method(screensaverStarted:))]
+        fn screensaver_started(&self, _notification: &NSNotification) {
+            post(Event::ScreensaverChanged(true));
+        }
+
+        #[unsafe(method(screensaverStopped:))]
+        fn screensaver_stopped(&self, _notification: &NSNotification) {
+            post(Event::ScreensaverChanged(false));
         }
     }
 );
@@ -117,7 +128,7 @@ impl Observers {
                 &wake_block,
             )
         };
-        subscriptions.push((workspace_center, wake));
+        subscriptions.push((workspace_center.clone(), wake));
 
         let app_center = NSNotificationCenter::defaultCenter();
         let screens_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
@@ -147,6 +158,33 @@ impl Observers {
         };
         subscriptions.push((center, power));
 
+        let thermal_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::ThermalChanged);
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        let thermal = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSProcessInfoThermalStateDidChangeNotification),
+                None,
+                Some(&queue),
+                &thermal_block,
+            )
+        };
+        subscriptions.push((center, thermal));
+
+        let wake_system_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            post(Event::SystemWake);
+        });
+        let wake_system = unsafe {
+            workspace_center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceDidWakeNotification),
+                None,
+                Some(&queue),
+                &wake_system_block,
+            )
+        };
+        subscriptions.push((workspace_center, wake_system));
+
         let lock_center = NSDistributedNotificationCenter::defaultCenter();
         let lock_observer = LockObserver::new(mtm);
         unsafe {
@@ -164,6 +202,20 @@ impl Observers {
                 None,
                 NSNotificationSuspensionBehavior::DeliverImmediately,
             );
+            lock_center.addObserver_selector_name_object_suspensionBehavior(
+                AsRef::<AnyObject>::as_ref(&*lock_observer),
+                sel!(screensaverStarted:),
+                Some(&NSString::from_str("com.apple.screensaver.didstart")),
+                None,
+                NSNotificationSuspensionBehavior::DeliverImmediately,
+            );
+            lock_center.addObserver_selector_name_object_suspensionBehavior(
+                AsRef::<AnyObject>::as_ref(&*lock_observer),
+                sel!(screensaverStopped:),
+                Some(&NSString::from_str("com.apple.screensaver.didstop")),
+                None,
+                NSNotificationSuspensionBehavior::DeliverImmediately,
+            );
         }
 
         return Self {
@@ -176,6 +228,18 @@ impl Observers {
 
     pub fn rebind_audio(&mut self) {
         self.audio.rebind();
+    }
+
+    pub fn refresh_audio(&mut self) {
+        self.audio.refresh();
+    }
+
+    pub fn settle_audio(&mut self) {
+        self.audio.settle();
+    }
+
+    pub fn audio_active(&self) -> bool {
+        return self.audio.active();
     }
 }
 

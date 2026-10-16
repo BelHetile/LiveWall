@@ -1,3 +1,4 @@
+pub mod apple;
 pub mod optimize;
 pub mod probe;
 pub mod thumb;

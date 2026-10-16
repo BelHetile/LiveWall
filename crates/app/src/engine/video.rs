@@ -7,7 +7,7 @@ use objc2_av_foundation::{
     AVQueuePlayer, AVURLAsset,
 };
 use objc2_core_foundation::CGRect;
-use objc2_core_media::CMTime;
+use objc2_core_media::{CMTime, kCMTimeZero};
 use objc2_foundation::{NSArray, NSString, NSURL};
 use objc2_quartz_core::CALayer;
 
@@ -138,6 +138,47 @@ impl VideoNode {
 
     pub fn current_time(&self) -> f64 {
         return unsafe { self.player.currentTime().seconds() };
+    }
+
+    pub fn nudge(&mut self) {
+        let time = self.current_time();
+        let zero = unsafe { kCMTimeZero };
+        unsafe {
+            self.player.seekToTime_toleranceBefore_toleranceAfter(CMTime::with_seconds(time.max(0.0), 600), zero, zero);
+            if self.playing {
+                self.player.play();
+                self.player.setRate(self.speed);
+            }
+        }
+    }
+
+    pub fn rebuild(&mut self, mtm: MainThreadMarker) {
+        let time = self.current_time();
+        if let Some(looper) = self.looper.take() {
+            unsafe { looper.disableLooping() };
+        }
+        let player = unsafe { AVQueuePlayer::new(mtm) };
+        unsafe {
+            self.player.pause();
+            self.player.removeAllItems();
+            player.setAutomaticallyWaitsToMinimizeStalling(false);
+            player.setRate(0.0);
+            player.setMuted(self.player.isMuted());
+            player.setVolume(self.player.volume());
+        }
+        for (_, layer) in &self.layers {
+            unsafe { layer.setPlayer(Some(&player)) };
+        }
+        self.player = player;
+        let player_item = unsafe { AVPlayerItem::playerItemWithAsset(&self.asset, mtm) };
+        self.looper = Some(unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&self.player, &player_item) });
+        unsafe {
+            self.player.seekToTime(CMTime::with_seconds(time.max(0.0), 600));
+            if self.playing {
+                self.player.play();
+                self.player.setRate(self.speed);
+            }
+        }
     }
 
     pub fn set_pending_seek(&mut self, seconds: f64) {

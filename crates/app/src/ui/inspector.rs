@@ -1,33 +1,31 @@
+use std::path::PathBuf;
 use std::ptr::NonNull;
-use std::sync::mpsc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlSize, NSEvent, NSFont, NSFontWeightRegular, NSImage, NSLayoutAttribute,
-    NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton, NSScreen, NSScrollView, NSSegmentSwitchTracking,
-    NSSegmentedControl, NSSlider, NSStackView, NSStackViewGravity, NSTextAlignment, NSView,
+    NSButton, NSColor, NSControlSize, NSEvent, NSFont, NSFontWeightRegular, NSLayoutAttribute, NSLineBreakMode, NSMenu,
+    NSMenuItem, NSPopUpButton, NSScreen, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
+    NSStackView, NSStackViewGravity, NSTextAlignment, NSView,
 };
 use objc2_av_foundation::{
-    AVAssetImageGenerator, AVLayerVideoGravityResizeAspectFill, AVPlayerItem, AVPlayerLayer, AVPlayerLooper,
-    AVQueuePlayer, AVURLAsset,
+    AVLayerVideoGravityResizeAspectFill, AVPlayerItem, AVPlayerLayer, AVPlayerLooper, AVQueuePlayer, AVURLAsset,
 };
-use objc2_core_foundation::{CFRetained, CGFloat, CGRect, CGSize};
-use objc2_core_graphics::CGImage;
-use objc2_core_media::{CMTime, kCMTimeZero};
-use objc2_foundation::{NSArray, NSError, NSString, NSTimer, NSURL};
+use objc2_core_foundation::{CGFloat, CGRect};
+use objc2_core_media::CMTime;
+use objc2_foundation::{NSArray, NSString, NSTimer, NSURL};
 use objc2_quartz_core::{CAAutoresizingMask, CALayer, kCAGravityResizeAspectFill};
 
 use proto::{FillMode, Geometry};
 
 use crate::geometry::{self, Size};
-use crate::model::ItemKind;
-use crate::ui::fixture::{Item, Library, Settings, Still};
+use crate::model::{ItemId, ItemKind};
 use crate::ui::palette::Theme;
 use crate::ui::state::{Filter, Scope, markers};
 use crate::ui::toolbar::scope_menu;
+use crate::ui::view::{Item, Library};
 use crate::ui::wall::{duration, kind_name, resolution};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
@@ -40,9 +38,16 @@ pub const VERTICAL: isize = 4;
 pub const ZOOM: isize = 5;
 pub const SCRUB: isize = 6;
 pub const RESET: isize = -100;
-const STILL_PX: CGFloat = 1280.0;
 pub const FRAME_TO_LOCK: &str = "Set This Frame as Lock Screen";
 const MODES: [&str; 5] = ["Fill", "Fit", "Stretch", "Center", "Custom"];
+pub const FILLS: [FillMode; 5] = [FillMode::Fill, FillMode::Fit, FillMode::Stretch, FillMode::Center, FillMode::Custom];
+
+type Shown = (ItemId, PathBuf, bool, bool);
+
+fn shown_key(library: &Library, selected: Option<usize>) -> Option<Shown> {
+    let item = library.items.get(selected?)?;
+    return Some((item.id, item.path.clone(), item.progress.is_some(), item.playable));
+}
 
 type Offset = (Retained<NSSlider>, Retained<NumberField>);
 
@@ -80,7 +85,7 @@ pub struct Inspector {
     pub target: Option<Scope>,
     backdrop: Retained<objc2_app_kit::NSBox>,
     content: Retained<NSStackView>,
-    shown: Option<usize>,
+    shown: Option<Shown>,
     player: Option<(Retained<AVQueuePlayer>, Retained<AVPlayerLooper>)>,
     timer: Option<Retained<NSTimer>>,
     playing: bool,
@@ -142,7 +147,8 @@ impl Inspector {
         target: &AnyObject,
     ) {
         let mtm = self.scroll.mtm();
-        let rebuilt = selected != self.shown || (selected.is_some() && self.controls.is_none());
+        let key = shown_key(library, selected);
+        let rebuilt = key != self.shown || (selected.is_some() && self.controls.is_none());
         if rebuilt {
             self.show(library, theme, selected, target);
         }
@@ -201,7 +207,7 @@ impl Inspector {
         let mtm = self.scroll.mtm();
         widgets::fade(&self.content);
         self.clear();
-        self.shown = selected;
+        self.shown = shown_key(library, selected);
         self.target = None;
         let Some(index) = selected else {
             self.empty(mtm);
@@ -248,7 +254,7 @@ impl Inspector {
             view.trailingAnchor().constraintLessThanOrEqualToAnchor(&header.trailingAnchor()).setActive(true);
         }
 
-        let (actions, destination) = actions(mtm, theme, video, target);
+        let (actions, destination) = actions(mtm, theme, video, item, target);
         let (playback, mute, volume, volume_value, speed, speed_value) = playback(mtm, theme, target);
         let (placement, modes, offsets) = placement(mtm, theme, target);
         let (library_row, folder) = library_row(mtm, target);
@@ -332,13 +338,13 @@ impl Inspector {
         controls.volume_value.show(volume);
         controls.speed.setDoubleValue(settings.speed);
         controls.speed_value.show(settings.speed);
-        controls.modes.setSelectedSegment(settings.fill);
-        let shifts = matches!(settings.fill, 0 | 3 | 4);
+        controls.modes.setSelectedSegment(fill_index(settings.mode));
+        let shifts = matches!(settings.mode, FillMode::Fill | FillMode::Center | FillMode::Custom);
         let (width, height) = reach(item);
         let values = [
             (settings.x * width, width, shifts && width > 0.0),
             (settings.y * height, height, shifts && height > 0.0),
-            (settings.zoom, 0.0, settings.fill == 4),
+            (settings.zoom, 0.0, settings.mode == FillMode::Custom),
         ];
         for ((control, value_field), (value, span, enabled)) in controls.offsets.iter().zip(values) {
             if control.tag() != ZOOM {
@@ -352,9 +358,8 @@ impl Inspector {
             value_field.setEnabled(enabled);
             widgets::alpha(value_field, if enabled { 1.0 } else { 0.4 });
         }
-        let changed = *settings != Settings::default();
-        controls.reset.setEnabled(changed);
-        widgets::alpha(&controls.reset, if changed { 1.0 } else { 0.45 });
+        controls.reset.setEnabled(item.changed);
+        widgets::alpha(&controls.reset, if item.changed { 1.0 } else { 0.45 });
         if let Some((player, _)) = &self.player {
             #[allow(clippy::cast_possible_truncation)]
             unsafe {
@@ -399,29 +404,13 @@ impl Inspector {
         }
     }
 
-    pub fn still(&self) -> Option<Still> {
+    pub fn time(&self) -> Option<f64> {
         let (player, _) = self.player.as_ref()?;
         let item = unsafe { player.currentItem() }?;
-        let time = unsafe { item.currentTime() };
-        let generator = unsafe { AVAssetImageGenerator::assetImageGeneratorWithAsset(&item.asset()) };
-        unsafe {
-            generator.setAppliesPreferredTrackTransform(true);
-            generator.setMaximumSize(CGSize::new(STILL_PX, STILL_PX));
-            generator.setRequestedTimeToleranceBefore(kCMTimeZero);
-            generator.setRequestedTimeToleranceAfter(kCMTimeZero);
-        }
-        let (sender, receiver) = mpsc::channel();
-        let block = RcBlock::new(move |image: *mut CGImage, _time: CMTime, _error: *mut NSError| {
-            let _ = sender.send(NonNull::new(image).map(|image| unsafe { CFRetained::retain(image) }));
-        });
-        unsafe { generator.generateCGImageAsynchronouslyForTime_completionHandler(time, &block) };
-        let image = receiver.recv().ok().flatten()?;
-        let seconds = unsafe { time.seconds() };
+        let seconds = unsafe { item.currentTime().seconds() };
         let length = unsafe { item.duration().seconds() };
-        return Some(Still {
-            time: if length.is_finite() && length > 0.0 { seconds % length } else { seconds },
-            image: NSImage::initWithCGImage_size(NSImage::alloc(), &image, CGSize::ZERO),
-        });
+        let time = if length.is_finite() && length > 0.0 { seconds % length } else { seconds };
+        return time.is_finite().then_some(time);
     }
 
     pub fn seek(&self, seconds: f64) {
@@ -511,11 +500,18 @@ fn actions(
     mtm: MainThreadMarker,
     theme: &Theme,
     video: bool,
+    item: &Item,
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSPopUpButton>) {
-    let wallpaper = widgets::button(mtm, "Set as Wallpaper", Some("photo.on.rectangle"), sel!(setWallpaper:), target);
+    let (title, icon, action) = match (item.playable, item.progress) {
+        (true, _) => ("Set as Wallpaper", "photo.on.rectangle", sel!(setWallpaper:)),
+        (false, None) => ("Optimize", "wand.and.sparkles", sel!(optimize:)),
+        (false, Some(_)) => ("Optimizing…", "wand.and.sparkles", sel!(optimize:)),
+    };
+    let wallpaper = widgets::button(mtm, title, Some(icon), action, target);
     widgets::prominent(&wallpaper, theme);
     wallpaper.setKeyEquivalent(&NSString::from_str("\r"));
+    wallpaper.setEnabled(item.playable || item.progress.is_none());
     let lock = widgets::button(mtm, "Lock Screen", Some("lock"), sel!(setLock:), target);
     lock.setToolTip(Some(&NSString::from_str("Set as Lock Screen")));
     lock.setAttributedTitle(&widgets::styled(
@@ -684,16 +680,8 @@ fn facts(item: &Item) -> (String, String) {
     }
     #[allow(clippy::cast_precision_loss)]
     secondary.push(format!("{:.1} MB", item.bytes as f64 / 1_048_576.0));
-    secondary.push(format!("Added {}", added(item.added)));
+    secondary.push(format!("Added {}", item.added.to_zoned(jiff::tz::TimeZone::system()).strftime("%-d %b %Y")));
     return (primary.join(" · "), secondary.join(" · "));
-}
-
-fn added(order: usize) -> String {
-    let days = i64::try_from(order).unwrap_or(0);
-    let base = jiff::civil::date(2026, 9, 1);
-    return base
-        .checked_add(jiff::Span::new().days(days * 2))
-        .map_or_else(|_| base.strftime("%-d %b %Y").to_string(), |day| day.strftime("%-d %b %Y").to_string());
 }
 
 fn reach(item: &Item) -> (f64, f64) {
@@ -703,17 +691,17 @@ fn reach(item: &Item) -> (f64, f64) {
         return Size::new(frame.size.width * scale, frame.size.height * scale);
     });
     let settings = &item.settings;
-    let mode = match settings.fill {
-        1 => FillMode::Fit,
-        2 => FillMode::Stretch,
-        3 => FillMode::Center,
-        4 => FillMode::Custom,
-        _ => FillMode::Fill,
-    };
-    let zoom = if settings.fill == 4 { settings.zoom } else { 1.0 };
     let media = Size::new(f64::from(item.width), f64::from(item.height));
-    let rect = geometry::resolve(mode, Geometry { x: 0.0, y: 0.0, zoom }, media, screen).rect;
+    let rect = geometry::resolve(settings.mode, Geometry { x: 0.0, y: 0.0, zoom: settings.zoom }, media, screen).rect;
     return (((rect.w - screen.w) / 2.0).max(0.0).round(), ((rect.h - screen.h) / 2.0).max(0.0).round());
+}
+
+fn fill_index(mode: FillMode) -> isize {
+    return FILLS
+        .iter()
+        .position(|candidate| *candidate == mode)
+        .and_then(|index| isize::try_from(index).ok())
+        .unwrap_or(0);
 }
 
 pub fn stored(item: &Item, tag: isize, value: f64) -> f64 {

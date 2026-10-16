@@ -3,11 +3,11 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use livewall::{App, BindOutcome, Event, Paths, cleanup, install, post, prepare, proto, serve};
+use livewall::{App, BindOutcome, Event, Paths, cleanup, install, post, prepare, proto, serve, terminating, ui, with};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate};
+use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSApplicationTerminateReply};
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -21,6 +21,27 @@ define_class!(
     unsafe impl NSObjectProtocol for Delegate {}
 
     unsafe impl NSApplicationDelegate for Delegate {
+        #[unsafe(method(applicationDidFinishLaunching:))]
+        fn did_finish_launching(&self, _notification: &NSNotification) {
+            ui::launched();
+        }
+
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(&self, _application: &NSApplication, _visible: bool) -> bool {
+            ui::reopen();
+            true
+        }
+
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _application: &NSApplication) -> NSApplicationTerminateReply {
+            if terminating() {
+                NSApplicationTerminateReply::TerminateNow
+            } else {
+                post(Event::Quit);
+                NSApplicationTerminateReply::TerminateCancel
+            }
+        }
+
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
             if let Some(path) = SOCKET_PATH.get() {
@@ -99,10 +120,14 @@ fn main() -> ExitCode {
         runtime.spawn(serve(listener));
         runtime.spawn(watch_signals());
 
+        with(|app| app.apply_dock());
+        if let Err(error) = ui::install(mtm) {
+            eprintln!("LiveWall: cannot build the library window: {error}");
+            return ExitCode::FAILURE;
+        }
         let application = NSApplication::sharedApplication(mtm);
         let delegate = Delegate::new(mtm);
         application.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let _ = application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         application.run();
     }
 

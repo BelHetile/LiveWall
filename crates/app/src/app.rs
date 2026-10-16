@@ -2,10 +2,11 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::NSApplication;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::NSTimer;
 use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
 use serde::Serialize;
@@ -13,19 +14,19 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::download;
-use crate::engine::{Engine, Playback};
+use crate::engine::{Engine, Playback, resolve_item};
 use crate::hotkey;
 use crate::i18n::{self, Strings};
 use crate::import;
 use crate::media::optimize;
 use crate::media::probe;
 use crate::menu::{Menu, MenuAction, MenuState};
-use crate::model::{Item, ItemId, ItemKind, Library, Settings, apply_patch};
+use crate::model::{Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
 use crate::paths::Paths;
 use crate::platform::detect;
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
-use crate::platform::spaces::SurfaceKey;
+use crate::platform::spaces::{self, SurfaceKey};
 use crate::platform::system::{self, LoginItemStatus};
 use crate::process;
 use crate::rules;
@@ -33,6 +34,7 @@ use crate::store;
 use crate::tools;
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
+const VOLUME_STEP: f32 = 0.1;
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -41,8 +43,15 @@ pub enum Event {
     SpacesChanged,
     FrontmostChanged,
     AudioChanged,
+    AudioSettled,
     DisplayAsleep(bool),
     LowPowerChanged,
+    ThermalChanged,
+    ScreensaverChanged(bool),
+    SystemWake,
+    OcclusionChanged,
+    OcclusionSettled,
+    WakeCheck { item: ItemId },
     GeometryTick,
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
@@ -58,6 +67,7 @@ pub enum Event {
     ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
     OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
     DownloadImported { job: String, items: Vec<Item> },
+    Reply(Request, Response),
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -69,7 +79,9 @@ pub struct App {
     muted: bool,
     display_asleep: bool,
     screen_locked: bool,
+    screensaver: bool,
     low_power: bool,
+    thermal_hot: bool,
     snapshot: rules::Snapshot,
     verdict: rules::Verdict,
     geometry_timer: Option<Retained<NSTimer>>,
@@ -115,7 +127,9 @@ impl App {
             paused: false,
             display_asleep: false,
             screen_locked: false,
+            screensaver: false,
             low_power: system::low_power_mode(),
+            thermal_hot: system::thermal_hot(),
             snapshot: rules::Snapshot::default(),
             verdict: rules::Verdict::default(),
             geometry_timer: None,
@@ -140,32 +154,7 @@ impl App {
 
     fn handle(&mut self, event: Event) {
         match event {
-            Event::Quit => {
-                self.engine.restore_desktop();
-                process::kill_all();
-                quit();
-            }
-            Event::DisplayChanged => {
-                self.sync(false);
-                self.refresh_rules();
-            }
-            Event::SpacesChanged => {
-                self.sync(true);
-                self.refresh_rules();
-            }
-            Event::FrontmostChanged | Event::GeometryTick => self.refresh_rules(),
-            Event::AudioChanged => {
-                self.observers.rebind_audio();
-                self.refresh_rules();
-            }
-            Event::DisplayAsleep(asleep) => {
-                self.display_asleep = asleep;
-                self.refresh_rules();
-            }
-            Event::LowPowerChanged => {
-                self.low_power = system::low_power_mode();
-                self.refresh_rules();
-            }
+            Event::Quit => self.shutdown(),
             Event::VideoLoaded { item } => {
                 let playback = self.playback();
                 self.engine.on_video_loaded(item, &self.library, &playback);
@@ -174,19 +163,10 @@ impl App {
             Event::GifTick { item } => self.engine.on_gif_tick(item),
             Event::StillReady { item, path } => {
                 self.engine.on_still_ready(item, &path.to_string_lossy(), &self.library);
+                crate::ui::changed();
             }
             Event::StillFailed { path } => self.engine.on_still_failed(&path),
             Event::DesktopVerify => self.engine.on_desktop_verify(),
-            Event::ScreenLocked => {
-                self.screen_locked = true;
-                self.engine.on_lock();
-                self.refresh_rules();
-            }
-            Event::ScreenUnlocked => {
-                self.screen_locked = false;
-                self.engine.on_unlock(&self.library);
-                self.refresh_rules();
-            }
             Event::VideoUnloadTick { item } => {
                 let playback = self.playback();
                 self.engine.on_unload_tick(item, &self.library, &playback);
@@ -197,6 +177,7 @@ impl App {
                 self.engine.refresh_playback(&self.library, &playback);
                 self.refresh_power();
             }
+            Event::WakeCheck { item } => self.engine.on_wake_check(item),
             Event::Hotkey(action) => self.run_hotkey(action),
             Event::Menu(action) => self.run_menu(action),
             Event::Request(request, reply) => self.request(request, reply),
@@ -206,8 +187,41 @@ impl App {
             }
             Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
             Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
+            Event::Reply(request, response) => crate::ui::reply(&request, &response),
+            signal => self.handle_signal(&signal),
         }
         self.sync_menu();
+    }
+
+    fn handle_signal(&mut self, event: &Event) {
+        match *event {
+            Event::DisplayChanged => self.sync(false),
+            Event::SpacesChanged => self.sync(true),
+            Event::AudioChanged => {
+                self.observers.rebind_audio();
+                self.observers.refresh_audio();
+            }
+            Event::AudioSettled => self.observers.settle_audio(),
+            Event::DisplayAsleep(asleep) => self.display_asleep = asleep,
+            Event::LowPowerChanged => self.low_power = system::low_power_mode(),
+            Event::ThermalChanged => self.thermal_hot = system::thermal_hot(),
+            Event::ScreensaverChanged(active) => self.screensaver = active,
+            Event::OcclusionChanged if !self.engine.on_occlusion_changed() => return,
+            Event::OcclusionSettled if !self.engine.on_occlusion_settled() => return,
+            Event::ScreenLocked => {
+                self.screen_locked = true;
+                self.engine.on_lock();
+            }
+            Event::ScreenUnlocked => {
+                self.screen_locked = false;
+                self.engine.on_unlock(&self.library);
+            }
+            _ => {}
+        }
+        self.refresh_rules();
+        if matches!(*event, Event::DisplayAsleep(false) | Event::SystemWake | Event::ScreenUnlocked) {
+            self.engine.on_wake();
+        }
     }
 
     fn request(&mut self, request: Request, reply: oneshot::Sender<Response>) {
@@ -222,6 +236,17 @@ impl App {
                 let _ = reply.send(response);
             }
         }
+    }
+
+    pub fn submit(&mut self, request: Request) {
+        let (reply, receiver) = oneshot::channel();
+        let echo = request.clone();
+        self.request(request, reply);
+        self.handle.spawn(async move {
+            if let Ok(response) = receiver.await {
+                post(Event::Reply(echo, response));
+            }
+        });
     }
 
     fn start_import(&mut self, paths: Vec<String>, reply: oneshot::Sender<Response>) {
@@ -241,9 +266,11 @@ impl App {
         return ok(&AddReport { added, skipped: report.skipped, results: &report.results });
     }
 
-    fn add_items(&mut self, items: Vec<Item>) {
+    fn add_items(&mut self, mut items: Vec<Item>) {
         let mut queue = Vec::new();
-        for item in &items {
+        for item in &mut items {
+            item.volume = self.settings.volume;
+            item.speed = self.settings.speed;
             if item.needs_optimize && self.settings.optimize_on_import {
                 queue.push(item.id);
             }
@@ -288,6 +315,7 @@ impl App {
             Ok(optimized) => {
                 if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) {
                     entry.path = optimized.path;
+                    entry.kind = optimized.probe.kind;
                     entry.width = optimized.probe.width;
                     entry.height = optimized.probe.height;
                     entry.fps = optimized.probe.fps;
@@ -300,6 +328,7 @@ impl App {
                     entry.optimize_reason = None;
                     entry.optimized = true;
                 }
+                self.engine.forget(item);
                 tracing::info!(%item, "optimize complete");
             }
             Err(reason) => {
@@ -375,8 +404,19 @@ impl App {
             return Err((ErrorCode::Media, "item does not need optimization".to_string()));
         }
         let tools_dir = self.paths.tools_dir();
-        let Some(ffmpeg) = tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) else {
-            return Err((ErrorCode::ToolMissing, "ffmpeg is not installed".to_string()));
+        let container =
+            std::path::Path::new(&entry.path).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase);
+        let route = if entry.kind == ItemKind::Gif {
+            optimize::Route::Apple
+        } else {
+            optimize::route(container.as_deref(), entry.codec.as_deref(), probe::av1_hardware())
+        };
+        let ffmpeg = match route {
+            optimize::Route::Apple => None,
+            optimize::Route::Ffmpeg => match tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) {
+                Some(path) => Some(path),
+                None => return Err((ErrorCode::ToolMissing, "ffmpeg is not installed".to_string())),
+            },
         };
         let fallback = optimize::Source {
             width: entry.width,
@@ -389,6 +429,7 @@ impl App {
         };
         let job = optimize::Job {
             item,
+            kind: entry.kind,
             input: PathBuf::from(&entry.path),
             thumbs_dir: self.paths.thumbs_dir(),
             ffmpeg,
@@ -438,7 +479,7 @@ impl App {
         return self.engine.max_display_px();
     }
 
-    fn run_hotkey(&mut self, action: HotkeyAction) {
+    pub fn run_hotkey(&mut self, action: HotkeyAction) {
         match action {
             HotkeyAction::Next => {
                 let _ = self.select(Selection::Next, None);
@@ -457,7 +498,23 @@ impl App {
                 let muted = self.muted;
                 let _ = self.set_muted(!muted);
             }
+            HotkeyAction::VolumeUp => self.nudge_volume(VOLUME_STEP),
+            HotkeyAction::VolumeDown => self.nudge_volume(-VOLUME_STEP),
         }
+    }
+
+    fn nudge_volume(&mut self, delta: f32) {
+        let Some(id) = self.showing_item() else { return };
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == id) else { return };
+        let base = if entry.muted { 0.0 } else { entry.volume };
+        let volume = (base + delta).clamp(0.0, 1.0);
+        let _ = self.set_item(&id.to_string(), Some(volume), None, Some(volume <= 0.0), None);
+    }
+
+    fn showing_item(&self) -> Option<ItemId> {
+        let (spaces, current) = self.desktops();
+        let space = spaces.into_iter().nth(current)?;
+        return resolve_item(&self.library, &SurfaceKey::new(space));
     }
 
     fn run_menu(&mut self, action: MenuAction) {
@@ -483,12 +540,14 @@ impl App {
                 let enabled = !self.settings.launch_at_login;
                 let _ = self.set_login_item(enabled);
             }
-            MenuAction::Quit => {
-                self.engine.restore_desktop();
-                process::kill_all();
-                quit();
-            }
+            MenuAction::Quit => self.shutdown(),
         }
+    }
+
+    fn shutdown(&mut self) {
+        self.engine.restore_desktop();
+        process::kill_all();
+        quit();
     }
 
     fn sync_menu(&self) {
@@ -523,7 +582,11 @@ impl App {
         let signals = detect::Signals {
             display_asleep: self.display_asleep,
             screen_locked: self.screen_locked,
+            screensaver: self.screensaver,
+            occluded: self.engine.occluded(),
+            thermal_hot: self.thermal_hot,
             low_power: self.low_power,
+            other_app_audio: self.observers.audio_active(),
         };
         return detect::snapshot(frame, signals);
     }
@@ -565,6 +628,7 @@ impl App {
         });
         let timer =
             unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(GEOMETRY_POLL_SECONDS, true, &block) };
+        crate::platform::apply_timer_tolerance(&timer, GEOMETRY_POLL_SECONDS);
         self.geometry_timer = Some(timer);
     }
 
@@ -572,6 +636,7 @@ impl App {
         let playback = self.playback();
         self.engine.sync(&self.library, &playback);
         self.engine.refresh_desktop(&self.library, force_desktop);
+        crate::ui::changed();
     }
 
     fn reapply(&mut self) {
@@ -590,12 +655,70 @@ impl App {
         if let Err(error) = store::save(&self.paths.library_file(), &self.library) {
             tracing::warn!(%error, "cannot save library");
         }
+        crate::ui::changed();
     }
 
     fn persist_settings(&self) {
         if let Err(error) = store::save(&self.paths.settings_file(), &self.settings) {
             tracing::warn!(%error, "cannot save settings");
         }
+        crate::ui::changed();
+    }
+
+    pub fn library(&self) -> &Library {
+        return &self.library;
+    }
+
+    pub fn settings(&self) -> &Settings {
+        return &self.settings;
+    }
+
+    pub fn paths(&self) -> &Paths {
+        return &self.paths;
+    }
+
+    pub fn desktops(&self) -> (Vec<String>, usize) {
+        let topology = self.engine.spaces();
+        let spaces: Vec<String> = spaces::plan(topology).into_iter().map(|spec| spec.key.space).collect();
+        let current = spaces.iter().position(|space| *space == topology.current).unwrap_or(0);
+        return (spaces, current);
+    }
+
+    pub fn optimize_progress(&self, item: ItemId) -> Option<f64> {
+        return match self.optimize.status(item)? {
+            optimize::JobState::Queued => Some(0.0),
+            optimize::JobState::Running { percent, .. } => Some(percent),
+            _ => None,
+        };
+    }
+
+    pub fn download_progress(&self) -> Vec<download::JobReport> {
+        return self
+            .downloads
+            .reports()
+            .into_iter()
+            .filter(|report| matches!(report.state, "queued" | "downloading" | "merging" | "importing"))
+            .collect();
+    }
+
+    pub fn ensure_thumbnail(&self, item: &Item) {
+        let (id, kind, path, duration) = (item.id, item.kind, item.path.clone(), item.duration);
+        let thumbs = self.paths.thumbs_dir();
+        self.handle.spawn(async move {
+            if crate::media::thumb::ensure(id, kind, path, duration, thumbs).await.is_some() {
+                crate::ui::changed();
+            }
+        });
+    }
+
+    pub fn apply_dock(&self) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let policy = if self.settings.show_in_dock {
+            NSApplicationActivationPolicy::Regular
+        } else {
+            NSApplicationActivationPolicy::Accessory
+        };
+        let _ = NSApplication::sharedApplication(mtm).setActivationPolicy(policy);
     }
 
     fn current_item(&self) -> Option<ItemId> {
@@ -618,8 +741,82 @@ impl App {
         return ok(&self.state());
     }
 
+    pub fn apply(
+        &mut self,
+        item: Option<&str>,
+        target: &ApplyTarget,
+        everywhere: bool,
+        transition: Option<&proto::Transition>,
+    ) -> Response {
+        let item = match item {
+            Some(value) => match value.parse::<Uuid>() {
+                Ok(id) => Some(id),
+                Err(_) => return Response::err(ErrorCode::Invalid, "invalid item id"),
+            },
+            None => None,
+        };
+        if let Some(id) = item
+            && let Some(entry) = self.library.items.iter().find(|entry| entry.id == id)
+            && !entry.playable
+        {
+            let reason =
+                entry.optimize_reason.clone().unwrap_or_else(|| "media is not playable until optimized".to_string());
+            return Response::err(ErrorCode::Media, reason);
+        }
+        self.apply_target(item, target);
+        if everywhere {
+            for assignment in self.library.placement.spaces.values_mut() {
+                assignment.item = None;
+            }
+        }
+        self.persist_library();
+        self.reapply_with(transition);
+        return ok(&serde_json::json!({ "applied": item.map(|id| id.to_string()) }));
+    }
+
+    pub fn create_folder(&mut self, name: String, item: Option<ItemId>) -> Uuid {
+        let id = self.library.create_folder(name);
+        if let Some(item) = item {
+            self.library.move_items(&[item], Some(id));
+        }
+        self.persist_library();
+        return id;
+    }
+
+    pub fn set_lock(&mut self, lock: Option<(ItemId, Option<f32>)>) -> Response {
+        let Some((item, time)) = lock else {
+            self.library.placement.lock = None;
+            self.persist_library();
+            self.reapply();
+            return ok(&serde_json::json!({ "lock": null }));
+        };
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
+            return Response::err(ErrorCode::NotFound, "no such item");
+        };
+        let time = time.unwrap_or(entry.still_time).max(0.0);
+        self.library.placement.lock = Some(LockAssignment { item, time });
+        self.persist_library();
+        self.reapply();
+        return ok(&serde_json::json!({ "lock": item.to_string(), "time": time }));
+    }
+
+    pub fn reset_item(&mut self, id: ItemId) -> Response {
+        let (volume, speed) = (self.settings.volume, self.settings.speed);
+        let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) else {
+            return Response::err(ErrorCode::NotFound, "no such item");
+        };
+        entry.volume = volume;
+        entry.speed = speed;
+        entry.muted = true;
+        entry.mode = FillMode::Fill;
+        entry.modes.clear();
+        self.persist_library();
+        self.reapply();
+        return ok(&serde_json::json!({ "item": id.to_string() }));
+    }
+
     #[allow(clippy::too_many_lines)]
-    fn dispatch(&mut self, request: &Request) -> Response {
+    pub fn dispatch(&mut self, request: &Request) -> Response {
         match request {
             Request::Status => {
                 return ok(&StatusReport {
@@ -674,8 +871,7 @@ impl App {
                 return ok(&serde_json::json!({ "moved": moved }));
             }
             Request::FolderCreate { name } => {
-                let id = self.library.create_folder(name.clone());
-                self.persist_library();
+                let id = self.create_folder(name.clone(), None);
                 return ok(&serde_json::json!({ "id": id.to_string(), "name": name }));
             }
             Request::FolderRename { id, name } => {
@@ -699,27 +895,7 @@ impl App {
                 return ok(&serde_json::json!({ "deleted": true, "moved": moved }));
             }
             Request::Apply { item, target, transition } => {
-                let item = match item {
-                    Some(value) => match value.parse::<Uuid>() {
-                        Ok(id) => Some(id),
-                        Err(_) => return Response::err(ErrorCode::Invalid, "invalid item id"),
-                    },
-                    None => None,
-                };
-                if let Some(id) = item
-                    && let Some(entry) = self.library.items.iter().find(|entry| entry.id == id)
-                    && !entry.playable
-                {
-                    let reason = entry
-                        .optimize_reason
-                        .clone()
-                        .unwrap_or_else(|| "media is not playable until optimized".to_string());
-                    return Response::err(ErrorCode::Media, reason);
-                }
-                self.apply_target(item, target);
-                self.persist_library();
-                self.reapply_with(transition.as_ref());
-                return ok(&serde_json::json!({ "applied": item.map(|id| id.to_string()) }));
+                return self.apply(item.as_deref(), target, false, transition.as_ref());
             }
             Request::Next { transition } => return self.select(Selection::Next, transition.as_ref()),
             Request::Previous { transition } => return self.select(Selection::Previous, transition.as_ref()),
@@ -757,6 +933,7 @@ impl App {
             Request::SettingsGet => return ok(&self.settings),
             Request::SettingsSet { patch } => {
                 let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
+                let (muted, dock) = (self.settings.muted, self.settings.show_in_dock);
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Response::err(ErrorCode::Invalid, message);
                 }
@@ -764,6 +941,12 @@ impl App {
                 let language = i18n::select_language(self.settings.language, &system::preferred_languages());
                 if language != previous {
                     self.strings = Strings::new(language);
+                }
+                if self.settings.muted != muted {
+                    self.muted = self.settings.muted;
+                }
+                if self.settings.show_in_dock != dock {
+                    self.apply_dock();
                 }
                 self.refresh_rules();
                 return ok(&self.settings);
@@ -799,7 +982,7 @@ impl App {
         }
     }
 
-    fn set_item(
+    pub fn set_item(
         &mut self,
         item: &str,
         volume: Option<f32>,
@@ -830,17 +1013,45 @@ impl App {
         return ok(&serde_json::json!({ "item": id.to_string() }));
     }
 
-    fn set_hotkey(&mut self, action: HotkeyAction, combo: Option<String>) -> Response {
+    pub fn set_hotkey(&mut self, action: HotkeyAction, combo: Option<String>) -> Response {
         let Some(text) = combo else {
+            return self.bind_hotkey(action, None);
+        };
+        return match hotkey::parse(&text) {
+            Ok(combo) => self.bind_hotkey(action, Some(combo)),
+            Err(error) => Response::err(ErrorCode::Invalid, error.to_string()),
+        };
+    }
+
+    pub fn restore_hotkeys(&mut self) {
+        let defaults = proto::Hotkeys::default();
+        for action in HotkeyAction::ALL {
+            let _ = self.bind_hotkey(action, None);
+        }
+        for action in HotkeyAction::ALL {
+            let _ = self.bind_hotkey(action, defaults.get(action).cloned());
+        }
+    }
+
+    pub fn record_hotkey(&mut self, recording: bool) {
+        for action in HotkeyAction::ALL {
+            if recording {
+                self.hotkeys.unregister(action);
+            } else if let Some(combo) = self.settings.hotkeys.get(action)
+                && let Err(error) = self.hotkeys.register(action, combo)
+            {
+                self.hotkey_failures.insert(action, register_message(error));
+            }
+        }
+    }
+
+    fn bind_hotkey(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) -> Response {
+        let Some(combo) = combo else {
             self.hotkeys.unregister(action);
             self.settings.hotkeys.set(action, None);
             self.hotkey_failures.remove(&action);
             self.persist_settings();
             return ok(&self.hotkeys_report());
-        };
-        let combo = match hotkey::parse(&text) {
-            Ok(combo) => combo,
-            Err(error) => return Response::err(ErrorCode::Invalid, error.to_string()),
         };
         if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
             return Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo));
@@ -937,6 +1148,7 @@ impl App {
         for assignment in self.library.placement.spaces.values_mut() {
             assignment.item = clear_if_removed(assignment.item, &parsed);
         }
+        self.library.placement.lock = self.library.placement.lock.filter(|lock| !parsed.contains(&lock.item));
         return before - self.library.items.len();
     }
 
@@ -1143,7 +1355,14 @@ async fn require_tool(
     return tools::install(kind, tools_dir).await.map_err(|error| (ErrorCode::ToolMissing, error));
 }
 
+static TERMINATING: AtomicBool = AtomicBool::new(false);
+
+pub fn terminating() -> bool {
+    return TERMINATING.load(Ordering::SeqCst);
+}
+
 fn quit() {
+    TERMINATING.store(true, Ordering::SeqCst);
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);
         app.terminate(None);
@@ -1158,6 +1377,10 @@ pub fn install(app: App) {
     APP.with(|cell| {
         *cell.borrow_mut() = Some(app);
     });
+}
+
+pub fn with<R>(body: impl FnOnce(&mut App) -> R) -> Option<R> {
+    return APP.with(|cell| cell.try_borrow_mut().ok().and_then(|mut slot| slot.as_mut().map(body)));
 }
 
 pub fn post(event: Event) {

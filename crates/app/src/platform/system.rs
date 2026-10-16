@@ -1,10 +1,17 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::{NSActivityOptions, NSLocale, NSObjectProtocol, NSProcessInfo, NSString};
+use objc2_foundation::{
+    NSActivityOptions, NSLocale, NSObjectProtocol, NSProcessInfo, NSProcessInfoThermalState, NSString,
+};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 pub fn low_power_mode() -> bool {
     return NSProcessInfo::processInfo().isLowPowerModeEnabled();
+}
+
+pub fn thermal_hot() -> bool {
+    let state = NSProcessInfo::processInfo().thermalState();
+    return state == NSProcessInfoThermalState::Serious || state == NSProcessInfoThermalState::Critical;
 }
 
 pub fn preferred_languages() -> Vec<String> {

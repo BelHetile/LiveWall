@@ -343,6 +343,8 @@ pub fn registration_id(action: HotkeyAction) -> u32 {
         HotkeyAction::TogglePause => 3,
         HotkeyAction::ToggleMute => 4,
         HotkeyAction::Random => 5,
+        HotkeyAction::VolumeUp => 6,
+        HotkeyAction::VolumeDown => 7,
     };
 }
 
@@ -490,7 +492,15 @@ mod tests {
 
     #[test]
     fn validation_requires_a_non_shift_modifier() {
-        let hotkeys = Hotkeys { next: None, previous: None, pause: None, mute: None, random: None };
+        let hotkeys = Hotkeys {
+            next: None,
+            previous: None,
+            pause: None,
+            mute: None,
+            random: None,
+            volume_up: None,
+            volume_down: None,
+        };
         assert_eq!(
             validate(&parse("shift+a").expect("parse"), HotkeyAction::Next, &hotkeys),
             Err(ValidationError::MissingModifier)

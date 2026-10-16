@@ -1,14 +1,23 @@
+use std::ptr::NonNull;
+
+use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSBackingStoreType, NSColor, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2_app_kit::{
+    NSBackingStoreType, NSColor, NSView, NSWindow, NSWindowCollectionBehavior,
+    NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState, NSWindowStyleMask,
+};
 use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSOperationQueue};
 use objc2_quartz_core::CALayer;
 
 pub struct WallpaperWindow {
     window: Retained<NSWindow>,
     root: Retained<CALayer>,
+    occlusion: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
 
 impl WallpaperWindow {
@@ -46,7 +55,19 @@ impl WallpaperWindow {
         window.setContentView(Some(&view));
         window.orderFrontRegardless();
 
-        return Self { window, root };
+        let block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            crate::app::post(crate::app::Event::OcclusionChanged);
+        });
+        let occlusion = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidChangeOcclusionStateNotification),
+                Some(AsRef::<AnyObject>::as_ref(&*window)),
+                Some(&NSOperationQueue::mainQueue()),
+                &block,
+            )
+        };
+
+        return Self { window, root, occlusion };
     }
 
     pub fn root(&self) -> &CALayer {
@@ -61,11 +82,23 @@ impl WallpaperWindow {
         return self.window.isOnActiveSpace();
     }
 
+    pub fn occluded(&self) -> bool {
+        return !self.window.occlusionState().contains(NSWindowOcclusionState::Visible);
+    }
+
     pub fn set_frame(&self, frame: CGRect) {
         self.window.setFrame_display(frame, false);
     }
 
     pub fn close(&self) {
         self.window.close();
+    }
+}
+
+impl Drop for WallpaperWindow {
+    fn drop(&mut self) {
+        unsafe {
+            NSNotificationCenter::defaultCenter().removeObserver(AsRef::<AnyObject>::as_ref(&*self.occlusion));
+        }
     }
 }

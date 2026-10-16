@@ -19,10 +19,10 @@ use objc2_quartz_core::{
     kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut, kCATransitionFade,
 };
 
-use crate::model::ItemKind;
-use crate::ui::fixture::{Item, Library};
+use crate::model::{ItemId, ItemKind};
 use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
+use crate::ui::view::{Download, Item, Library};
 use crate::ui::widgets::{self, Weight};
 
 const PADDING: CGFloat = 16.0;
@@ -60,10 +60,12 @@ fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
 
 pub struct TileIvars {
     index: Cell<usize>,
-    ident: usize,
+    ident: ItemId,
     plate: Retained<CALayer>,
     clip: Retained<CALayer>,
     image: Retained<CALayer>,
+    bar: Retained<CALayer>,
+    progress: Cell<Option<f64>>,
     ring: Retained<CALayer>,
     highlight: Retained<CALayer>,
     chips: Retained<NSStackView>,
@@ -143,6 +145,10 @@ impl TileView {
             unsafe { image.setContents(Some(thumb)) };
         }
         clip.addSublayer(&image);
+        let bar = CALayer::new();
+        bar.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent)));
+        bar.setHidden(true);
+        clip.addSublayer(&bar);
         plate.addSublayer(&clip);
 
         let ring = CALayer::new();
@@ -165,10 +171,12 @@ impl TileView {
 
         let this = Self::alloc(mtm).set_ivars(TileIvars {
             index: Cell::new(index),
-            ident: item.added,
+            ident: item.id,
             plate,
             clip,
             image,
+            bar,
+            progress: Cell::new(item.progress),
             ring,
             highlight,
             chips,
@@ -294,6 +302,21 @@ impl TileView {
             CATransaction::commit();
         }
         self.paint_selection();
+        self.paint_progress();
+    }
+
+    fn paint_progress(&self) {
+        let ivars = self.ivars();
+        let Some(fraction) = ivars.progress.get() else {
+            ivars.bar.setHidden(true);
+            return;
+        };
+        let width = ivars.clip.bounds().size.width * fraction.clamp(0.0, 1.0);
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        ivars.bar.setHidden(false);
+        ivars.bar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, 3.0)));
+        CATransaction::commit();
     }
 
     fn hover(&self, on: bool) {
@@ -330,6 +353,14 @@ impl TileView {
     fn content(&self, library: &Library, index: usize, scope: Scope, theme: &Theme) {
         let ivars = self.ivars();
         ivars.index.set(index);
+        let item = &library.items[index];
+        if let Some(thumb) = &item.image {
+            unsafe { ivars.image.setContents(Some(thumb)) };
+        }
+        ivars.name.setStringValue(&NSString::from_str(&item.title));
+        ivars.meta.setStringValue(&NSString::from_str(&meta_line(item)));
+        ivars.progress.set(item.progress);
+        self.paint_progress();
         let marker_list = markers(library, index, scope);
         let key = chip_key(&marker_list);
         if !ivars.stale.replace(false) && *ivars.chips_key.borrow() == key {
@@ -337,6 +368,7 @@ impl TileView {
         }
         *ivars.chips_key.borrow_mut() = key;
         *ivars.accent.borrow_mut() = theme.accent.clone();
+        ivars.bar.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
         ivars.clip.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.hairline)));
         ivars.ring.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
         ivars.highlight.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent_soft)));
@@ -495,8 +527,10 @@ pub struct WallIvars {
     scroll: Retained<NSScrollView>,
     document: Retained<DocumentView>,
     empty: Retained<NSView>,
+    status: Retained<NSView>,
+    status_text: Retained<NSTextField>,
     tiles: RefCell<Vec<Retained<TileView>>>,
-    shown: RefCell<(Vec<usize>, bool)>,
+    shown: RefCell<(Vec<ItemId>, bool)>,
     list: Cell<bool>,
     columns: Cell<usize>,
     keyboard: Cell<bool>,
@@ -555,7 +589,7 @@ impl WallView {
         let title = widgets::label(mtm, "No Wallpapers", 17.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
         let hint = widgets::label(
             mtm,
-            "Try a different search, filter or folder.",
+            "Add wallpapers, or try a different search, filter or folder.",
             12.0,
             &Weight::Regular,
             &NSColor::tertiaryLabelColor(),
@@ -564,6 +598,12 @@ impl WallView {
         let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, 8.0);
         empty.setHidden(true);
         empty.setAlphaValue(0.0);
+        let status_icon = widgets::symbol_view(mtm, "arrow.down.circle", 13.0, &NSColor::secondaryLabelColor());
+        let status_text = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
+        let status_row = widgets::stack(mtm, &[&status_icon, &status_text], false, 6.0);
+        status_row.setEdgeInsets(widgets::insets(6.0, 12.0, 6.0, 12.0));
+        let status = widgets::glass(mtm, &status_row, 16.0, None);
+        status.setHidden(true);
         let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
         let fade = CAGradientLayer::new();
         fade.setStartPoint(CGPoint::new(0.5, 1.0));
@@ -577,6 +617,8 @@ impl WallView {
             scroll,
             document,
             empty: widgets::view(&empty),
+            status,
+            status_text,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
             list: Cell::new(false),
@@ -590,7 +632,11 @@ impl WallView {
         this.addSubview(&ivars.scroll);
         this.addSubview(&ivars.empty);
         this.addSubview(&ivars.shade);
+        this.addSubview(&ivars.status);
         this.paint(theme);
+        ivars.status.setTranslatesAutoresizingMaskIntoConstraints(false);
+        ivars.status.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
+        ivars.status.bottomAnchor().constraintEqualToAnchor_constant(&this.bottomAnchor(), -18.0).setActive(true);
         widgets::pin(&canvas, &this, 0.0);
         widgets::pin(&ivars.scroll, &this, 0.0);
         ivars.empty.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -712,10 +758,11 @@ impl WallView {
     ) {
         let mtm = self.mtm();
         let ivars = self.ivars();
-        let key = (visible.to_vec(), list);
+        let key = (visible.iter().map(|index| library.items[*index].id).collect::<Vec<_>>(), list);
         let morph = *ivars.shown.borrow() != key;
         *ivars.shown.borrow_mut() = key;
-        let mut previous: HashMap<usize, Retained<TileView>> = ivars
+        self.show_downloads(&library.downloads);
+        let mut previous: HashMap<ItemId, Retained<TileView>> = ivars
             .tiles
             .borrow_mut()
             .drain(..)
@@ -727,7 +774,7 @@ impl WallView {
         let mut tiles: Vec<Retained<TileView>> = Vec::with_capacity(visible.len());
         let mut entering: Vec<Retained<TileView>> = Vec::new();
         for index in visible {
-            if let Some(tile) = previous.remove(&library.items[*index].added) {
+            if let Some(tile) = previous.remove(&library.items[*index].id) {
                 tile.content(library, *index, scope, theme);
                 tiles.push(tile);
                 continue;
@@ -750,6 +797,22 @@ impl WallView {
             tile.fade(true);
         }
         self.rehover();
+    }
+
+    fn show_downloads(&self, downloads: &[Download]) {
+        let ivars = self.ivars();
+        let text = match downloads {
+            [] => None,
+            [only] => Some(format!("Downloading… {:.0}%", only.percent * 100.0)),
+            many => Some(format!("Downloading {} videos…", many.len())),
+        };
+        if let Some(text) = &text {
+            ivars.status_text.setStringValue(&NSString::from_str(text));
+        }
+        let hidden = text.is_none();
+        if ivars.status.isHidden() != hidden {
+            widgets::reveal(&ivars.status, !hidden);
+        }
     }
 
     fn show_empty(&self, show: bool) {

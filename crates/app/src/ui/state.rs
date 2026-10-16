@@ -1,5 +1,5 @@
 use crate::model::ItemKind;
-use crate::ui::fixture::{Library, Target};
+use crate::ui::view::{Library, Target};
 use crate::ui::wall::duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -146,7 +146,8 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
 
 pub fn lock_tip(library: &Library) -> String {
     return library
-        .still
+        .lock
         .as_ref()
-        .map_or_else(|| "Lock Screen".to_string(), |still| format!("Lock Screen · Frame at {}", duration(still.time)));
+        .filter(|lock| lock.time > 0.0)
+        .map_or_else(|| "Lock Screen".to_string(), |lock| format!("Lock Screen · Frame at {}", duration(lock.time)));
 }

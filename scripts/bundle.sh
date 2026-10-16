@@ -20,7 +20,7 @@ cp target/release/LiveWall "$app/Contents/MacOS/LiveWall"
 cp target/release/lwctl "$app/Contents/MacOS/lwctl"
 cp resources/Info.plist "$app/Contents/Info.plist"
 
-cp resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+iconutil -c icns resources/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
 cp resources/status-icon.png "$app/Contents/Resources/status-icon.png"
 cp resources/status-icon@2x.png "$app/Contents/Resources/status-icon@2x.png"
 

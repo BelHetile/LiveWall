@@ -70,6 +70,12 @@ pub struct Snapshot {
     #[serde(default)]
     pub screen_locked: bool,
     #[serde(default)]
+    pub screensaver: bool,
+    #[serde(default)]
+    pub occluded: bool,
+    #[serde(default)]
+    pub thermal_hot: bool,
+    #[serde(default)]
     pub low_power: bool,
 }
 
@@ -78,6 +84,9 @@ pub struct Snapshot {
 pub enum Cause {
     DisplayAsleep,
     ScreenLocked,
+    Screensaver,
+    Occluded,
+    Thermal,
     LowPower,
     OtherAppAudio,
     Fullscreen,
@@ -91,6 +100,9 @@ impl Cause {
         return match self {
             Self::DisplayAsleep => "display-asleep".to_string(),
             Self::ScreenLocked => "screen-locked".to_string(),
+            Self::Screensaver => "screensaver".to_string(),
+            Self::Occluded => "occluded".to_string(),
+            Self::Thermal => "thermal".to_string(),
             Self::LowPower => "low-power".to_string(),
             Self::OtherAppAudio => "other-app-audio".to_string(),
             Self::Fullscreen => "fullscreen".to_string(),
@@ -105,6 +117,9 @@ impl Cause {
 pub struct Config {
     pub display_asleep: Action,
     pub screen_locked: Action,
+    pub screensaver: Action,
+    pub occlusion: Action,
+    pub thermal: Action,
     pub low_power: Action,
     pub other_app_audio: Action,
     pub fullscreen: Action,
@@ -120,6 +135,9 @@ impl Config {
         return Self {
             display_asleep: Action::Stop,
             screen_locked: Action::Stop,
+            screensaver: Action::Stop,
+            occlusion: Action::Pause,
+            thermal: toggle(settings.pause_when_hot),
             low_power: Action::Pause,
             other_app_audio: Action::Pause,
             fullscreen: toggle(settings.pause_when_fullscreen),
@@ -153,6 +171,15 @@ pub fn evaluate(snapshot: &Snapshot, config: &Config) -> Verdict {
     }
     if snapshot.screen_locked {
         consider(&mut action, &mut cause, config.screen_locked, Cause::ScreenLocked);
+    }
+    if snapshot.screensaver {
+        consider(&mut action, &mut cause, config.screensaver, Cause::Screensaver);
+    }
+    if snapshot.occluded {
+        consider(&mut action, &mut cause, config.occlusion, Cause::Occluded);
+    }
+    if snapshot.thermal_hot {
+        consider(&mut action, &mut cause, config.thermal, Cause::Thermal);
     }
     if snapshot.low_power {
         consider(&mut action, &mut cause, config.low_power, Cause::LowPower);
@@ -254,6 +281,37 @@ mod tests {
         let verdict = one(&snapshot, &base());
         assert_eq!(verdict.action, Action::Stop);
         assert_eq!(verdict.cause, Some(Cause::ScreenLocked));
+    }
+
+    #[test]
+    fn screensaver_stops() {
+        let snapshot = Snapshot { screensaver: true, ..make(false, 0.0) };
+        let verdict = one(&snapshot, &base());
+        assert_eq!(verdict.action, Action::Stop);
+        assert_eq!(verdict.cause, Some(Cause::Screensaver));
+    }
+
+    #[test]
+    fn occluded_pauses() {
+        let snapshot = Snapshot { occluded: true, ..make(false, 0.0) };
+        let verdict = one(&snapshot, &base());
+        assert_eq!(verdict.action, Action::Pause);
+        assert_eq!(verdict.cause, Some(Cause::Occluded));
+    }
+
+    #[test]
+    fn thermal_pauses_when_hot() {
+        let snapshot = Snapshot { thermal_hot: true, ..make(false, 0.0) };
+        let verdict = one(&snapshot, &base());
+        assert_eq!(verdict.action, Action::Pause);
+        assert_eq!(verdict.cause, Some(Cause::Thermal));
+    }
+
+    #[test]
+    fn thermal_ignored_when_disabled() {
+        let config = Config::from_settings(&Settings { pause_when_hot: false, ..Settings::default() });
+        let snapshot = Snapshot { thermal_hot: true, ..make(false, 0.0) };
+        assert_eq!(one(&snapshot, &config).action, Action::KeepRunning);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::ptr::NonNull;
+use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
@@ -30,6 +31,7 @@ pub struct GifNode {
     budget: usize,
     max_px: usize,
     index: usize,
+    paused_since: Option<Instant>,
     timer: Option<Retained<NSTimer>>,
     layers: Vec<(SurfaceKey, Retained<CALayer>)>,
 }
@@ -52,6 +54,7 @@ impl GifNode {
             budget: FRAME_CACHE_BUDGET,
             max_px,
             index: 0,
+            paused_since: None,
             timer: None,
             layers: Vec::new(),
         });
@@ -93,6 +96,7 @@ impl GifNode {
     }
 
     pub fn resume(&mut self) {
+        self.paused_since = None;
         if self.playing {
             return;
         }
@@ -105,9 +109,24 @@ impl GifNode {
             return;
         }
         self.playing = false;
+        self.paused_since = Some(Instant::now());
         if let Some(timer) = self.timer.take() {
             timer.invalidate();
         }
+    }
+
+    pub fn paused_seconds(&self) -> f64 {
+        return self.paused_since.map_or(0.0, |since| since.elapsed().as_secs_f64());
+    }
+
+    pub fn cached_bytes(&self) -> usize {
+        return self.total_bytes;
+    }
+
+    pub fn release_frames(&mut self) {
+        self.frames.fill(None);
+        self.frame_bytes.fill(0);
+        self.total_bytes = 0;
     }
 
     pub fn tick(&mut self) {
@@ -130,6 +149,7 @@ impl GifNode {
             post(Event::GifTick { item });
         });
         let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block) };
+        crate::platform::apply_timer_tolerance(&timer, delay);
         self.timer = Some(timer);
     }
 

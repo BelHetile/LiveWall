@@ -9,9 +9,9 @@ use objc2_av_foundation::{
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
 use objc2_core_media::{
     CMFormatDescription, kCMFormatDescriptionExtension_BitsPerComponent, kCMFormatDescriptionExtension_ColorPrimaries,
-    kCMFormatDescriptionExtension_Depth, kCMFormatDescriptionExtension_TransferFunction,
-    kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG, kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
-    kCMVideoCodecType_AV1,
+    kCMFormatDescriptionExtension_TransferFunction, kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG,
+    kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ, kCMVideoCodecType_AV1, kCMVideoCodecType_H264,
+    kCMVideoCodecType_HEVC, kCMVideoCodecType_VP9,
 };
 use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 use objc2_image_io::{CGImageSource, kCGImagePropertyPixelHeight, kCGImagePropertyPixelWidth};
@@ -42,6 +42,7 @@ pub struct Probe {
     pub decodable: bool,
     pub decode_error: Option<String>,
     pub av1_hw: bool,
+    pub bit_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -52,6 +53,7 @@ pub enum Reason {
     FpsAboveLimit,
     ResolutionAboveDisplay,
     ContainerUnsupported,
+    GifToVideo,
 }
 
 impl Reason {
@@ -62,6 +64,7 @@ impl Reason {
             Reason::FpsAboveLimit => "fps-above-limit",
             Reason::ResolutionAboveDisplay => "resolution-above-display",
             Reason::ContainerUnsupported => "container-unsupported",
+            Reason::GifToVideo => "gif-to-video",
         };
     }
 }
@@ -109,15 +112,19 @@ pub fn verdict(probe: &Probe, policy: Policy) -> Verdict {
         let reason = probe.decode_error.clone().unwrap_or_else(|| "cannot decode media".to_string());
         return Verdict::Unsupported { reason };
     }
+    if probe.kind == ItemKind::Gif {
+        return Verdict::NeedsOptimize { reasons: vec![Reason::GifToVideo] };
+    }
     if probe.kind != ItemKind::Video {
         return Verdict::Playable;
     }
     let mut reasons = Vec::new();
     if let Some(codec) = &probe.codec {
-        if codec == "av01" && !probe.av1_hw {
-            reasons.push(Reason::Av1WithoutHardware);
-        }
-        if matches!(codec.as_str(), "vp09" | "vp08") {
+        if codec == "av01" {
+            if !probe.av1_hw {
+                reasons.push(Reason::Av1WithoutHardware);
+            }
+        } else if !hardware_decodes(codec) {
             reasons.push(Reason::NonHardwareCodec);
         }
     }
@@ -135,6 +142,26 @@ pub fn verdict(probe: &Probe, policy: Policy) -> Verdict {
     return Verdict::NeedsOptimize { reasons };
 }
 
+fn codec_type(codec: &str) -> Option<u32> {
+    return match codec {
+        "avc3" => Some(kCMVideoCodecType_H264),
+        "hev1" => Some(kCMVideoCodecType_HEVC),
+        "av01" => Some(kCMVideoCodecType_AV1),
+        "vp09" => Some(kCMVideoCodecType_VP9),
+        _ => {
+            let bytes = codec.as_bytes();
+            if bytes.len() != 4 {
+                return None;
+            }
+            return Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+        }
+    };
+}
+
+pub fn hardware_decodes(codec: &str) -> bool {
+    return codec_type(codec).is_some_and(|codec_type| unsafe { VTIsHardwareDecodeSupported(codec_type) });
+}
+
 struct VideoFacts {
     codec: Option<String>,
     width: u32,
@@ -146,6 +173,7 @@ struct VideoFacts {
     duration: f64,
     decodable: bool,
     decode_error: Option<String>,
+    bit_rate: Option<f64>,
 }
 
 fn video_probe(path: &str) -> Probe {
@@ -176,6 +204,7 @@ fn video_probe(path: &str) -> Probe {
         decodable,
         decode_error: facts.as_ref().and_then(|facts| facts.decode_error.clone()).or(decode_error),
         av1_hw: av1_hardware(),
+        bit_rate: facts.as_ref().and_then(|facts| facts.bit_rate),
     };
 }
 
@@ -223,6 +252,7 @@ fn read_video_facts(asset: &AVAsset, tracks: &NSArray<AVAssetTrack>) -> Result<V
     let codec = fourcc(unsafe { description.media_sub_type() });
     let (bit_depth, color_primaries, transfer) = color_info(&description);
     let (decodable, decode_error) = decode_check(asset, &track);
+    let bit_rate = unsafe { track.estimatedDataRate() };
     return Ok(VideoFacts {
         codec: Some(codec),
         width: dim(width),
@@ -234,6 +264,7 @@ fn read_video_facts(asset: &AVAsset, tracks: &NSArray<AVAssetTrack>) -> Result<V
         duration: if duration.is_finite() { duration.max(0.0) } else { 0.0 },
         decodable,
         decode_error,
+        bit_rate: (bit_rate.is_finite() && bit_rate > 0.0).then(|| f64::from(bit_rate)),
     });
 }
 
@@ -318,6 +349,7 @@ fn image_probe(path: &str, kind: ItemKind) -> Probe {
         decodable: false,
         decode_error: None,
         av1_hw: false,
+        bit_rate: None,
     };
     let Some(url) = CFURL::from_file_path(path) else {
         probe.decode_error = Some("invalid path".to_string());
@@ -352,7 +384,6 @@ fn color_info(description: &CMFormatDescription) -> (Option<u32>, Option<String>
     };
     let extensions: &CFDictionary<CFString, CFType> = unsafe { extensions.cast_unchecked::<CFString, CFType>() };
     let bit_depth = cf_i64(extensions.get(unsafe { kCMFormatDescriptionExtension_BitsPerComponent }).as_deref())
-        .or_else(|| cf_i64(extensions.get(unsafe { kCMFormatDescriptionExtension_Depth }).as_deref()))
         .and_then(|value| u32::try_from(value).ok());
     let color_primaries = cf_string(extensions.get(unsafe { kCMFormatDescriptionExtension_ColorPrimaries }).as_deref());
     let transfer = cf_string(extensions.get(unsafe { kCMFormatDescriptionExtension_TransferFunction }).as_deref());
@@ -414,6 +445,7 @@ mod tests {
             decodable: true,
             decode_error: None,
             av1_hw,
+            bit_rate: None,
         };
     }
 
@@ -481,11 +513,30 @@ mod tests {
     }
 
     #[test]
-    fn images_and_gifs_are_playable() {
+    fn prores_without_hardware_decode_needs_optimize() {
+        let probe = video("ap4h", 1920, 1080, 30.0, false);
+        assert_eq!(verdict(&probe, policy()), Verdict::NeedsOptimize { reasons: vec![Reason::NonHardwareCodec] });
+    }
+
+    #[test]
+    fn images_are_playable_and_gifs_need_optimize() {
         let mut probe = video("png", 1920, 1080, 0.0, false);
         probe.kind = ItemKind::Image;
         probe.decodable = true;
         assert_eq!(verdict(&probe, policy()), Verdict::Playable);
+        let mut probe = video("gif", 1920, 1080, 0.0, false);
+        probe.kind = ItemKind::Gif;
+        probe.decodable = true;
+        assert_eq!(verdict(&probe, policy()), Verdict::NeedsOptimize { reasons: vec![Reason::GifToVideo] });
+    }
+
+    #[test]
+    fn codec_type_maps_alternative_fourccs() {
+        assert_eq!(codec_type("hev1"), Some(kCMVideoCodecType_HEVC));
+        assert_eq!(codec_type("avc3"), Some(kCMVideoCodecType_H264));
+        assert_eq!(codec_type("ap4h"), Some(u32::from_be_bytes(*b"ap4h")));
+        assert_eq!(codec_type("nop"), None);
+        assert!(!hardware_decodes("vp08"));
     }
 
     #[test]

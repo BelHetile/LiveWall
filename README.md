@@ -1,10 +1,11 @@
 # LiveWall
 
 Native macOS animated-wallpaper engine, rewritten in pure Rust. One `.app` owns
-the whole stack: per-desktop wallpaper surfaces on the main display, a menu-bar
-item, the IPC server, and `lwctl`. Video, GIF and image wallpapers with hardware
-decode; the desktop picture is taken over and restored on quit or after a crash.
-The GUI is deferred — `lwctl` drives every feature until it exists.
+the whole stack: per-desktop wallpaper surfaces on the main display, the library
+window, a menu-bar item, the IPC server, and `lwctl`. Video, GIF and image
+wallpapers with hardware decode; the desktop picture is taken over and restored on
+quit or after a crash. The library window runs inside the engine process; `lwctl`
+drives the same state over the socket.
 
 ## Requirements
 
@@ -18,7 +19,8 @@ The GUI is deferred — `lwctl` drives every feature until it exists.
     scripts/bundle.sh
 
 Builds a release binary and assembles `build/LiveWall.app` (`lwctl` lives in
-`Contents/MacOS`), then ad-hoc codesigns it.
+`Contents/MacOS`, `AppIcon.icns` is built from `resources/AppIcon.iconset`), then
+ad-hoc codesigns it.
 
 ## Run
 
@@ -81,8 +83,8 @@ override it. Topology changes, startup and crash recovery switch instantly.
 
 `~/Library/Application Support/LiveWall/`:
 
-    library.json      items, folders, placement
-    settings.json     settings, hotkeys, language, tool consent
+    library.json      items, folders, placement (per-desktop items, lock screen)
+    settings.json     settings, hotkeys, language, tool consent, appearance
     swap-state.json   captured original desktop pictures (for restore/crash recovery)
     Wallpapers/       imported media, as Wallpapers/<uuid>.<ext>
     Thumbs/           <item-id>.jpg thumbnails
@@ -92,3 +94,14 @@ override it. Topology changes, startup and crash recovery switch instantly.
     control.sock      IPC socket (mode 0600; parent directory 0700)
 
 Environment overrides: `LIVEWALL_DATA_DIR`, `LIVEWALL_SOCKET`, `LIVEWALL_BREW`.
+
+## Screenshots
+
+    scripts/ui-shot.sh OUT.png [ENV=VAL...]
+
+Launches the debug build with a temporary data directory and socket, imports
+`~/Documents/livewall-design/design/fixtures/Library` through `lwctl`, captures the
+library window and restores the desktop picture. Knobs: `LW_UI_SETTINGS_JSON`
+(seed `settings.json`), `LW_UI_SETTINGS` (open a Settings tab), `LW_UI_SCOPE`,
+`LW_UI_FOLDER`, `LW_UI_SEARCH`, `LW_UI_SELECT` (title), `LW_UI_SIZE`
+(`WxH`), `LW_UI_SETTLE` (seconds), `LW_UI_NO_APPLY`, `LW_UI_TMP`.

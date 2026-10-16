@@ -193,6 +193,8 @@ enum HotkeyActionArg {
     TogglePause,
     ToggleMute,
     Random,
+    VolumeUp,
+    VolumeDown,
 }
 
 #[derive(clap::Args, Clone)]
@@ -578,6 +580,8 @@ impl From<HotkeyActionArg> for HotkeyAction {
             HotkeyActionArg::TogglePause => Self::TogglePause,
             HotkeyActionArg::ToggleMute => Self::ToggleMute,
             HotkeyActionArg::Random => Self::Random,
+            HotkeyActionArg::VolumeUp => Self::VolumeUp,
+            HotkeyActionArg::VolumeDown => Self::VolumeDown,
         };
     }
 }

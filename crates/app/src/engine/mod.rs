@@ -8,6 +8,7 @@ pub mod window;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -30,6 +31,19 @@ pub struct Display {
     pub id: u32,
     pub frame: CGRect,
     pub scale: f64,
+}
+
+pub const OCCLUSION_SETTLE_SECONDS: f64 = 1.0;
+pub const WAKE_SETTLE_SECONDS: f64 = 3.0;
+pub const WAKE_RECHECK_SECONDS: f64 = 2.0;
+pub const WAKE_PROGRESS_EPSILON: f64 = 0.1;
+pub const REBUILD_LIMIT: usize = 2;
+pub const REBUILD_WINDOW: Duration = Duration::from_mins(10);
+
+#[derive(Clone, Copy)]
+struct WakeCheck {
+    baseline: f64,
+    attempts: u8,
 }
 
 struct Surface {
@@ -131,6 +145,11 @@ pub struct Engine {
     pending_starts: Vec<(SurfaceKey, ItemId)>,
     transitions: HashMap<SurfaceKey, ActiveTransition>,
     playing: usize,
+    occluded: bool,
+    occlusion_timer: Option<Retained<NSTimer>>,
+    wake: HashMap<ItemId, WakeCheck>,
+    wake_timers: HashMap<ItemId, Retained<NSTimer>>,
+    rebuilds: HashMap<ItemId, Vec<Instant>>,
 }
 
 pub struct Playback {
@@ -165,6 +184,11 @@ impl Engine {
             pending_starts: Vec::new(),
             transitions: HashMap::new(),
             playing: 0,
+            occluded: false,
+            occlusion_timer: None,
+            wake: HashMap::new(),
+            wake_timers: HashMap::new(),
+            rebuilds: HashMap::new(),
         };
     }
 
@@ -203,6 +227,173 @@ impl Engine {
         return self.playing;
     }
 
+    pub fn occluded(&self) -> bool {
+        return self.occluded;
+    }
+
+    pub fn on_occlusion_changed(&mut self) -> bool {
+        if self.occluded_now() {
+            if !self.occluded && self.occlusion_timer.is_none() {
+                self.schedule_occlusion_settle();
+            }
+            return false;
+        }
+        self.cancel_occlusion_settle();
+        if self.occluded {
+            self.occluded = false;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn on_occlusion_settled(&mut self) -> bool {
+        self.occlusion_timer = None;
+        if self.occluded_now() && !self.occluded {
+            self.occluded = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn occluded_now(&self) -> bool {
+        let active: Vec<bool> = self
+            .surfaces
+            .values()
+            .filter(|surface| surface.window.is_on_active_space())
+            .map(|surface| surface.window.occluded())
+            .collect();
+        if active.is_empty() {
+            return false;
+        }
+        return active.iter().all(|occluded| *occluded);
+    }
+
+    fn schedule_occlusion_settle(&mut self) {
+        let block = block2::RcBlock::new(|_timer: std::ptr::NonNull<NSTimer>| {
+            crate::app::post(crate::app::Event::OcclusionSettled);
+        });
+        let timer =
+            unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(OCCLUSION_SETTLE_SECONDS, false, &block) };
+        crate::platform::apply_timer_tolerance(&timer, OCCLUSION_SETTLE_SECONDS);
+        self.occlusion_timer = Some(timer);
+    }
+
+    fn cancel_occlusion_settle(&mut self) {
+        if let Some(timer) = self.occlusion_timer.take() {
+            timer.invalidate();
+        }
+    }
+
+    pub fn on_wake(&mut self) {
+        let playing: Vec<ItemId> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(&node.body, NodeBody::Video(video) if video.is_playing()))
+            .map(|(item, _)| *item)
+            .collect();
+        for item in playing {
+            self.start_wake_check(item);
+        }
+    }
+
+    pub fn on_wake_check(&mut self, item: ItemId) {
+        let Some(check) = self.wake.get(&item).copied() else { return };
+        let current = match self.nodes.get(&item).map(|node| &node.body) {
+            Some(NodeBody::Video(video)) if video.is_playing() => video.current_time(),
+            _ => {
+                self.wake.remove(&item);
+                return;
+            }
+        };
+        if advanced(check.baseline, current, WAKE_PROGRESS_EPSILON) {
+            self.wake.remove(&item);
+            return;
+        }
+        match check.attempts {
+            0 => {
+                let Some(baseline) = self.nudge_video(item) else {
+                    self.wake.remove(&item);
+                    return;
+                };
+                self.wake.insert(item, WakeCheck { baseline, attempts: 1 });
+                self.schedule_wake(item, WAKE_RECHECK_SECONDS);
+            }
+            1 => {
+                let now = Instant::now();
+                let ages: Vec<Duration> = self
+                    .rebuilds
+                    .get(&item)
+                    .map_or_else(Vec::new, |times| times.iter().map(|at| now.duration_since(*at)).collect());
+                if !rebuild_allowed(&ages, REBUILD_WINDOW, REBUILD_LIMIT) || !self.rebuild_video(item) {
+                    self.wake.remove(&item);
+                    return;
+                }
+                self.rebuilds.entry(item).or_default().push(now);
+                self.wake.remove(&item);
+                tracing::info!(%item, "rebuilt a stalled video after wake");
+            }
+            _ => {
+                self.wake.remove(&item);
+            }
+        }
+    }
+
+    fn start_wake_check(&mut self, item: ItemId) {
+        let Some(video) = self.nodes.get(&item).map(|node| &node.body) else { return };
+        let NodeBody::Video(video) = video else { return };
+        let baseline = video.current_time();
+        self.wake.insert(item, WakeCheck { baseline, attempts: 0 });
+        self.schedule_wake(item, WAKE_SETTLE_SECONDS);
+    }
+
+    fn schedule_wake(&mut self, item: ItemId, delay: f64) {
+        if let Some(timer) = self.wake_timers.remove(&item) {
+            timer.invalidate();
+        }
+        let block = block2::RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+            crate::app::post(crate::app::Event::WakeCheck { item });
+        });
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block) };
+        crate::platform::apply_timer_tolerance(&timer, delay);
+        self.wake_timers.insert(item, timer);
+    }
+
+    fn nudge_video(&mut self, item: ItemId) -> Option<f64> {
+        let Some(NodeBody::Video(video)) = self.nodes.get_mut(&item).map(|node| &mut node.body) else {
+            return None;
+        };
+        video.nudge();
+        return Some(video.current_time());
+    }
+
+    fn rebuild_video(&mut self, item: ItemId) -> bool {
+        let mtm = self.mtm;
+        let Some(NodeBody::Video(video)) = self.nodes.get_mut(&item).map(|node| &mut node.body) else {
+            return false;
+        };
+        video.rebuild(mtm);
+        return true;
+    }
+
+    pub fn forget(&mut self, item: ItemId) {
+        let fading: Vec<SurfaceKey> =
+            self.transitions.iter().filter(|(_, active)| active.old == item).map(|(key, _)| key.clone()).collect();
+        for key in fading {
+            self.finish_transition(&key);
+        }
+        for surface in self.surfaces.values_mut() {
+            if surface.item == Some(item) {
+                surface.item = None;
+            }
+        }
+        if let Some(node) = self.nodes.get_mut(&item) {
+            for key in node.keys() {
+                node.detach(&key);
+            }
+        }
+        self.prune_orphans();
+    }
+
     pub fn on_video_loaded(&mut self, item: ItemId, library: &Library, playback: &Playback) {
         if let Some(node) = self.nodes.get_mut(&item)
             && let NodeBody::Video(video) = &mut node.body
@@ -239,29 +430,39 @@ impl Engine {
 
     fn resolve_stills(&mut self, library: &Library, targets: &[Target]) -> std::collections::BTreeMap<String, String> {
         let mut stills = std::collections::BTreeMap::new();
+        let lock = library.placement.lock.and_then(|lock| {
+            let item = playable_item(library, Some(lock.item))?;
+            let entry = library.items.iter().find(|entry| entry.id == item)?;
+            return Some((entry, lock.time));
+        });
         for target in targets {
-            let surface = SurfaceKey::new(target.space.clone());
-            let Some(item_id) = playable_item(library, resolve_item(library, &surface)) else { continue };
-            let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
-            if let Some(path) = self.still_for(item) {
+            let (item, time) = if let Some(found) = lock {
+                found
+            } else {
+                let surface = SurfaceKey::new(target.space.clone());
+                let Some(item_id) = playable_item(library, resolve_item(library, &surface)) else { continue };
+                let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
+                (item, item.still_time)
+            };
+            if let Some(path) = self.still_for(item, time) {
                 stills.insert(target.space.clone(), path);
             }
         }
         return stills;
     }
 
-    fn still_for(&mut self, item: &crate::model::Item) -> Option<String> {
+    fn still_for(&mut self, item: &crate::model::Item, time: f32) -> Option<String> {
         if item.kind == ItemKind::Image && still::accepts(&item.path) {
             return Some(item.path.clone());
         }
-        let key = still::cache_key(&item.path, still::mtime_secs(&item.path), item.still_time);
+        let key = still::cache_key(&item.path, still::mtime_secs(&item.path), time);
         let dest = still::cache_file(&self.stills_dir, &key);
         if dest.exists() {
             return Some(dest.to_string_lossy().into_owned());
         }
         let dest = dest.to_string_lossy().into_owned();
         if self.still_pending.insert(dest.clone()) {
-            still::generate(item.id, item.kind, &item.path, item.still_time, PathBuf::from(&dest));
+            still::generate(item.id, item.kind, &item.path, time, PathBuf::from(&dest));
         }
         return None;
     }
@@ -304,11 +505,20 @@ impl Engine {
         self.desktop.restore(self.mtm);
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn on_unload_tick(&mut self, item: ItemId, library: &Library, playback: &Playback) {
         if self.unloaded.contains_key(&item) {
             return;
         }
+        let Some(kind) = self.nodes.get(&item).map(|node| node.kind) else { return };
+        match kind {
+            ItemKind::Video => self.unload_video_tick(item, library, playback),
+            ItemKind::Gif => self.unload_gif_tick(item, playback),
+            ItemKind::Image => {}
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn unload_video_tick(&mut self, item: ItemId, library: &Library, playback: &Playback) {
         let Some(node) = self.nodes.get(&item) else { return };
         let NodeBody::Video(video) = &node.body else { return };
         if video.is_playing() || !should_unload(video.paused_seconds(), playback.stop_after) {
@@ -325,6 +535,24 @@ impl Engine {
             slot.insert((dest.clone(), time));
             still::generate(item, ItemKind::Video, &entry.path, time as f32, PathBuf::from(&dest));
         }
+    }
+
+    fn unload_gif_tick(&mut self, item: ItemId, playback: &Playback) {
+        let Some(node) = self.nodes.get(&item) else { return };
+        let NodeBody::Gif(gif) = &node.body else { return };
+        let paused = gif.paused_seconds();
+        let playing = gif.playing;
+        let bytes = gif.cached_bytes();
+        if playing || bytes == 0 || !should_unload(paused, playback.stop_after) {
+            return;
+        }
+        self.unload_timers.remove(&item);
+        if let Some(node) = self.nodes.get_mut(&item)
+            && let NodeBody::Gif(gif) = &mut node.body
+        {
+            gif.release_frames();
+        }
+        tracing::info!(%item, bytes, "released paused GIF frames");
     }
 
     fn perform_unload(&mut self, item: ItemId, still_path: &str, time: f64) {
@@ -378,8 +606,9 @@ impl Engine {
         let block = block2::RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
             crate::app::post(crate::app::Event::VideoUnloadTick { item });
         });
-        let timer =
-            unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(f64::from(stop_after), false, &block) };
+        let interval = f64::from(stop_after);
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block) };
+        crate::platform::apply_timer_tolerance(&timer, interval);
         self.unload_timers.insert(item, timer);
     }
 
@@ -580,8 +809,17 @@ impl Engine {
         for item in orphans {
             self.nodes.remove(&item);
             self.cancel_unload(item);
+            self.cancel_wake(item);
             self.unload_waiting.remove(&item);
             self.unloaded.remove(&item);
+            self.wake.remove(&item);
+            self.rebuilds.remove(&item);
+        }
+    }
+
+    fn cancel_wake(&mut self, item: ItemId) {
+        if let Some(timer) = self.wake_timers.remove(&item) {
+            timer.invalidate();
         }
     }
 
@@ -609,8 +847,9 @@ impl Engine {
                     crate::app::post(crate::app::Event::TransitionDone { key: key.clone() });
                 }
             });
-            let timer =
-                unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(spec.timer_seconds(), false, &block) };
+            let interval = spec.timer_seconds();
+            let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block) };
+            crate::platform::apply_timer_tolerance(&timer, interval);
             self.transitions.insert(key, ActiveTransition { old, layer, timer });
         }
         self.prune_orphans();
@@ -687,10 +926,14 @@ impl Engine {
                     }
                 }
                 NodeBody::Gif(gif) => {
+                    let was = gif.playing;
                     if playing {
                         gif.resume();
                     } else {
                         gif.pause();
+                    }
+                    if was != gif.playing {
+                        transitions.push((*item, was, gif.playing));
                     }
                 }
                 NodeBody::Image(_) => {}
@@ -747,6 +990,14 @@ pub fn should_play(user_paused: bool, action: rules::Action, on_active_space: bo
 
 pub fn should_unload(paused_seconds: f64, stop_after: u32) -> bool {
     return stop_after > 0 && paused_seconds >= f64::from(stop_after);
+}
+
+pub fn advanced(baseline: f64, current: f64, epsilon: f64) -> bool {
+    return (current - baseline).abs() > epsilon;
+}
+
+pub fn rebuild_allowed(ages: &[Duration], window: Duration, limit: usize) -> bool {
+    return ages.iter().filter(|age| **age < window).count() < limit;
 }
 
 pub fn resolve_item(library: &Library, key: &SurfaceKey) -> Option<ItemId> {
@@ -845,6 +1096,31 @@ mod tests {
     #[test]
     fn unload_never_fires_when_disabled() {
         assert!(!should_unload(9999.0, 0));
+    }
+
+    #[test]
+    fn advanced_requires_movement_past_the_epsilon() {
+        assert!(advanced(1.0, 1.5, WAKE_PROGRESS_EPSILON));
+        assert!(!advanced(1.0, 1.05, WAKE_PROGRESS_EPSILON));
+        assert!(!advanced(1.0, 1.0, WAKE_PROGRESS_EPSILON));
+    }
+
+    #[test]
+    fn advanced_treats_a_loop_wrap_as_progress() {
+        assert!(advanced(4.9, 0.2, WAKE_PROGRESS_EPSILON));
+    }
+
+    #[test]
+    fn rebuilds_are_limited_to_two_per_window() {
+        assert!(rebuild_allowed(&[], REBUILD_WINDOW, REBUILD_LIMIT));
+        assert!(rebuild_allowed(&[Duration::from_secs(1)], REBUILD_WINDOW, REBUILD_LIMIT));
+        assert!(!rebuild_allowed(&[Duration::from_secs(1), Duration::from_secs(2)], REBUILD_WINDOW, REBUILD_LIMIT));
+    }
+
+    #[test]
+    fn rebuilds_outside_the_window_are_forgotten() {
+        let old = [Duration::from_secs(601), Duration::from_secs(602)];
+        assert!(rebuild_allowed(&old, REBUILD_WINDOW, REBUILD_LIMIT));
     }
 
     #[test]

@@ -95,12 +95,21 @@ pub struct Assignment {
     pub geometry_override: Option<Geometry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LockAssignment {
+    pub item: ItemId,
+    #[serde(default)]
+    pub time: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Placement {
     #[serde(default)]
     pub default: Assignment,
     #[serde(default)]
     pub spaces: BTreeMap<String, Assignment>,
+    #[serde(default)]
+    pub lock: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,6 +216,37 @@ impl Default for Tools {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppearanceMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    pub mode: AppearanceMode,
+    pub theme: String,
+    pub accent: String,
+    pub canvas: String,
+    pub list: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        return Self {
+            mode: AppearanceMode::System,
+            theme: "Violet".to_string(),
+            accent: "#866A8C".to_string(),
+            canvas: "#947C8E".to_string(),
+            list: false,
+        };
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 #[allow(clippy::struct_excessive_bools)]
@@ -220,16 +260,19 @@ pub struct Settings {
     pub pause_when_focused: bool,
     pub pause_when_maximized: bool,
     pub pause_when_fullscreen: bool,
+    pub pause_when_hot: bool,
     pub app_rules: Vec<AppRule>,
     pub optimize_on_import: bool,
     pub optimize_fps_limit: u32,
     pub stop_after_seconds: u32,
     pub launch_at_login: bool,
     pub open_library_at_launch: bool,
+    pub show_in_dock: bool,
     pub language: Option<Language>,
     pub hotkeys: Hotkeys,
     pub tools: Tools,
     pub transition: Transition,
+    pub appearance: Appearance,
 }
 
 impl Default for Settings {
@@ -244,16 +287,19 @@ impl Default for Settings {
             pause_when_focused: false,
             pause_when_maximized: true,
             pause_when_fullscreen: true,
+            pause_when_hot: true,
             app_rules: Vec::new(),
             optimize_on_import: true,
             optimize_fps_limit: 30,
             stop_after_seconds: 30,
             launch_at_login: false,
-            open_library_at_launch: false,
+            open_library_at_launch: true,
+            show_in_dock: true,
             language: None,
             hotkeys: Hotkeys::default(),
             tools: Tools::default(),
             transition: Transition::default(),
+            appearance: Appearance::default(),
         };
     }
 }
@@ -309,6 +355,7 @@ mod tests {
         assert!(!settings.shuffle);
         assert!(settings.pause_when_maximized);
         assert!(settings.pause_when_fullscreen);
+        assert!(settings.pause_when_hot);
         assert!(!settings.pause_when_focused);
         assert!(settings.optimize_on_import);
         assert_eq!(settings.optimize_fps_limit, 30);
