@@ -87,6 +87,7 @@ impl Ui {
             .and_then(|id| self.library.folder_ids.iter().position(|other| *other == id))
             .filter(|index| !self.library.sealed(*index));
         self.filter.list = appearance.list;
+        self.sync_dock(mtm);
         if let Scope::Space(space) = self.filter.scope
             && space >= self.library.desktops
         {
@@ -130,6 +131,26 @@ impl Ui {
             settings.sync_shortcuts(&self.hotkeys);
         }
         self.tick();
+    }
+
+    /// Applies the Dock setting right away while the library is open; turning the icon off keeps the window in
+    /// front instead of letting it fall behind the previous app.
+    fn sync_dock(&self, mtm: MainThreadMarker) {
+        let allowed = self.values.get("dock_icon").and_then(Value::as_bool).unwrap_or(true);
+        if DOCK_ICON.swap(allowed, Ordering::SeqCst) == allowed || !self.window.isVisible() {
+            return;
+        }
+        show_in_dock(mtm, true);
+        if !allowed {
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+            self.window.makeKeyAndOrderFront(None);
+            if let Some(settings) = &self.settings
+                && settings.window.isVisible()
+            {
+                settings.window.makeKeyAndOrderFront(None);
+            }
+        }
     }
 
     fn tick(&mut self) {
@@ -285,9 +306,20 @@ fn submit(work: impl FnOnce(&mut App) -> Option<Response> + Send + 'static) {
     });
 }
 
+/// Whether the user allows a Dock icon while the library is open (Settings → General).
+static DOCK_ICON: AtomicBool = AtomicBool::new(true);
+
+/// A Dock icon only while the library window is open, and only if the user wants one.
+pub fn wants_dock(window_open: bool, allowed: bool) -> bool {
+    return window_open && allowed;
+}
+
 pub fn show_in_dock(mtm: MainThreadMarker, visible: bool) {
-    let policy =
-        if visible { NSApplicationActivationPolicy::Regular } else { NSApplicationActivationPolicy::Accessory };
+    let policy = if wants_dock(visible, DOCK_ICON.load(Ordering::SeqCst)) {
+        NSApplicationActivationPolicy::Regular
+    } else {
+        NSApplicationActivationPolicy::Accessory
+    };
     let application = NSApplication::sharedApplication(mtm);
     if application.activationPolicy() != policy {
         let _ = application.setActivationPolicy(policy);
@@ -520,6 +552,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     }) else {
         return Err("LiveWall engine is not installed".to_string());
     };
+    DOCK_ICON.store(values.get("dock_icon").and_then(Value::as_bool).unwrap_or(true), Ordering::SeqCst);
     let look = Look::new(&appearance);
     windows::set_appearance(mtm, look.mode);
     let mut filter = initial_filter(&library);
@@ -641,4 +674,27 @@ pub fn relocalize() {
 
 pub fn reopen() {
     later(|ui, mtm| ui.open(mtm));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dock_icon_only_while_the_library_is_open_and_allowed() {
+        assert!(wants_dock(true, true));
+        assert!(!wants_dock(true, false), "menu bar only, even with the library open");
+        assert!(!wants_dock(false, true));
+        assert!(!wants_dock(false, false));
+    }
+
+    #[test]
+    fn the_dock_switch_patches_its_setting() {
+        for on in [true, false] {
+            match settings::change(settings::DOCK, &settings::Input::Flag(on)) {
+                Some(settings::Change::Patch(patch)) => assert_eq!(patch, json!({ "dock_icon": on })),
+                _ => panic!("the Dock switch must patch dock_icon"),
+            }
+        }
+    }
 }

@@ -682,6 +682,8 @@
 	<string>Океан</string>
 	<key>Off — enable in Settings or pick a wallpaper</key>
 	<string>Выключено — включите в настройках или выберите обои</string>
+	<key>Off: LiveWall stays in the menu bar only, also while the library is open</key>
+	<string>Выкл.: только значок в строке меню, даже с открытой библиотекой</string>
 	<key>Off: the desktop keeps playing them; the library, menu bar and lock screen still hide them</key>
 	<string>Выкл.: рабочий стол продолжает их показывать; библиотека, строка меню и экран блокировки их скрывают</string>
 	<key>On %@</key>
@@ -942,6 +944,8 @@
 	<string>Показать все</string>
 	<key>Show Inspector</key>
 	<string>Показать инспектор</string>
+	<key>Show in Dock</key>
+	<string>Показывать в Dock</string>
 	<key>Show in Finder</key>
 	<string>Показать в Finder</string>
 	<key>Show in the menu bar</key>

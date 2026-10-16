@@ -16,6 +16,8 @@ All notable changes to LiveWall are listed here. The format is based on
 - Rotate a video or image by 90° from the inspector, the context menu or `lwctl rotate`; videos are rewritten
   without re-encoding.
 - Settings → Privacy → *Take Private Wallpapers off the Desktop*.
+- Settings → General → *Show in Dock*: turn it off to keep LiveWall in the menu bar only, also while the library
+  window is open; it applies at once.
 
 ### Fixed
 - Locking a private folder no longer swaps the wallpaper on the desktop; rotation waits while a private wallpaper

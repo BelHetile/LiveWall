@@ -88,7 +88,8 @@ cd LiveWall
   carries the wrong orientation; videos are rewritten without re-encoding. Photo orientation (EXIF) is honoured.
 - **Rotation:** change the wallpaper on a timer, in order or shuffled.
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
-  while the library window is open. Any wallpaper can have its own shortcut that switches the desktop, the lock
+  while the library window is open, or never with *Settings → General → Show in Dock* off — LiveWall then
+  lives in the menu bar only. Any wallpaper can have its own shortcut that switches the desktop, the lock
   screen or both to it and back again — also for wallpapers in locked folders.
 - **Appearance:** light, dark or system; six color themes plus a custom accent. Save your own styles, and import
   or export them as `.livewall-style` files.

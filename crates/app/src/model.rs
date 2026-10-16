@@ -453,6 +453,8 @@ pub struct Settings {
     pub stop_after_seconds: u32,
     pub launch_at_login: bool,
     pub open_library_at_launch: bool,
+    /// Off: the app stays in the menu bar only, also while the library window is open.
+    pub dock_icon: bool,
     pub language: Option<Language>,
     pub hotkeys: Hotkeys,
     pub tools: Tools,
@@ -480,6 +482,7 @@ impl Default for Settings {
             stop_after_seconds: 30,
             launch_at_login: false,
             open_library_at_launch: true,
+            dock_icon: true,
             language: None,
             hotkeys: Hotkeys::default(),
             tools: Tools::default(),
@@ -761,6 +764,17 @@ mod tests {
         assert_eq!(settings, before);
         assert!(apply_patch(&mut settings, &serde_json::json!("not an object")).is_err());
         assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn dock_icon_is_on_by_default_and_patchable() {
+        assert!(Settings::default().dock_icon);
+        let older: Settings = serde_json::from_str(r#"{"open_library_at_launch":false}"#).expect("older settings");
+        assert!(older.dock_icon, "settings saved before the option keep the Dock icon");
+        let mut settings = older;
+        apply_patch(&mut settings, &serde_json::json!({ "dock_icon": false })).expect("patch");
+        assert!(!settings.dock_icon);
+        assert!(!settings.open_library_at_launch, "unrelated field kept");
     }
 
     #[test]

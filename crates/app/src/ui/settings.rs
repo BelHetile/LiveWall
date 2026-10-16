@@ -46,6 +46,7 @@ const LOCK_DISPLAY: isize = 19;
 const LOCK_IDLE: isize = 22;
 const IDLE_AFTER: isize = 23;
 const HIDE_DESKTOP: isize = 24;
+pub const DOCK: isize = 25;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
 pub const ACCENT: isize = 1;
@@ -85,6 +86,7 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
     return match (tag, input) {
         (LOGIN, Input::Flag(on)) => Some(Change::Login(*on)),
         (OPEN_LIBRARY, Input::Flag(on)) => patch(json!({ "open_library_at_launch": on })),
+        (DOCK, Input::Flag(on)) => patch(json!({ "dock_icon": on })),
         (FULLSCREEN, Input::Flag(on)) => patch(json!({ "pause_when_fullscreen": on })),
         (COVERED, Input::Flag(on)) => patch(json!({ "pause_when_maximized": on })),
         (HOT, Input::Flag(on)) => patch(json!({ "pause_when_hot": on })),
@@ -472,6 +474,7 @@ impl Settings {
             let on = match switch.tag() {
                 LOGIN => flag("launch_at_login"),
                 OPEN_LIBRARY => flag("open_library_at_launch"),
+                DOCK => flag("dock_icon"),
                 PAUSE => master,
                 FULLSCREEN => flag("pause_when_fullscreen"),
                 COVERED => flag("pause_when_maximized"),
@@ -750,6 +753,7 @@ fn pair(mtm: MainThreadMarker, knob: &Knob) -> Retained<NSView> {
 fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General {
     let login = switch(mtm, LOGIN, target);
     let open_library = switch(mtm, OPEN_LIBRARY, target);
+    let dock = switch(mtm, DOCK, target);
     let language = choice(mtm, &LANGUAGES.map(|(title, _)| title), LANGUAGE, target);
     let startup = form(
         mtm,
@@ -757,6 +761,12 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
         &[
             line(mtm, "Open at Login", None, &login),
             line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
+            line(
+                mtm,
+                "Show in Dock",
+                Some("Off: LiveWall stays in the menu bar only, also while the library is open"),
+                &dock,
+            ),
             line(mtm, "Language", None, &language),
         ],
     );
@@ -797,7 +807,7 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
     return General {
         page: page(mtm, &[&startup, &power, &library]),
         pause,
-        switches: vec![login, open_library, master, fullscreen, covered, hot, optimize],
+        switches: vec![login, open_library, dock, master, fullscreen, covered, hot, optimize],
         popups: vec![language, release, frame_rate],
     };
 }
