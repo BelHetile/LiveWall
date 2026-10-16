@@ -333,6 +333,7 @@ impl Default for Settings {
 impl Settings {
     pub fn normalize(&mut self) {
         self.optimize_fps_limit = self.optimize_fps_limit.clamp(15, 120);
+        self.rotate_minutes = self.rotate_minutes.clamp(1, 1440);
         self.privacy.idle_minutes = self.privacy.idle_minutes.clamp(1, 1440);
         self.transition.normalize();
     }
@@ -409,6 +410,16 @@ mod tests {
         let mut settings = Settings { optimize_fps_limit: 1, ..Settings::default() };
         settings.normalize();
         assert_eq!(settings.optimize_fps_limit, 15);
+    }
+
+    #[test]
+    fn normalize_clamps_rotate_minutes() {
+        let mut settings = Settings { rotate_minutes: 0, ..Settings::default() };
+        settings.normalize();
+        assert_eq!(settings.rotate_minutes, 1);
+        let mut settings = Settings { rotate_minutes: 100_000, ..Settings::default() };
+        settings.normalize();
+        assert_eq!(settings.rotate_minutes, 1440);
     }
 
     #[test]

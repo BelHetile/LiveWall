@@ -235,6 +235,10 @@ pub fn geometry_poll_needed(any_playing: bool, verdict: &Verdict, settings: &Set
     return any_playing || geometry_paused;
 }
 
+pub fn should_rotate(auto_rotate: bool, paused: bool, verdict: &Verdict, eligible: usize) -> bool {
+    return auto_rotate && !paused && verdict.action.keeps_running() && eligible >= 2;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +461,21 @@ mod tests {
         assert!(!geometry_poll_needed(false, &audio, &settings(true, true)));
         assert!(!geometry_poll_needed(false, &streaming, &settings(true, true)));
         assert!(!geometry_poll_needed(true, &paused, &settings(false, false)));
+    }
+
+    #[test]
+    fn rotation_requires_enabled_running_playback_and_two_items() {
+        let running = Verdict::default();
+        let paused = Verdict { action: Action::Pause, cause: Some(Cause::OtherAppAudio) };
+        let stopped = Verdict { action: Action::Stop, cause: Some(Cause::ScreenLocked) };
+        assert!(should_rotate(true, false, &running, 2));
+        assert!(should_rotate(true, false, &running, 10));
+        assert!(!should_rotate(false, false, &running, 2));
+        assert!(!should_rotate(true, true, &running, 2));
+        assert!(!should_rotate(true, false, &paused, 2));
+        assert!(!should_rotate(true, false, &stopped, 2));
+        assert!(!should_rotate(true, false, &running, 1));
+        assert!(!should_rotate(true, false, &running, 0));
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub enum Event {
     WakeCheck { item: ItemId },
     GeometryTick,
     IdleTick,
+    RotateTick,
     UnlockResult { success: bool, epoch: u64 },
     VideoLoaded { item: ItemId },
     GifTick { item: ItemId },
@@ -104,6 +105,7 @@ pub struct App {
     unlock_pending: Option<Retained<LAContext>>,
     unlock_epoch: u64,
     idle_timer: Option<Retained<NSTimer>>,
+    rotate_timer: Option<Retained<NSTimer>>,
     engine: Engine,
     nap: system::AppNap,
     observers: Observers,
@@ -156,6 +158,7 @@ impl App {
             unlock_pending: None,
             unlock_epoch: 0,
             idle_timer: None,
+            rotate_timer: None,
             library,
             settings,
             engine: Engine::new(mtm, paths),
@@ -173,6 +176,7 @@ impl App {
         app.sync(false);
         app.refresh_rules();
         app.sync_idle_timer();
+        app.restart_rotation();
         return (app, warnings);
     }
 
@@ -191,6 +195,7 @@ impl App {
             Event::Reply(request, response) => crate::ui::reply(&request, &response),
             Event::UnlockResult { success, epoch } => self.finish_unlock(success, epoch),
             Event::IdleTick => self.idle_tick(),
+            Event::RotateTick => self.rotate_tick(),
             Event::VideoLoaded { item } => {
                 let playback = self.playback();
                 self.engine.on_video_loaded(item, &self.library, &playback);
@@ -846,6 +851,7 @@ impl App {
         }
         self.persist_library();
         self.reapply_with(transition);
+        self.restart_rotation();
         return ok(&serde_json::json!({ "applied": item.map(|id| id.to_string()) }));
     }
 
@@ -902,6 +908,27 @@ impl App {
         if self.unlocked && self.settings.privacy.lock_on_idle && system::idle_seconds() >= limit {
             self.lock();
         }
+    }
+
+    fn rotation_settings(&self) -> (bool, u32, bool) {
+        return (self.settings.auto_rotate, self.settings.rotate_minutes, self.settings.shuffle);
+    }
+
+    fn restart_rotation(&mut self) {
+        cancel_timer(self.rotate_timer.take());
+        if self.settings.auto_rotate {
+            let interval = f64::from(self.settings.rotate_minutes) * 60.0;
+            self.rotate_timer = Some(schedule_timer(interval, true, || Event::RotateTick));
+        }
+    }
+
+    fn rotate_tick(&mut self) {
+        let eligible = self.selectable_ids().len();
+        if !rules::should_rotate(self.settings.auto_rotate, self.paused, &self.verdict, eligible) {
+            return;
+        }
+        let selection = if self.settings.shuffle { Selection::Random } else { Selection::Next };
+        let _ = self.select(selection, None);
     }
 
     fn deny(&self, request: &Request) -> Option<Response> {
@@ -1061,6 +1088,7 @@ impl App {
             Request::SettingsSet { patch } => {
                 let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
                 let dock = self.settings.show_in_dock;
+                let rotation = self.rotation_settings();
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Err(Response::err(ErrorCode::Invalid, message));
                 }
@@ -1071,6 +1099,9 @@ impl App {
                 }
                 if self.settings.show_in_dock != dock {
                     self.apply_dock();
+                }
+                if self.rotation_settings() != rotation {
+                    self.restart_rotation();
                 }
                 self.refresh_rules();
                 self.sync_idle_timer();
@@ -1295,14 +1326,18 @@ impl App {
         }
     }
 
-    fn select(&mut self, selection: Selection, transition: Option<&proto::Transition>) -> Response {
-        let ids: Vec<ItemId> = self
+    fn selectable_ids(&self) -> Vec<ItemId> {
+        return self
             .library
             .items
             .iter()
-            .filter(|item| self.unlocked || !self.library.is_private(item))
+            .filter(|item| item.playable && (self.unlocked || !self.library.is_private(item)))
             .map(|item| item.id)
             .collect();
+    }
+
+    fn select(&mut self, selection: Selection, transition: Option<&proto::Transition>) -> Response {
+        let ids = self.selectable_ids();
         if ids.is_empty() {
             return Response::err(ErrorCode::NotFound, "library is empty");
         }
@@ -1316,6 +1351,7 @@ impl App {
         self.library.remember(None, Some(ids[index]));
         self.persist_library();
         self.reapply_with(transition);
+        self.restart_rotation();
         return ok(&serde_json::json!({ "item": ids[index].to_string() }));
     }
 }
