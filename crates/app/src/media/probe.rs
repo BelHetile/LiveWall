@@ -155,8 +155,16 @@ fn codec_type(codec: &str) -> Option<u32> {
     };
 }
 
+#[cfg(not(test))]
 pub fn hardware_decodes(codec: &str) -> bool {
     return codec_type(codec).is_some_and(|codec_type| unsafe { VTIsHardwareDecodeSupported(codec_type) });
+}
+
+#[cfg(test)]
+pub fn hardware_decodes(codec: &str) -> bool {
+    return codec_type(codec).is_some_and(|codec_type| {
+        return codec_type == kCMVideoCodecType_H264 || codec_type == kCMVideoCodecType_HEVC;
+    });
 }
 
 struct VideoFacts {
