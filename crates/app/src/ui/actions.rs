@@ -2,8 +2,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBeep, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation, NSPopUpButton,
-    NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
+    NSApplication, NSBeep, NSButton, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
+    NSPopUpButton, NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
@@ -13,7 +13,8 @@ use crate::app::{self, Event, post};
 use crate::model::ItemId;
 use crate::ui::settings::{self, Change, Input};
 use crate::ui::state::{
-    KINDS, Scope, Sort, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RESET, TAG_UNLOCK_FOLDER, privacy_title,
+    KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_RESET,
+    TAG_UNLOCK_FOLDER, privacy_title,
 };
 use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
@@ -65,6 +66,8 @@ define_class!(
                 return;
             };
             let (locked, hidden) = match tag {
+                TAG_RENAME_FOLDER => return dialogs::rename_folder(self.mtm(), id),
+                TAG_DELETE_FOLDER => return dialogs::delete_folder(self.mtm(), id),
                 TAG_LOCK_FOLDER => (Some(true), None),
                 TAG_UNLOCK_FOLDER => (Some(false), None),
                 _ => (None, Some(!lock.hidden)),
@@ -156,6 +159,20 @@ define_class!(
             move_selected(folder);
         }
 
+        #[unsafe(method(newFolderPrivate:))]
+        fn new_folder_private(&self, sender: &NSButton) {
+            let on = sender.state() == NSControlStateValueOn;
+            let hide = unsafe { sender.superview() }
+                .and_then(|row| row.viewWithTag(dialogs::PRIVATE_HIDE_TAG))
+                .and_then(|view| view.downcast::<NSButton>().ok());
+            if let Some(hide) = hide {
+                hide.setEnabled(on);
+                if !on {
+                    hide.setState(0);
+                }
+            }
+        }
+
         #[unsafe(method(moveTo:))]
         fn move_to(&self, sender: &NSMenuItem) {
             let tag = sender.tag();
@@ -183,6 +200,15 @@ define_class!(
             later(|ui, _| {
                 if let Some(settings) = &ui.settings {
                     settings.close();
+                }
+            });
+        }
+
+        #[unsafe(method(listen:))]
+        fn listen(&self, _sender: Option<&AnyObject>) {
+            update(|ui, _| {
+                if let Some(item) = ui.selected.and_then(|index| ui.library.items.get(index)) {
+                    ui.inspector.toggle_listen(item);
                 }
             });
         }
@@ -396,6 +422,7 @@ define_class!(
         fn window_will_close(&self, _notification: &NSNotification) {
             later(|ui, mtm| {
                 if !ui.window.isVisible() {
+                    ui.inspector.stop_listening();
                     crate::ui::show_in_dock(mtm, false);
                 }
             });
@@ -420,7 +447,11 @@ impl Actions {
 }
 
 fn validate(item: &NSMenuItem) -> bool {
-    if item.action() != Some(sel!(togglePrivacy:)) {
+    let action = item.action();
+    if action == Some(sel!(moveTo:)) || action == Some(sel!(moveFolder:)) {
+        return usize::try_from(item.tag()).map_or(true, |folder| !sealed(folder));
+    }
+    if action != Some(sel!(togglePrivacy:)) {
         return true;
     }
     if let Some((unlocked, guarded)) =
@@ -434,7 +465,8 @@ fn validate(item: &NSMenuItem) -> bool {
 }
 
 fn sealed(folder: usize) -> bool {
-    return UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.library.sealed(folder)));
+    return UI
+        .with(|ui| ui.try_borrow().ok().is_some_and(|ui| ui.as_ref().is_some_and(|ui| ui.library.sealed(folder))));
 }
 
 fn unlock() {

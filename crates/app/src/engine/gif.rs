@@ -57,7 +57,7 @@ impl GifNode {
             budget: FRAME_CACHE_BUDGET,
             max_px,
             index: 0,
-            paused_since: None,
+            paused_since: Some(Instant::now()),
             timer: None,
         });
     }

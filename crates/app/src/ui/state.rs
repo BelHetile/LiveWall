@@ -8,6 +8,8 @@ pub const TAG_RESET: isize = -100;
 pub const TAG_LOCK_FOLDER: isize = 1;
 pub const TAG_UNLOCK_FOLDER: isize = 2;
 pub const TAG_HIDE_FOLDER: isize = 3;
+pub const TAG_RENAME_FOLDER: isize = 4;
+pub const TAG_DELETE_FOLDER: isize = 5;
 
 pub fn folder_glyph(library: &Library, folder: usize) -> Option<&'static str> {
     let lock = library.locks.get(folder)?;

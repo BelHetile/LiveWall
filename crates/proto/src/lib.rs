@@ -175,7 +175,7 @@ impl Default for Hotkeys {
         let mut hotkeys = Self::unbound();
         hotkeys.set(HotkeyAction::Next, Some(KeyCombo::default_combo("right")));
         hotkeys.set(HotkeyAction::Previous, Some(KeyCombo::default_combo("left")));
-        hotkeys.set(HotkeyAction::TogglePause, Some(KeyCombo::default_combo("p")));
+        hotkeys.set(HotkeyAction::TogglePause, Some(KeyCombo::default_combo("space")));
         hotkeys.set(HotkeyAction::ToggleMute, Some(KeyCombo::default_combo("m")));
         hotkeys.set(HotkeyAction::Random, Some(KeyCombo::default_combo("r")));
         hotkeys.set(HotkeyAction::VolumeUp, Some(KeyCombo::default_combo("up")));

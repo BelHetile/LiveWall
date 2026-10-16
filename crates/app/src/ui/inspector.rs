@@ -24,7 +24,7 @@ use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::palette::Theme;
-use crate::ui::state::{Filter, Scope, TAG_RESET, folder_glyph, markers};
+use crate::ui::state::{Filter, Scope, TAG_ALL, TAG_RESET, folder_glyph, markers};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
 use crate::ui::wall::{TILE_ASPECT, duration, kind_name, resolution};
@@ -70,6 +70,7 @@ define_class!(
 
 struct Controls {
     play: Retained<NSButton>,
+    listen: Retained<NSButton>,
     time: Retained<NumberField>,
     mute: Retained<NSButton>,
     volume: Retained<NSSlider>,
@@ -93,6 +94,7 @@ pub struct Inspector {
     player: Option<(Retained<AVQueuePlayer>, Retained<AVPlayerLooper>)>,
     timer: Option<Retained<NSTimer>>,
     playing: bool,
+    listening: Option<ItemId>,
     controls: Option<Controls>,
 }
 
@@ -128,6 +130,7 @@ impl Inspector {
             player: None,
             timer: None,
             playing: true,
+            listening: None,
             controls: None,
         };
     }
@@ -193,6 +196,30 @@ impl Inspector {
         }
         self.controls = None;
         self.playing = true;
+        self.set_listening(None);
+    }
+
+    pub fn toggle_listen(&mut self, item: &Item) {
+        self.set_listening(if self.listening.is_some() { None } else { Some(item.id) });
+        self.sync(item);
+    }
+
+    pub fn stop_listening(&mut self) {
+        if let Some((player, _)) = &self.player {
+            unsafe { player.setMuted(true) };
+        }
+        self.set_listening(None);
+    }
+
+    fn set_listening(&mut self, item: Option<ItemId>) {
+        if self.listening == item {
+            return;
+        }
+        self.listening = item;
+        super::submit(move |app| {
+            app.set_previewing(item);
+            return None;
+        });
     }
 
     fn show(&mut self, library: &Library, theme: &Theme, selected: Option<usize>, target: &AnyObject) {
@@ -227,7 +254,8 @@ impl Inspector {
             1000.0,
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
         );
-        let transport = widgets::stack(mtm, &[&play, &scrub, &time, &length], false, 8.0);
+        let listen = widgets::icon_button(mtm, "headphones", sel!(listen:), target);
+        let transport = widgets::stack(mtm, &[&play, &scrub, &time, &length, &listen], false, 8.0);
         transport.setCustomSpacing_afterView(4.0, &time);
         transport.setHidden(!video);
 
@@ -286,6 +314,7 @@ impl Inspector {
         time.show(0.0);
         self.controls = Some(Controls {
             play,
+            listen,
             time,
             mute,
             volume,
@@ -324,6 +353,14 @@ impl Inspector {
         let silent = settings.muted || settings.volume <= 0.0;
         widgets::set_icon(&controls.mute, if silent { "speaker.slash.fill" } else { "speaker.wave.2.fill" });
         widgets::set_icon(&controls.play, if self.playing { "pause.fill" } else { "play.fill" });
+        let listening = self.listening.is_some();
+        let tint = if listening { NSColor::controlAccentColor() } else { NSColor::secondaryLabelColor() };
+        controls.listen.setContentTintColor(Some(&tint));
+        controls.listen.setToolTip(Some(&widgets::ns(if listening {
+            "Stop listening; the desktop plays its own sound again"
+        } else {
+            "Listen to the preview; the desktop copy is muted meanwhile"
+        })));
         let volume = if settings.muted { 0.0 } else { settings.volume * 100.0 };
         controls.volume.setDoubleValue(volume);
         controls.volume_value.show(volume);
@@ -354,8 +391,8 @@ impl Inspector {
         if let Some((player, _)) = &self.player {
             #[allow(clippy::cast_possible_truncation)]
             unsafe {
-                player.setVolume(settings.volume as f32);
-                player.setMuted(silent);
+                player.setVolume(if settings.volume > 0.0 { settings.volume as f32 } else { 1.0 });
+                player.setMuted(!listening);
                 if self.playing {
                     player.setRate(settings.speed as f32);
                 }
@@ -718,10 +755,14 @@ fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>)
     let mut titles: Vec<Retained<NSString>> = vec![widgets::ns("Unfiled")];
     titles.extend(library.folders.iter().map(|name| widgets::ns(name)));
     popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+    if let Some(unfiled) = popup.itemAtIndex(0) {
+        unfiled.setTag(TAG_ALL);
+    }
     for index in 0..library.folders.len() {
         let Some(item) = isize::try_from(index + 1).ok().and_then(|position| popup.itemAtIndex(position)) else {
             continue;
         };
+        item.setTag(isize::try_from(index).unwrap_or(TAG_ALL));
         item.setEnabled(!library.sealed(index));
         if let Some(image) = folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)) {
             item.setImage(Some(&image));

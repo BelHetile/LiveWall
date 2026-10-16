@@ -569,8 +569,6 @@ pub struct WallIvars {
     status: Retained<NSView>,
     status_text: Retained<NSTextField>,
     status_fill: Retained<CALayer>,
-    pause: Retained<NSView>,
-    pause_text: Retained<NSTextField>,
     tiles: RefCell<Vec<Retained<TileView>>>,
     shown: RefCell<(Vec<ItemId>, bool)>,
     unlocked: Cell<bool>,
@@ -654,16 +652,6 @@ fn download_pill(mtm: MainThreadMarker, theme: &Theme) -> (Retained<NSView>, Ret
     return (status, status_text, status_fill);
 }
 
-fn pause_pill(mtm: MainThreadMarker) -> (Retained<NSView>, Retained<NSTextField>) {
-    let pause_icon = widgets::symbol_view(mtm, "pause.circle", 13.0, &NSColor::secondaryLabelColor());
-    let pause_text = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
-    let pause_row = widgets::stack(mtm, &[&pause_icon, &pause_text], false, 6.0);
-    pause_row.setEdgeInsets(widgets::insets(6.0, 12.0, 6.0, 12.0));
-    let pause = widgets::glass(mtm, &pause_row, 16.0, None);
-    pause.setHidden(true);
-    return (pause, pause_text);
-}
-
 impl WallView {
     pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
         let canvas = widgets::card(mtm, &theme.canvas, 0.0);
@@ -689,8 +677,6 @@ impl WallView {
         empty.setHidden(true);
         empty.setAlphaValue(0.0);
         let (status, status_text, status_fill) = download_pill(mtm, theme);
-        let (pause, pause_text) = pause_pill(mtm);
-        let pills = widgets::stack(mtm, &[&pause, &status], true, 8.0);
         let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
         let fade = CAGradientLayer::new();
         fade.setStartPoint(CGPoint::new(0.5, 1.0));
@@ -707,8 +693,6 @@ impl WallView {
             status,
             status_text,
             status_fill,
-            pause,
-            pause_text,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
             unlocked: Cell::new(false),
@@ -723,11 +707,11 @@ impl WallView {
         this.addSubview(&ivars.scroll);
         this.addSubview(&ivars.empty);
         this.addSubview(&ivars.shade);
-        this.addSubview(&pills);
+        this.addSubview(&ivars.status);
         this.paint(theme);
-        pills.setTranslatesAutoresizingMaskIntoConstraints(false);
-        pills.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
-        pills.bottomAnchor().constraintEqualToAnchor_constant(&this.bottomAnchor(), -18.0).setActive(true);
+        ivars.status.setTranslatesAutoresizingMaskIntoConstraints(false);
+        ivars.status.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
+        ivars.status.bottomAnchor().constraintEqualToAnchor_constant(&this.bottomAnchor(), -18.0).setActive(true);
         widgets::pin(&canvas, &this, 0.0);
         widgets::pin(&ivars.scroll, &this, 0.0);
         ivars.empty.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -855,7 +839,6 @@ impl WallView {
         let sealing = ivars.unlocked.replace(library.unlocked) && !library.unlocked;
         *ivars.shown.borrow_mut() = key;
         self.show_downloads(&library.downloads);
-        self.show_pause(library.pause.as_deref());
         let mut previous: HashMap<ItemId, Retained<TileView>> = ivars
             .tiles
             .borrow_mut()
@@ -912,16 +895,6 @@ impl WallView {
         let hidden = text.is_none();
         if ivars.status.isHidden() != hidden {
             widgets::reveal(&ivars.status, !hidden);
-        }
-    }
-
-    fn show_pause(&self, reason: Option<&str>) {
-        let ivars = self.ivars();
-        if let Some(reason) = reason {
-            ivars.pause_text.setStringValue(&widgets::ns(&format!("Paused: {reason}")));
-        }
-        if ivars.pause.isHidden() != reason.is_none() {
-            widgets::reveal(&ivars.pause, reason.is_some());
         }
     }
 

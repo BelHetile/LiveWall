@@ -489,6 +489,7 @@ mod tests {
     fn free_combos_are_not_reserved() {
         assert_eq!(reserved(&parse("ctrl+opt+cmd+right").expect("parse")), None);
         assert_eq!(reserved(&parse("ctrl+opt+cmd+p").expect("parse")), None);
+        assert_eq!(reserved(&parse("ctrl+opt+cmd+space").expect("parse")), None);
     }
 
     #[test]
@@ -523,10 +524,10 @@ mod tests {
             Err(ValidationError::Reserved("Spotlight"))
         );
         assert_eq!(
-            validate(&parse("ctrl+opt+cmd+p").expect("parse"), HotkeyAction::Next, &hotkeys),
+            validate(&parse("ctrl+opt+cmd+space").expect("parse"), HotkeyAction::Next, &hotkeys),
             Err(ValidationError::Duplicate(HotkeyAction::TogglePause))
         );
-        assert_eq!(validate(&parse("ctrl+opt+cmd+p").expect("parse"), HotkeyAction::TogglePause, &hotkeys), Ok(()));
+        assert_eq!(validate(&parse("ctrl+opt+cmd+space").expect("parse"), HotkeyAction::TogglePause, &hotkeys), Ok(()));
     }
 
     #[test]

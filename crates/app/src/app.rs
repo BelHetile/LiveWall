@@ -75,6 +75,7 @@ pub enum Event {
     ScreenLocked,
     ScreenUnlocked,
     VideoUnloadTick { item: ItemId },
+    CoverTick { item: ItemId },
     TransitionDone { key: SurfaceKey },
     Hotkey(HotkeyAction),
     Menu(MenuAction),
@@ -117,33 +118,63 @@ pub struct App {
     optimize: Arc<optimize::Queue>,
     downloads: Arc<download::Queue>,
     preparing_downloads: usize,
-    shown_pause: Option<String>,
+    shown_status: Option<WallpaperStatus>,
+    previewing: Option<ItemId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayState {
+    Still,
+    Playing,
+    Paused,
+    Unloaded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    On,
+    AllMuted,
+    ItemMuted,
+    Preview { here: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallpaperStatus {
+    pub state: PlayState,
+    pub reason: Option<PauseReason>,
+    pub sound: Option<Sound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PauseReason {
     key: &'static str,
+    brief: &'static str,
     arg: Option<String>,
 }
 
 impl PauseReason {
-    fn new(key: &'static str, arg: Option<String>) -> Self {
-        return Self { key, arg };
+    fn new(key: &'static str, brief: &'static str, arg: Option<String>) -> Self {
+        return Self { key, brief, arg };
     }
 
     fn from_cause(cause: &rules::Cause) -> Self {
-        let key = match cause {
-            rules::Cause::DisplayAsleep => "Display asleep",
-            rules::Cause::ScreenLocked => "Screen locked",
-            rules::Cause::Screensaver => "Screen saver is running",
-            rules::Cause::Occluded => "Desktop is hidden",
-            rules::Cause::Thermal => "Mac is running hot",
-            rules::Cause::LowPower => "Low Power Mode is on",
-            rules::Cause::Fullscreen => "An app is in fullscreen",
-            rules::Cause::Coverage => "Desktop covered by windows",
-            rules::Cause::Focus => "Another app is focused",
-            rules::Cause::App(bundle) => return Self::new("App rule: %@", Some(app_name(bundle))),
+        let (key, brief) = match cause {
+            rules::Cause::DisplayAsleep => ("Display asleep", "display asleep"),
+            rules::Cause::ScreenLocked => ("Screen locked", "screen locked"),
+            rules::Cause::Screensaver => ("Screen saver is running", "screen saver"),
+            rules::Cause::Occluded => ("Desktop is hidden", "desktop hidden"),
+            rules::Cause::Thermal => ("Mac is running hot", "Mac is hot"),
+            rules::Cause::LowPower => ("Low Power Mode is on", "Low Power Mode"),
+            rules::Cause::Fullscreen => ("An app is in fullscreen", "full screen"),
+            rules::Cause::Coverage => ("Desktop covered by windows", "covered"),
+            rules::Cause::Focus => ("Another app is focused", "app focused"),
+            rules::Cause::App(bundle) => return Self::new("App rule: %@", "", Some(app_name(bundle))),
         };
-        return Self::new(key, None);
+        return Self::new(key, brief, None);
+    }
+
+    pub fn brief(&self) -> String {
+        return self.arg.clone().unwrap_or_else(|| self.brief.to_string());
     }
 
     fn args(&self) -> Vec<i18n::Arg> {
@@ -245,7 +276,8 @@ impl App {
             optimize,
             downloads,
             preparing_downloads: 0,
-            shown_pause: None,
+            shown_status: None,
+            previewing: None,
             paths: paths.clone(),
         };
         app.sync(false);
@@ -284,13 +316,16 @@ impl App {
             Event::GifTick { item } => self.engine.on_gif_tick(item),
             Event::StillReady { item, path } => {
                 self.engine.on_still_ready(item, &path.to_string_lossy(), &self.library);
+                self.publish_status();
                 crate::ui::changed();
             }
             Event::StillFailed { path } => self.engine.on_still_failed(&path),
             Event::DesktopVerify => self.engine.on_desktop_verify(),
+            Event::CoverTick { item } => self.engine.check_cover(item),
             Event::VideoUnloadTick { item } => {
                 let playback = self.playback();
                 self.engine.on_unload_tick(item, &self.library, &playback);
+                self.publish_status();
             }
             Event::TransitionDone { key } => {
                 self.engine.on_transition_done(&key);
@@ -738,7 +773,18 @@ impl App {
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
             unlocked: self.unlocked,
+            silenced: self.previewing,
         };
+    }
+
+    pub fn set_previewing(&mut self, item: Option<ItemId>) {
+        if self.previewing == item {
+            return;
+        }
+        self.previewing = item;
+        let playback = self.playback();
+        self.engine.refresh_playback(&self.library, &playback);
+        self.publish_status();
     }
 
     fn detect(&self) -> rules::Snapshot {
@@ -767,7 +813,7 @@ impl App {
         let playback = self.playback();
         self.engine.refresh_playback(&self.library, &playback);
         self.refresh_power();
-        self.publish_pause();
+        self.publish_status();
     }
 
     fn refresh_power(&mut self) {
@@ -809,6 +855,7 @@ impl App {
         self.engine.reapply(&self.library, &playback, Some(&transition));
         self.engine.refresh_desktop(&self.library, false);
         self.refresh_power();
+        self.publish_status();
     }
 
     fn persist_library(&self) {
@@ -894,7 +941,6 @@ impl App {
     fn set_paused(&mut self, paused: bool) -> Response {
         self.paused = paused;
         self.reapply();
-        self.publish_pause();
         return ok(&self.state());
     }
 
@@ -1019,11 +1065,19 @@ impl App {
         return Some(Response::err(ErrorCode::Locked, LOCKED));
     }
 
-    pub fn create_folder(&mut self, name: String, item: Option<ItemId>) -> Uuid {
+    pub fn create_folder(&mut self, name: String, item: Option<ItemId>, private: Option<bool>) -> Uuid {
         let id = self.library.create_folder(name);
+        if let Some(hidden) = private {
+            self.library.set_folder_flags(id, Some(true), Some(hidden));
+        }
         self.persist_library();
-        if let Some(item) = item {
+        if let Some(item) = item
+            && (private.is_none() || self.unlocked)
+        {
             let _ = self.move_to_folder(&[item], Some(id));
+        }
+        if private.is_some() {
+            self.refresh_visibility();
         }
         return id;
     }
@@ -1119,7 +1173,7 @@ impl App {
                 self.move_to_folder(&ids, folder)
             }
             Request::FolderCreate { name } => {
-                let id = self.create_folder(name.clone(), None);
+                let id = self.create_folder(name.clone(), None, None);
                 ok(&serde_json::json!({ "id": id.to_string(), "name": name }))
             }
             Request::FolderRename { id, name } => {
@@ -1361,7 +1415,7 @@ impl App {
             return None;
         }
         if self.paused {
-            return Some(PauseReason::new("Paused by you", None));
+            return Some(PauseReason::new("Paused by you", "by you", None));
         }
         if self.verdict.action == rules::Action::KeepRunning {
             return None;
@@ -1369,10 +1423,36 @@ impl App {
         return self.verdict.cause.as_ref().map(PauseReason::from_cause);
     }
 
-    fn publish_pause(&mut self) {
-        let reason = self.pause_reason().map(|reason| reason.english());
-        if reason != self.shown_pause {
-            self.shown_pause = reason;
+    pub fn wallpaper_status(&self) -> Option<WallpaperStatus> {
+        let id = self.showing_item()?;
+        let item = self.library.items.iter().find(|item| item.id == id)?;
+        let preview = self.previewing.map(|previewing| Sound::Preview { here: previewing == id });
+        if item.kind == ItemKind::Image {
+            return Some(WallpaperStatus { state: PlayState::Still, reason: None, sound: preview });
+        }
+        let reason = self.pause_reason();
+        let state = if self.engine.unloaded(id) {
+            PlayState::Unloaded
+        } else if reason.is_some() {
+            PlayState::Paused
+        } else {
+            PlayState::Playing
+        };
+        let sound = if self.settings.muted {
+            Sound::AllMuted
+        } else if item.muted || item.volume <= 0.0 {
+            Sound::ItemMuted
+        } else {
+            Sound::On
+        };
+        let sound = preview.or((item.kind == ItemKind::Video && item.audio_codec.is_some()).then_some(sound));
+        return Some(WallpaperStatus { state, reason, sound });
+    }
+
+    fn publish_status(&mut self) {
+        let status = self.wallpaper_status();
+        if status != self.shown_status {
+            self.shown_status = status;
             self.sync_menu();
             crate::ui::changed();
         }

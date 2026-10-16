@@ -47,7 +47,7 @@ impl VideoNode {
             loaded: false,
             layers: LayerSet::default(),
             playing: false,
-            paused_since: None,
+            paused_since: Some(Instant::now()),
             speed: 1.0,
             pending_seek: None,
             player,
@@ -68,6 +68,9 @@ impl VideoNode {
     }
 
     pub fn on_loaded(&mut self, mtm: MainThreadMarker) {
+        if self.loaded {
+            return;
+        }
         self.size = video_size(&self.asset);
         let player_item = unsafe { AVPlayerItem::playerItemWithAsset(&self.asset, mtm) };
         let looper = unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&self.player, &player_item) };
@@ -179,6 +182,12 @@ impl VideoNode {
 
     pub fn is_ready(&self) -> bool {
         return self.loaded && self.looper.is_some();
+    }
+
+    pub fn shows_frame(&self) -> bool {
+        return self.layers.iter().all(|layer| {
+            layer.downcast_ref::<AVPlayerLayer>().is_some_and(|layer| unsafe { layer.isReadyForDisplay() })
+        });
     }
 }
 

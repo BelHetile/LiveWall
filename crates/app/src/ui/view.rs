@@ -113,7 +113,13 @@ pub struct Library {
     pub desktops: usize,
     pub assignments: Vec<(Target, usize)>,
     pub downloads: Vec<Download>,
-    pub pause: Option<String>,
+    pub status: Option<Status>,
+}
+
+pub struct Status {
+    pub state: crate::app::PlayState,
+    pub reason: Option<(String, String)>,
+    pub sound: Option<crate::app::Sound>,
 }
 
 impl Library {
@@ -282,6 +288,11 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         .map(Download::from_report)
         .chain(std::iter::repeat_with(Download::preparing).take(app.preparing_downloads()))
         .collect();
+    let status = app.wallpaper_status().map(|status| Status {
+        state: status.state,
+        reason: status.reason.map(|reason| (reason.brief(), reason.english())),
+        sound: status.sound,
+    });
 
     return Library {
         items,
@@ -295,6 +306,6 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         spaces,
         assignments,
         downloads,
-        pause: app.pause_reason().map(|reason| reason.english()),
+        status,
     };
 }

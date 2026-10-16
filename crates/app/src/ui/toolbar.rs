@@ -4,29 +4,32 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSButton, NSColor, NSEvent, NSImage, NSLayoutConstraint, NSMenu, NSMenuItem,
-    NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup, NSToolbarItemGroupSelectionMode,
-    NSToolbarItemIdentifier, NSToolbarToggleInspectorItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAnimatablePropertyContainer, NSButton, NSColor, NSEvent, NSImage, NSImageView, NSLayoutConstraint,
+    NSLineBreakMode, NSMenu, NSMenuItem, NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSStackView, NSTextField,
+    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemGroup, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier,
+    NSToolbarToggleInspectorItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
+use crate::app::{PlayState, Sound};
 use crate::ui::palette::Look;
 use crate::ui::state::{
-    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_UNLOCK_FOLDER,
-    folder_glyph, lock_tip, privacy_title, showing,
+    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER,
+    TAG_RENAME_FOLDER, TAG_UNLOCK_FOLDER, folder_glyph, lock_tip, privacy_title, showing,
 };
-use crate::ui::view::Library;
+use crate::ui::view::{Library, Status};
 use crate::ui::widgets::{self, Weight};
 
-const PILL_WIDTH: CGFloat = 124.0;
+const PILL_WIDTH: CGFloat = 148.0;
 const PILL_HEIGHT: CGFloat = 26.0;
 const SCOPE_WIDTH: CGFloat = 128.0;
 const FOLDER_WIDTH: CGFloat = 136.0;
 const SEARCH_WIDTH: CGFloat = 120.0;
 const ADD_WIDTH: CGFloat = 76.0;
+const STATUS_TEXT_WIDTH: CGFloat = 150.0;
 
 pub struct PillIvars {
     index: Cell<Option<usize>>,
@@ -129,6 +132,7 @@ pub struct Toolbar {
     add_menu: Retained<NSMenu>,
     desktop: Pill,
     screen: Pill,
+    status: StatusBadge,
     scope_title: RefCell<String>,
     folder_title: RefCell<String>,
     _delegate: Retained<ToolbarDelegate>,
@@ -190,14 +194,16 @@ impl Toolbar {
         let line = widgets::card(mtm, &NSColor::separatorColor(), 0.0);
         line.widthAnchor().constraintEqualToConstant(1.0).setActive(true);
         line.heightAnchor().constraintEqualToConstant(16.0).setActive(true);
-        let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, 3.0);
-        row.setEdgeInsets(widgets::insets(0.0, 5.0, 0.0, 5.0));
+        let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, 4.0);
+        row.setEdgeInsets(widgets::insets(0.0, 4.0, 0.0, 4.0));
         let showing = view_item(mtm, "showing", "Now Showing", &row);
+        let status = StatusBadge::new(mtm);
 
         let items: Vec<Retained<NSToolbarItem>> = vec![
             view_item(mtm, "scope", "Desktop", &scope),
             view_item(mtm, "folder", "Folder", &folder),
             showing.clone(),
+            status.toolbar_item(mtm),
             Retained::into_super(sort.clone()),
             Retained::into_super(layout.clone()),
             view_item(mtm, "search", "Search", &search_box),
@@ -211,6 +217,7 @@ impl Toolbar {
             widgets::ns("folder"),
             flexible.copy(),
             widgets::ns("showing"),
+            widgets::ns("status"),
             flexible.copy(),
             widgets::ns("sort"),
             widgets::ns("layout"),
@@ -238,6 +245,7 @@ impl Toolbar {
             add_menu: add_menu(mtm, target),
             desktop,
             screen,
+            status,
             scope_title: RefCell::new(String::new()),
             folder_title: RefCell::new(String::new()),
             _delegate: delegate,
@@ -279,7 +287,116 @@ impl Toolbar {
         });
         self.screen.update(lock_index, screen, "Lock Screen", 0, None);
         self.screen.view.setToolTip(Some(&widgets::ns(&lock_tip(library))));
+        self.status.update(library.status.as_ref());
     }
+}
+
+struct StatusBadge {
+    view: Retained<NSStackView>,
+    icon: Retained<NSImageView>,
+    text: Retained<NSTextField>,
+    sound: Retained<NSImageView>,
+}
+
+impl StatusBadge {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let icon = NSImageView::new(mtm);
+        icon.setImage(widgets::symbol("circle.fill", 7.0).as_deref());
+        let text = widgets::label(mtm, "", 11.0, &Weight::Medium, &NSColor::secondaryLabelColor());
+        text.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        text.widthAnchor().constraintLessThanOrEqualToConstant(STATUS_TEXT_WIDTH).setActive(true);
+        let sound = NSImageView::new(mtm);
+        sound.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        let view = widgets::stack(mtm, &[&icon, &text, &sound], false, 6.0);
+        view.setCustomSpacing_afterView(8.0, &text);
+        view.setEdgeInsets(widgets::insets(0.0, 6.0, 0.0, 6.0));
+        view.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
+        return Self { view, icon, text, sound };
+    }
+
+    fn toolbar_item(&self, mtm: MainThreadMarker) -> Retained<NSToolbarItem> {
+        let item = view_item(mtm, "status", "Playback", &self.view);
+        item.setBordered(false);
+        return item;
+    }
+
+    fn update(&self, status: Option<&Status>) {
+        let (light, text, tip) = match status {
+            None => (Light::Off, "Nothing playing".to_string(), "No wallpaper on this desktop".to_string()),
+            Some(status) => describe(status),
+        };
+        self.icon.setContentTintColor(Some(&light.color()));
+        if self.text.stringValue().to_string() != text {
+            widgets::fade(&self.text);
+            self.text.setStringValue(&widgets::ns(&text));
+        }
+        self.view.setToolTip(Some(&widgets::ns(&tip)));
+        let sound = status.and_then(|status| status.sound);
+        self.sound.setHidden(sound.is_none());
+        if let Some(sound) = sound {
+            let (symbol, light, tip) = match sound {
+                Sound::On => ("speaker.wave.2.fill", Light::Green, "Sound is on"),
+                Sound::AllMuted => {
+                    ("speaker.slash.fill", Light::Red, "All wallpapers are muted from the menu bar or hotkey")
+                }
+                Sound::ItemMuted => ("speaker.slash.fill", Light::Yellow, "This wallpaper is muted in the inspector"),
+                Sound::Preview { here: true } => (
+                    "headphones",
+                    Light::Accent,
+                    "Listening to the inspector preview; this desktop's copy is muted until you stop",
+                ),
+                Sound::Preview { here: false } => {
+                    ("headphones", Light::Accent, "Listening to a preview of another wallpaper in the inspector")
+                }
+            };
+            self.sound.setImage(widgets::symbol(symbol, 11.0).as_deref());
+            self.sound.setContentTintColor(Some(&light.color()));
+            self.sound.setToolTip(Some(&widgets::ns(tip)));
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Light {
+    Off,
+    Green,
+    Yellow,
+    Red,
+    Accent,
+}
+
+impl Light {
+    fn color(self) -> Retained<NSColor> {
+        return match self {
+            Self::Off => NSColor::tertiaryLabelColor(),
+            Self::Green => NSColor::systemGreenColor(),
+            Self::Yellow => NSColor::systemYellowColor(),
+            Self::Red => NSColor::systemRedColor(),
+            Self::Accent => NSColor::controlAccentColor(),
+        };
+    }
+}
+
+fn describe(status: &Status) -> (Light, String, String) {
+    let reason = status.reason.as_ref();
+    let brief = |word: &str| reason.map_or_else(|| word.to_string(), |(brief, _)| format!("{word} · {brief}"));
+    let full = reason.map_or_else(String::new, |(_, full)| full.clone());
+    return match status.state {
+        PlayState::Still => (Light::Green, "Image".to_string(), "This desktop shows a still image".to_string()),
+        PlayState::Playing => {
+            (Light::Green, "Playing".to_string(), "The wallpaper on this desktop is playing".to_string())
+        }
+        PlayState::Paused if full.is_empty() => (Light::Yellow, brief("Paused"), "Paused".to_string()),
+        PlayState::Paused => (Light::Yellow, brief("Paused"), format!("Paused: {full}")),
+        PlayState::Unloaded => {
+            let reason = if full.is_empty() { String::new() } else { format!("Paused: {full}. ") };
+            (
+                Light::Red,
+                brief("Unloaded"),
+                format!("{reason}Unloaded to free memory; the desktop shows the paused frame."),
+            )
+        }
+    };
 }
 
 impl Toolbar {
@@ -376,7 +493,9 @@ impl Pill {
         let chevron = widgets::symbol_view(mtm, "chevron.down", 8.0, &NSColor::tertiaryLabelColor());
         chevron.setHidden(true);
         let row = widgets::stack(mtm, &[&glyph, &thumb, &title, &badge, &chevron], false, 6.0);
-        row.setEdgeInsets(widgets::insets(0.0, 8.0, 0.0, 8.0));
+        row.setEdgeInsets(widgets::insets(0.0, 10.0, 0.0, 10.0));
+        row.setCustomSpacing_afterView(5.0, &glyph);
+        row.setCustomSpacing_afterView(7.0, &thumb);
         row.setCustomSpacing_afterView(3.0, &badge);
         let view = PillView::alloc(mtm).set_ivars(PillIvars { index: Cell::new(None), menu: RefCell::new(None) });
         let view: Retained<PillView> = unsafe { msg_send![super(view), init] };
@@ -547,6 +666,8 @@ fn privacy_entries(
         } else {
             items.push(entry(mtm, "Lock Folder", action, TAG_LOCK_FOLDER, false, target));
         }
+        items.push(entry(mtm, "Rename Folder…", action, TAG_RENAME_FOLDER, false, target));
+        items.push(entry(mtm, "Delete Folder…", action, TAG_DELETE_FOLDER, false, target));
     }
     if library.has_locked {
         items.push(separator(mtm));

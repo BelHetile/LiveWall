@@ -123,7 +123,7 @@ impl Engine {
 
     pub fn on_still_ready(&mut self, item: ItemId, path: &str, library: &Library) {
         self.stills.settle(path);
-        self.finish_unload_wait(item, path);
+        self.finish_unload_wait(item, path, library);
         self.refresh_desktop(library, false);
     }
 

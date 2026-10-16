@@ -118,7 +118,8 @@ pub fn denies(library: &Library, request: &Request) -> bool {
     let item = |id: &String| id.parse::<ItemId>().is_ok_and(|id| library.is_private_id(id));
     let folder = |id: &String| id.parse::<FolderId>().is_ok_and(|id| library.is_locked_folder(Some(id)));
     return match request {
-        Request::LibraryRemove { ids } | Request::LibraryMove { ids, .. } => ids.iter().any(item),
+        Request::LibraryRemove { ids } => ids.iter().any(item),
+        Request::LibraryMove { ids, folder: target } => ids.iter().any(item) || target.as_ref().is_some_and(folder),
         Request::LibraryRename { id, .. }
         | Request::Optimize { id }
         | Request::OptimizeCancel { id }
@@ -224,13 +225,13 @@ impl App {
         if items.iter().any(|item| self.optimizing(*item)) {
             return Err(Response::err(ErrorCode::Busy, "optimize is in progress for this item"));
         }
-        for item in items {
-            self.engine.forget(*item);
-        }
         let lock = self.library.placement.lock;
         if let Err(error) = relocate_many(&self.paths, &mut self.library.items, items, to, lock) {
             self.reapply();
             return Err(Response::err(ErrorCode::Internal, format!("cannot move media: {error}")));
+        }
+        for item in items {
+            self.engine.rehome(*item, &self.library);
         }
         return Ok(());
     }
@@ -469,6 +470,7 @@ mod tests {
         let denied = [
             Request::LibraryRemove { ids: vec![open.clone(), private.clone()] },
             Request::LibraryMove { ids: vec![private.clone()], folder: None },
+            Request::LibraryMove { ids: vec![open.clone()], folder: Some(folder.clone()) },
             Request::LibraryRename { id: private.clone(), title: "x".into() },
             Request::SetItem { item: private.clone(), volume: None, speed: None, muted: None, still_time: None },
             Request::SetGeometry { item: private.clone(), mode: FillMode::Fill, geometry: proto::Geometry::default() },
@@ -484,7 +486,6 @@ mod tests {
         let allowed = [
             Request::LibraryRemove { ids: vec![open.clone()] },
             Request::LibraryMove { ids: vec![open.clone()], folder: None },
-            Request::LibraryMove { ids: vec![open.clone()], folder: Some(folder) },
             Request::Apply { item: Some(open.clone()), target: ApplyTarget::Default, transition: None },
             Request::Apply { item: None, target: ApplyTarget::Default, transition: None },
             Request::SetItem { item: open, volume: None, speed: None, muted: None, still_time: None },

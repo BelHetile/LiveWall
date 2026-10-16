@@ -71,6 +71,7 @@ pub struct Playback {
     pub stop_after: u32,
     pub verdict: rules::Verdict,
     pub unlocked: bool,
+    pub silenced: Option<ItemId>,
 }
 
 impl Engine {
@@ -140,6 +141,10 @@ impl Engine {
         return self.playing > 0;
     }
 
+    pub fn unloaded(&self, item: ItemId) -> bool {
+        return self.unload.unloaded.contains_key(&item);
+    }
+
     pub fn playing_count(&self) -> usize {
         return self.playing;
     }
@@ -162,6 +167,7 @@ impl Engine {
             video.on_loaded(self.mtm);
         }
         self.reapply(library, playback, None);
+        self.check_cover(item);
     }
 
     pub fn on_gif_tick(&mut self, item: ItemId) {
@@ -325,7 +331,7 @@ impl Engine {
         }
     }
 
-    fn apply_frames(&self, library: &Library) {
+    pub(super) fn apply_frames(&self, library: &Library) {
         for (key, surface) in &self.surfaces {
             let Some(item) = surface.item else { continue };
             let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { continue };
@@ -350,7 +356,8 @@ impl Engine {
             return should_play(playback.paused, playback.verdict.action, *active);
         };
         let mut playing_count = 0usize;
-        let mut transitions: Vec<(ItemId, bool, bool)> = Vec::new();
+        let mut resumed: Vec<ItemId> = Vec::new();
+        let mut idle: Vec<ItemId> = Vec::new();
         for (item, node) in &mut self.nodes {
             let playing = node.layers().keys().any(&should);
             if playing && !matches!(node, Node::Image(_)) {
@@ -361,14 +368,19 @@ impl Engine {
                     let entry = library.items.iter().find(|entry| entry.id == video.item);
                     let volume = entry.map_or(1.0_f32, |entry| entry.volume);
                     let speed = entry.map_or(1.0_f32, |entry| entry.speed);
-                    let muted = playback.muted || entry.is_none_or(|entry| entry.muted);
+                    let muted = playback.muted
+                        || playback.silenced == Some(video.item)
+                        || entry.is_none_or(|entry| entry.muted);
                     let was = video.is_playing();
                     if video.loaded {
                         video.apply_playback(playing, muted, volume, speed);
                     }
-                    let now = video.is_playing();
-                    if was != now {
-                        transitions.push((*item, was, now));
+                    if video.is_playing() {
+                        if !was {
+                            resumed.push(*item);
+                        }
+                    } else {
+                        idle.push(*item);
                     }
                 }
                 Node::Gif(gif) => {
@@ -378,8 +390,12 @@ impl Engine {
                     } else {
                         gif.pause();
                     }
-                    if was != gif.playing {
-                        transitions.push((*item, was, gif.playing));
+                    if gif.playing {
+                        if !was {
+                            resumed.push(*item);
+                        }
+                    } else if gif.cached_bytes() > 0 {
+                        idle.push(*item);
                     }
                 }
                 Node::Image(_) => {}
@@ -393,12 +409,11 @@ impl Engine {
             .map(|(item, unloaded)| (*item, unloaded.time))
             .collect();
         playing_count += reloading.len();
-        for (item, was, now) in transitions {
-            if now {
-                self.unload.cancel(item);
-            } else if was {
-                self.unload.schedule(item, playback.stop_after);
-            }
+        for item in resumed {
+            self.unload.cancel(item);
+        }
+        for item in idle {
+            self.unload.schedule(item, playback.stop_after);
         }
         for (item, time) in reloading {
             self.reload_video(item, time, library);
@@ -410,16 +425,44 @@ impl Engine {
         if self.nodes.contains_key(&item) {
             return;
         }
-        let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { return };
+        if let Some(node) = self.build_node(item, library) {
+            self.nodes.insert(item, node);
+        }
+    }
+
+    fn build_node(&self, item: ItemId, library: &Library) -> Option<Node> {
+        let entry = library.items.iter().find(|entry| entry.id == item)?;
         let max_px = usize::try_from(self.display.max_px()).unwrap_or(0);
-        let node = match entry.kind {
+        return match entry.kind {
             ItemKind::Video => Some(Node::Video(VideoNode::new(self.mtm, item, &entry.path))),
             ItemKind::Gif => GifNode::new(item, &entry.path, max_px).map(Node::Gif),
             ItemKind::Image => ImageNode::new(&entry.path).map(Node::Image),
         };
-        if let Some(node) = node {
-            self.nodes.insert(item, node);
+    }
+
+    pub fn rehome(&mut self, item: ItemId, library: &Library) {
+        self.unload.cancel(item);
+        if let Some(time) = self.unload.unloaded.get(&item).map(|unloaded| unloaded.time) {
+            self.reload_video(item, time, library);
+            return;
         }
+        let Some(node) = self.nodes.get_mut(&item) else { return };
+        if let Some(video) = node.video_mut() {
+            let time = video.current_time();
+            video.apply_playback(false, true, 0.0, 1.0);
+            self.reload_video(item, time, library);
+            return;
+        }
+        let keys: Vec<SurfaceKey> = node.layers().keys().cloned().collect();
+        let Some(fresh) = self.build_node(item, library) else { return };
+        layer::without_actions(|| {
+            let Some(mut old) = self.nodes.insert(item, fresh) else { return };
+            for key in &keys {
+                self.attach(item, key);
+            }
+            self.apply_frames(library);
+            old.layers_mut().clear();
+        });
     }
 }
 
