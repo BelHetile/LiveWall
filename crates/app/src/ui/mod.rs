@@ -387,14 +387,12 @@ fn env(name: &str) -> Option<String> {
 }
 
 fn initial_filter(library: &Library) -> Filter {
-    let scope = match env("LW_UI_SCOPE").as_deref() {
-        Some("all") => Scope::All,
-        Some(value) => match value.parse::<usize>().ok().and_then(|number| number.checked_sub(1)) {
+    let scope =
+        match env("LW_UI_SCOPE").and_then(|value| value.parse::<usize>().ok()).and_then(|number| number.checked_sub(1))
+        {
             Some(space) if space < library.desktops => Scope::Space(space),
-            _ => Scope::Space(library.current),
-        },
-        None => Scope::Space(library.current),
-    };
+            _ => Scope::All,
+        };
     let folder = env("LW_UI_FOLDER").and_then(|name| library.folders.iter().position(|folder| *folder == name));
     return Filter {
         scope,

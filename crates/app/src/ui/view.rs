@@ -111,7 +111,6 @@ pub struct Library {
     pub has_locked: bool,
     pub spaces: Vec<String>,
     pub desktops: usize,
-    pub current: usize,
     pub assignments: Vec<(Target, usize)>,
     pub downloads: Vec<Download>,
 }
@@ -252,7 +251,7 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         })
         .collect();
 
-    let (spaces, current) = app.desktops();
+    let (spaces, _) = app.desktops();
     let placement = &model.placement;
     let position = |id: Option<ItemId>, space: Option<&str>| {
         let id = id?;
@@ -293,7 +292,6 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         has_locked: model.folders.iter().any(|folder| folder.locked),
         desktops: spaces.len(),
         spaces,
-        current,
         assignments,
         downloads,
     };
