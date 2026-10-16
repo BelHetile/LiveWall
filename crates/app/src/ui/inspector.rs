@@ -752,21 +752,21 @@ fn seconds(text: &str) -> Option<f64> {
 
 fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>) {
     popup.removeAllItems();
-    let mut titles: Vec<Retained<NSString>> = vec![widgets::ns("Unfiled")];
-    titles.extend(library.folders.iter().map(|name| widgets::ns(name)));
-    popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-    if let Some(unfiled) = popup.itemAtIndex(0) {
-        unfiled.setTag(TAG_ALL);
-    }
-    for index in 0..library.folders.len() {
-        let Some(item) = isize::try_from(index + 1).ok().and_then(|position| popup.itemAtIndex(position)) else {
-            continue;
-        };
+    let Some(menu) = popup.menu() else { return };
+    let mtm = popup.mtm();
+    let unfiled = NSMenuItem::new(mtm);
+    unfiled.setTitle(&widgets::ns("Unfiled"));
+    unfiled.setTag(TAG_ALL);
+    menu.addItem(&unfiled);
+    for (index, name) in library.folders.iter().enumerate() {
+        let item = NSMenuItem::new(mtm);
+        item.setTitle(&widgets::ns(name));
         item.setTag(isize::try_from(index).unwrap_or(TAG_ALL));
         item.setEnabled(!library.sealed(index));
         if let Some(image) = folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)) {
             item.setImage(Some(&image));
         }
+        menu.addItem(&item);
     }
     popup.selectItemAtIndex(folder.map_or(0, |index| isize::try_from(index + 1).unwrap_or(0)));
 }
