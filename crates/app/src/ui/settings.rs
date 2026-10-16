@@ -718,7 +718,6 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
         &[
             line(mtm, "Open at Login", None, &login),
             line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
-            line(mtm, "Show in Menu Bar", None, &fixed_switch(mtm)),
             line(mtm, "Show in Dock", Some("Hide to keep LiveWall in the menu bar only"), &dock),
             line(mtm, "Language", None, &language),
         ],
