@@ -1,8 +1,4 @@
-.build/
-build/
-.swiftpm/
-*.xcodeproj/
-xcuserdata/
-DerivedData/
+/target
+/build
 .DS_Store
-*.log
+.k/

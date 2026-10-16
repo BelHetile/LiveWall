@@ -1,0 +1,18 @@
+[package]
+name = "lwctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line control client for LiveWall"
+
+[[bin]]
+name = "lwctl"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+serde_json.workspace = true
+proto = { workspace = true, features = ["clap"] }

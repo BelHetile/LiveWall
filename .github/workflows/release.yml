@@ -1,87 +1,97 @@
 name: Release
 
-# Publish a release either by pushing a tag like v1.0.0, or from the Actions tab:
-# Release → Run workflow → enter a version (e.g. 1.0.0); the tag is created for you.
-# Running it by hand without a version only builds and uploads the files as an artifact.
-# Running it by hand for a version that already exists moves its tag to the current commit and replaces its files.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish, e.g. 1.0.0 (empty = test build only)'
+        description: 'Version to publish, e.g. 2.0.1 (empty = test build only)'
         required: false
         default: ''
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: macos-15
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
 
       - name: Version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             V="${GITHUB_REF_NAME#v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            V="${{ inputs.version }}"
-            V="${V#v}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            V="${INPUT_VERSION#v}"
           else
             V="0.0.0-dev"
           fi
           echo "value=$V" >> "$GITHUB_OUTPUT"
           echo "Version: $V"
 
-      - name: Build universal app
+      - name: Unit tests
+        run: cargo test --workspace --lib --locked
+
+      - name: Build LiveWall.app
         env:
           LIVEWALL_VERSION: ${{ steps.version.outputs.value }}
-        run: ./scripts/build.sh --universal
+        run: ./scripts/build.sh
 
-      - name: Check the binary
+      - name: Check the bundle
         run: |
-          BIN=build/LiveWall.app/Contents/MacOS/LiveWall
-          ARCHS="$(lipo -archs "$BIN")"
+          APP=build/LiveWall.app
+          ARCHS="$(lipo -archs "$APP/Contents/MacOS/LiveWall")"
           echo "Architectures: $ARCHS"
-          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "Not a universal binary"; exit 1; }
-          codesign --verify --deep --strict build/LiveWall.app
-          plutil -lint build/LiveWall.app/Contents/Info.plist
+          [[ "$ARCHS" == arm64 ]] || { echo "Expected an arm64 binary"; exit 1; }
+          codesign --verify --deep --strict "$APP"
+          plutil -lint "$APP/Contents/Info.plist"
+          [[ -x "$APP/Contents/MacOS/lwctl" ]]
 
       - name: Package
         run: |
           cd build
           ditto -c -k --keepParent LiveWall.app LiveWall-macOS.zip
           mkdir dmg
-          cp -R LiveWall.app dmg/
+          ditto LiveWall.app dmg/LiveWall.app
           ln -s /Applications dmg/Applications
-          cp ../scripts/dmg-install.command "dmg/Install LiveWall.command"
-          chmod +x "dmg/Install LiveWall.command"
           hdiutil create -volname LiveWall -srcfolder dmg -ov -format UDZO LiveWall.dmg
           shasum -a 256 LiveWall-macOS.zip LiveWall.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          REPO: ${{ github.repository }}
         run: |
-          VERSION="${{ steps.version.outputs.value }}"
           awk -v v="$VERSION" '
+            BEGIN { gsub(/\./, "[.]", v) }
             $0 ~ "^## \\[?" v "\\]?" { on = 1; next }
             on && /^## / { exit }
             on { print }
           ' CHANGELOG.md > build/notes.md
-          if [[ ! -s build/notes.md ]]; then echo "See CHANGELOG.md" > build/notes.md; fi
+          [[ -s build/notes.md ]] || echo "See CHANGELOG.md" > build/notes.md
           {
             echo
             echo "### Install"
             echo
             echo '```bash'
-            echo 'curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash"
             echo '```'
             echo
-            echo "Or download **LiveWall.dmg**, open it and double-click **Install LiveWall.command** (or drag LiveWall to Applications; see the README for the first-launch steps)."
+            echo "Or open **LiveWall.dmg** and drag LiveWall to Applications. LiveWall is not notarized: on first launch open **System Settings → Privacy & Security** and click **Open Anyway** (see the README)."
           } >> build/notes.md
           cat build/notes.md
 
@@ -89,26 +99,27 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          TAG="v${{ steps.version.outputs.value }}"
+          TAG="v$VERSION"
+          FILES=(build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # run again by hand for an existing version: move the tag to this commit and replace the files
-            if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-              git tag -f "$TAG" "$GITHUB_SHA"
-              git push -f origin "refs/tags/$TAG"
+            TAG_SHA="$(git rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
+            if [[ -n "$TAG_SHA" && "$TAG_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Tag $TAG points at $TAG_SHA, not $GITHUB_SHA; refusing to move a published tag." >&2
+              exit 1
             fi
-            gh release upload "$TAG" build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt --clobber
-            gh release edit "$TAG" --title "LiveWall ${{ steps.version.outputs.value }}" --notes-file build/notes.md
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh release edit "$TAG" --title "LiveWall $VERSION" --notes-file build/notes.md
           else
-            gh release create "$TAG" \
-              build/LiveWall-macOS.zip build/LiveWall.dmg build/SHA256SUMS.txt \
+            gh release create "$TAG" "${FILES[@]}" \
               --target "$GITHUB_SHA" \
-              --title "LiveWall ${{ steps.version.outputs.value }}" \
+              --title "LiveWall $VERSION" \
               --notes-file build/notes.md
           fi
 
       - name: Upload build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: LiveWall-${{ steps.version.outputs.value }}
           path: |

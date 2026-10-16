@@ -1,57 +1,49 @@
-<p align="center"><img src="Resources/AppIcon.iconset/icon_256x256.png" width="128" alt="LiveWall icon"></p>
+<p align="center"><img src="resources/AppIcon.iconset/icon_256x256.png" width="128" alt="LiveWall icon"></p>
 
 <h1 align="center">LiveWall</h1>
 
 <p align="center">
-  Live video wallpapers for macOS — with smart pause, hotkeys, folders and lock-screen sync.
+  Videos, GIFs and images as your macOS desktop wallpaper, below the desktop icons, on every Space.
+  A native app written in Rust, with hardware video decoding and no permission prompts.
 </p>
 
 <p align="center">
-  <a href="https://github.com/BelHetile/LiveWall/releases/latest"><img src="https://img.shields.io/github/v/release/BelHetile/LiveWall?label=download" alt="Latest release"></a>
-  <a href="https://github.com/BelHetile/LiveWall/actions/workflows/build.yml"><img src="https://github.com/BelHetile/LiveWall/actions/workflows/build.yml/badge.svg" alt="Build"></a>
-  <img src="https://img.shields.io/badge/macOS-13%2B-blue" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/Apple%20Silicon%20%26%20Intel-universal-lightgrey" alt="Universal">
+  <img src="https://img.shields.io/badge/macOS-15%2B-blue" alt="macOS 15+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon-only-lightgrey" alt="Apple Silicon only">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
 </p>
 
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a></p>
 
----
+## Requirements
 
-LiveWall puts videos, images and GIFs on your desktop like Wallpaper Engine does on Windows. It is a small native
-Swift app: video is decoded by the Mac's hardware, playback pauses itself when you can't see the desktop, and
-everything is controlled from the library window, the menu bar or global hotkeys.
+- macOS 15 Sequoia or newer.
+- A Mac with Apple Silicon (M1 or newer).
+- Optional: [Homebrew](https://brew.sh). LiveWall uses it to install `ffmpeg` (for WebM, MKV, VP8 and AV1 on Macs
+  without AV1 decoding) and `yt-dlp` + `deno` (for links). It asks before installing anything. MP4, MOV, GIF and
+  images need nothing extra.
 
 ## Install
-
-**One command** (recommended) — paste into Terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/install.sh | bash
 ```
 
-It downloads the latest release, puts LiveWall into **Applications** and starts it. Run the same command again to
-update.
+The script downloads the latest release, checks it against the release's `SHA256SUMS.txt`, installs it to
+`/Applications` and launches it. Run it again to update.
 
-<details>
-<summary><b>Or install the DMG by hand</b></summary>
+Or from the DMG:
 
-1. Download **LiveWall.dmg** from the [latest release](https://github.com/BelHetile/LiveWall/releases/latest).
-2. Open it and double-click **Install LiveWall.command**: it copies LiveWall to **Applications**, clears the
-   download flag (so macOS won't ask about the developer again) and starts it.
-3. LiveWall is free and not notarized by Apple, so macOS asks once before running the installer:
-   - **macOS 15 and newer:** double-click it once, then go to **System Settings → Privacy & Security**, scroll down
-     and click **Open Anyway**.
-   - **macOS 13–14:** right-click **Install LiveWall.command** → **Open** → **Open**.
+1. Download `LiveWall.dmg` from the [latest release](https://github.com/BelHetile/LiveWall/releases/latest).
+2. Open it and drag **LiveWall** to **Applications**.
+3. LiveWall is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security**,
+   scroll down and click **Open Anyway**. Alternatively run
+   `xattr -dr com.apple.quarantine /Applications/LiveWall.app` once.
 
-   You can also just drag **LiveWall** to **Applications**; then the same question comes up for LiveWall itself.
+## Build from source
 
-</details>
-
-<details>
-<summary><b>Or build from source</b></summary>
-
-You need the Command Line Tools (`xcode-select --install`).
+Needs the Command Line Tools (`xcode-select --install`) and [rustup](https://rustup.rs);
+`rust-toolchain.toml` pins the Rust version.
 
 ```bash
 git clone https://github.com/BelHetile/LiveWall.git
@@ -59,119 +51,123 @@ cd LiveWall
 ./scripts/build.sh --install
 ```
 
-`./scripts/build.sh` alone builds `build/LiveWall.app` without installing; `./scripts/build.sh --universal` builds for Apple Silicon
-and Intel.
-
-</details>
-
-**Requirements:** macOS 13 Ventura or newer, Apple Silicon or Intel.
+`./scripts/build.sh` alone builds `build/LiveWall.app` without installing it. See
+[CONTRIBUTING](.github/CONTRIBUTING.md) for tests.
 
 ## Features
 
-**Wallpapers**
-- Videos (mp4, mov, m4v, webm, mkv), images (png, jpg, heic, webp) and animated GIFs. Formats macOS can't play
-  (WebM/VP9, MKV, AV1 on M3 and newer) are converted to HEVC automatically.
-- Add them with **Add**, by dragging files, folders or links into the window, or by pasting a link (**⌘V**).
-  Links can point to a file, a web page that has one, or YouTube, Vimeo, TikTok and hundreds of other sites.
-- Fill modes per wallpaper: **Fill, Fit, Stretch, Center**. Volume, mute and playback speed per wallpaper.
-- Works on every display and every Space, below your desktop icons. Smooth crossfade when switching.
-
-**Library**
-- Full-screen library with live previews of the **Desktop** and **Lock Screen**.
-- Click a wallpaper to open its panel: put it on the desktop or the lock screen, pause, volume, speed, fill mode,
-  folder and hotkey. Previews play on their own, and a timeline slider lets you step through a video frame by frame —
-  for the desktop wallpaper it moves and pauses the wallpaper itself.
-- **Folders** with a built-in icon pack (54 icons × 8 colors) or your own images; drag wallpapers onto a folder.
-- **Locked folders**: protect a folder with a password — its wallpapers disappear from the library, the menu and
-  Next/Random until you unlock it.
-- Rename anything with a double-click.
-
-**Hotkeys**
-- Give any wallpaper its own hotkey: press once to switch to it, press again to go back to the previous one. A
-  hotkey can switch the desktop, the lock screen or both, and works even for wallpapers in locked folders.
-- Global hotkeys for next / previous / random, pause, fill mode, mute and opening the library.
-- Combinations already used by macOS or other apps (Spotlight, screenshots, ⌘Tab, ⌘Q…) can't be assigned by mistake.
-
-**Smart pause** (like Wallpaper Engine's performance settings) — the video pauses when:
-- an app is full screen, or windows cover the desktop;
-- another app is focused (optional);
-- the Mac runs on battery (optional), in Low Power Mode or gets hot;
-- an app from your **App rules** is running or in front (e.g. games);
-- the display sleeps or the screen is locked.
-
-**Performance**
-- *Optimize for This Mac*: re-encodes a video to HEVC at your screen size and up to 30 fps (24/60 in Settings),
-  automatically for new videos. A 4K 60 fps clip becomes much cheaper to decode.
-- A video paused for a while (30 s by default) is unloaded from memory and replaced by its exact paused frame, then
-  loaded back when playback resumes — like Wallpaper Engine's *Stop* setting.
-
-**And also**
-- Lock screen: a frame of the chosen wallpaper — you pick which one (macOS doesn't allow live video there).
-- Automatic rotation by timer, in order or shuffled.
-- 8 color styles, your own styles (shareable as `.json`), English and Russian interface.
-- Launch at login; the library opens filling the screen, in full screen or at its last size; Dock and menu bar
-  icons can be turned off.
+- **Wallpapers:** videos (mp4, mov, m4v, webm, mkv), animated GIFs and images (png, jpg, heic, webp, tiff, bmp),
+  below the desktop icons on every Space, including full-screen app Spaces. One wallpaper for all desktops, or a
+  different one per desktop (keys 1–9 in the library, ` for all).
+- **Library:** add files and folders with a button or by drag & drop (files are copied into the library), or
+  paste a video link (YouTube first; other sites [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports may work).
+  New files land in the folder you are viewing. Folders (created private right away if you like, renamed and
+  deleted from the folder menu), search, grid and list views; Delete removes the wallpaper under the pointer.
+- **Per-wallpaper settings:** **Fill, Fit, Stretch, Center** or **Custom** (position and zoom), volume, mute and
+  playback speed. The inspector preview can play with sound while the desktop copy stays silent.
+- **Transitions:** fade, wipe, wave, grow, directional sweeps and more between wallpapers, rendered on the GPU.
+- **Optimize for This Mac:** videos are converted to HEVC at your screen's size with a frame-rate limit
+  (VideoToolbox, HDR and 10-bit kept). New imports are optimized automatically when it helps; videos that are
+  already light are left alone.
+- **Smart pause:** playback pauses when an app is full screen, windows cover the desktop, the Mac runs in Low
+  Power Mode or gets hot, another app is focused (optional), or an app from your own rules runs; it stops while
+  the display sleeps, the screen is locked or the screen saver runs. The menu bar and the library toolbar show
+  whether the wallpaper plays, is paused or unloaded and why, and whether sound is on, muted for this wallpaper or
+  muted everywhere. A video paused long enough is unloaded and replaced by its exact paused frame. On battery
+  the wallpaper keeps playing.
+- **Lock screen:** the macOS desktop picture follows the wallpaper as a still frame, so the lock screen and
+  Mission Control match. Pick the frame in the inspector, or choose a separate lock screen wallpaper. Your own
+  desktop picture comes back when LiveWall quits, even after a crash.
+- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library, the menu bar and
+  the desktop until you unlock with Touch ID (or your Mac password). They lock again when the screen locks, the
+  display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is hidden too. This keeps
+  wallpapers away from casual glances; the files are not encrypted.
+- **Rotation:** change the wallpaper on a timer, in order or shuffled.
+- **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
+  while the library window is open.
+- **Appearance:** light, dark or system; six color themes plus a custom accent.
+- **Languages:** the menu bar item and messages are in English and Russian; the library window is in English.
+- **Command line:** `lwctl` controls the running app (see below).
 
 ## Hotkeys
 
-Wallpaper hotkeys are set in each wallpaper's panel — none are assigned until you choose one. The global ones can
-be changed or cleared in **Settings → Hotkeys**:
+Change or clear them in **Settings → Shortcuts**:
 
 | Action | Default |
 | --- | --- |
 | Next wallpaper | ⌃⌥⌘→ |
 | Previous wallpaper | ⌃⌥⌘← |
 | Random wallpaper | ⌃⌥⌘R |
-| Pause / resume video | ⌃⌥⌘Space |
-| Cycle fill mode | ⌃⌥⌘M |
-| Mute / unmute | ⌃⌥⌘S |
-| Open library | ⌃⌥⌘L |
+| Pause / resume | ⌃⌥⌘Space |
+| Mute / unmute | ⌃⌥⌘M |
+| Volume up / down | ⌃⌥⌘↑ / ⌃⌥⌘↓ |
+| Lock private folders | ⌃⌥⌘X |
 
-Hotkeys don't need any permissions in System Settings. Combinations taken by macOS or another app are refused,
-and LiveWall tells you what uses them.
+Hotkeys need no permissions. Combinations macOS already uses are refused, and LiveWall says what uses them.
 
-## Good to know
+## Command line
 
-- **Battery.** Hardware decoding keeps the cost low, but a full-screen video still uses some power. Smart pause
-  stops playback whenever the desktop isn't visible; turn on *Running on battery* in Settings to pause on battery.
-  For the lowest cost, optimize your videos (wallpaper panel → *Optimize for This Mac*).
-- **Lock screen.** macOS doesn't let apps show live video on the lock screen, so LiveWall sets one frame of the
-  wallpaper as the regular macOS wallpaper (Wallpaper Engine on Windows does the same). Choose the frame in a
-  video's panel. Turning *Show the wallpaper on the lock screen* off brings back the wallpaper you had before.
-- **Locked folders** hide wallpapers inside LiveWall. Passwords are stored only as a salted PBKDF2-SHA256 hash and
-  can't be recovered. The files themselves are not encrypted on disk.
-- **Wallpaper Engine.** Video wallpapers (`.mp4`) work directly. *Scene* wallpapers (`scene.pkg`) only run inside
-  Wallpaper Engine and can't be played on a Mac.
-- **YouTube and other sites** are downloaded with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
-  [Deno](https://deno.com). LiveWall asks before downloading them the first time (or uses them from Homebrew) and can
-  update them in **Settings → YouTube and other sites**. VP8 videos can't be decoded on a Mac.
+`lwctl` is inside the app. Link it somewhere on your `PATH` if you like:
 
-## Where your data lives
+```bash
+ln -s /Applications/LiveWall.app/Contents/MacOS/lwctl /usr/local/bin/lwctl
+```
 
-- Wallpapers, thumbnails, icons and the downloaded video tools: `~/Library/Application Support/LiveWall/`
-- Settings: `defaults read io.github.belhetile.livewall`
+`lwctl [--json] <command>` talks to the running LiveWall. Exit codes: 0 ok, 1 error, 2 LiveWall not running,
+64 usage error.
+
+```
+pause  resume  toggle-pause  mute  unmute  next  previous  random  lock
+status  current  quit  spaces  windows  desktop  rules
+library {list,add [--folder ID],remove,rename,move}
+folder {create,rename,delete,lock}
+apply [--item ID] [--target default|space] [--target-id ID]
+set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
+set-item ID [--volume N --speed N --muted BOOL --still-time N]
+settings {get,set JSON}
+hotkeys {get,set ACTION [COMBO]}
+login-item {get,set BOOL}
+menu  tools  tools-install TOOL [--consent]
+probe PATH
+download URL [--consent] [--no-wait]  download-status ID  download-cancel ID  downloads
+optimize ID  optimize-status ID  optimize-cancel ID
+```
+
+`apply`, `next`, `previous` and `random` take a transition:
+
+```
+-t, --transition KIND   none simple fade left right top bottom wipe wave grow center any outer random
+--duration SECONDS      default 1.0
+--bezier A,B,C,D        default 0.54,0,0.34,0.99
+--angle DEG             wipe/wave direction
+--pos X,Y | ALIAS       circle origin: fractions, pixels or center/top-right/...
+--invert-y              flip the y axis of --pos
+--wave PERIOD,AMPLITUDE default 20,20
+```
+
+```bash
+lwctl next -t wipe --angle 90 --duration 0.8
+lwctl settings set '{"transition":{"kind":"grow","pos":"bottom-left"}}'
+```
+
+## Data
+
+Everything lives in `~/Library/Application Support/LiveWall/`:
+
+| Path | Contents |
+| --- | --- |
+| `library.json` | wallpapers, folders, what is shown where |
+| `settings.json` | settings and hotkeys |
+| `swap-state.json` | your original desktop pictures, while LiveWall replaces them |
+| `Wallpapers/`, `Thumbs/`, `Stills/` | media, thumbnails, still frames |
+| `private/` | the same for locked folders (hidden, owner-only) |
+| `Incoming/` | downloads in progress |
 
 ## Uninstall
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/uninstall.sh | bash
-```
-
-Add ` -s -- --all` at the end to also delete your wallpapers and settings. Or just drag LiveWall from Applications
-to the Trash.
-
-## Color style files
-
-Styles are small JSON files you can share (**Settings → Color style → Export… / Import…**):
-
-```json
-{ "id": "my-style", "name": "Midnight", "primary": "#3B5BDB", "secondary": "#AE3EC9" }
-```
-
-## Contributing
-
-Bug reports and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md). Changes are listed in
-[CHANGELOG.md](CHANGELOG.md).
+Quit LiveWall from the menu bar (this puts your desktop picture back), then delete
+`/Applications/LiveWall.app`. To remove your wallpapers and settings too, delete
+`~/Library/Application Support/LiveWall`.
 
 ## License
 

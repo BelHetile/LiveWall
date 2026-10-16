@@ -16,6 +16,9 @@ labels: bug
 
 **Environment**
 - macOS version:
-- Mac (Apple Silicon / Intel):
+- Mac model (M1, M2, …):
 - LiveWall version (LiveWall → About LiveWall):
 - Wallpaper format or link (if related):
+
+**Logs (optional)**
+`log show --last 10m --predicate 'subsystem == "io.github.belhetile.livewall"'`

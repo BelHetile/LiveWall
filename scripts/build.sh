@@ -1,103 +1,79 @@
 #!/bin/bash
-# Builds LiveWall.app from source.
-#
-#   scripts/build.sh               build for this Mac            -> build/LiveWall.app
-#   scripts/build.sh --install     build, copy to /Applications and launch
-#   scripts/build.sh --universal   Apple Silicon + Intel binary  (used for releases)
-#
-# LIVEWALL_VERSION=1.2.3 scripts/build.sh   sets the version shown in About.
 set -euo pipefail
-SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-# run from the repository root, wherever the script is called from
-cd "$(dirname "$SCRIPT")/.."
+
+usage() {
+  cat <<'EOF'
+Builds LiveWall.app from source.
+
+  scripts/build.sh             build for this Mac          -> build/LiveWall.app
+  scripts/build.sh --install   build, copy to /Applications and launch
+
+LIVEWALL_VERSION=2.1.0 scripts/build.sh   sets the version shown in About.
+LIVEWALL_BUILD=42 scripts/build.sh        sets the build number (default: commit count).
+EOF
+}
+
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 INSTALL=0
-UNIVERSAL=0
 for arg in "$@"; do
   case "$arg" in
     --install) INSTALL=1 ;;
-    --universal) UNIVERSAL=1 ;;
-    -h|--help) sed -n '2,9p' "$SCRIPT"; exit 0 ;;
-    *) echo "Unknown option: $arg"; exit 1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $arg" >&2; usage >&2; exit 64 ;;
   esac
 done
 
-if ! command -v swift >/dev/null 2>&1; then
-  echo "Swift not found. Install the Command Line Tools first:  xcode-select --install"
-  exit 1
-fi
+[[ "$(uname -m)" == "arm64" ]] || { echo "LiveWall builds for Apple Silicon (arm64) only." >&2; exit 1; }
+command -v cargo >/dev/null 2>&1 || { echo "cargo not found. Install Rust first: https://rustup.rs" >&2; exit 1; }
+command -v iconutil >/dev/null 2>&1 || { echo "iconutil not found. Install the Command Line Tools: xcode-select --install" >&2; exit 1; }
 
-OUT="build"
-STAGE="$OUT/bin"
-rm -rf "$STAGE"
-mkdir -p "$STAGE"
-
-# Finds the freshly built binary that contains the given architecture.
-find_binary() {
-  local arch="$1" path
-  path="$(swift build -c release --arch "$arch" --show-bin-path 2>/dev/null)/LiveWall"
-  if [[ -f "$path" ]] && lipo -archs "$path" 2>/dev/null | grep -qw "$arch"; then
-    echo "$path"; return
-  fi
-  while IFS= read -r candidate; do
-    if lipo -archs "$candidate" 2>/dev/null | grep -qw "$arch"; then
-      echo "$candidate"; return
-    fi
-  done < <(find .build -type f -name LiveWall -perm -u+x 2>/dev/null | grep -i release)
-}
-
-build_arch() {
-  local arch="$1" bin
-  echo "==> Building for $arch"
-  swift build -c release --arch "$arch"
-  bin="$(find_binary "$arch")"
-  if [[ -z "$bin" ]]; then
-    echo "Could not find the built LiveWall binary for $arch"
-    exit 1
-  fi
-  # copy right away: some build systems reuse one output folder for every architecture
-  cp "$bin" "$STAGE/LiveWall-$arch"
-}
-
-if [[ "$UNIVERSAL" == 1 ]]; then
-  build_arch arm64
-  build_arch x86_64
-  lipo -create "$STAGE/LiveWall-arm64" "$STAGE/LiveWall-x86_64" -output "$STAGE/LiveWall"
+VERSION="${LIVEWALL_VERSION:-$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')}"
+VERSION="${VERSION#v}"
+[[ -n "$VERSION" ]] || { echo "Could not read the version from Cargo.toml." >&2; exit 1; }
+if [[ -n "${LIVEWALL_BUILD:-}" ]]; then
+  BUILD="$LIVEWALL_BUILD"
+elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  BUILD="$(git rev-list --count HEAD)"
 else
-  ARCH="$(uname -m)"
-  build_arch "$ARCH"
-  cp "$STAGE/LiveWall-$ARCH" "$STAGE/LiveWall"
+  BUILD="1"
 fi
 
-APP="$OUT/LiveWall.app"
+echo "==> Building LiveWall $VERSION ($BUILD)"
+cargo build --release --locked --bin LiveWall --bin lwctl
+TARGET="$(cargo metadata --format-version 1 --no-deps | sed -E 's/.*"target_directory":"([^"]+)".*/\1/')/release"
+
+APP="build/LiveWall.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$STAGE/LiveWall" "$APP/Contents/MacOS/LiveWall"
-cp Resources/Info.plist "$APP/Contents/Info.plist"
-if [[ -n "${LIVEWALL_VERSION:-}" ]]; then
-  plutil -replace CFBundleShortVersionString -string "$LIVEWALL_VERSION" "$APP/Contents/Info.plist"
-fi
-if [[ -d Resources/AppIcon.iconset ]]; then
-  iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-fi
-codesign --force --deep -s - "$APP"
+cp "$TARGET/LiveWall" "$TARGET/lwctl" "$APP/Contents/MacOS/"
+cp resources/Info.plist "$APP/Contents/Info.plist"
+cp -R resources/en.lproj resources/ru.lproj "$APP/Contents/Resources/"
+iconutil -c icns resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"
+plutil -lint -s "$APP/Contents/Info.plist"
 
+codesign --force --sign - "$APP/Contents/MacOS/lwctl"
+codesign --force --sign - "$APP"
+codesign --verify --strict "$APP"
 echo "==> Built $APP ($(lipo -archs "$APP/Contents/MacOS/LiveWall"))"
 
-if [[ "$INSTALL" == 1 ]]; then
-  pkill -x LiveWall 2>/dev/null || true
-  # wait until the running copy has really quit
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -x LiveWall >/dev/null 2>&1 || break
+[[ "$INSTALL" == 1 ]] || exit 0
+
+if pgrep -x -u "$USER" LiveWall >/dev/null 2>&1; then
+  osascript -e 'tell application id "io.github.belhetile.livewall" to quit' >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    pgrep -x -u "$USER" LiveWall >/dev/null 2>&1 || break
     sleep 0.5
   done
-  rm -rf /Applications/LiveWall.app
-  cp -R "$APP" /Applications/LiveWall.app
-  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/LiveWall.app >/dev/null 2>&1 || true
-  sleep 1
-  if open /Applications/LiveWall.app 2>/dev/null || { sleep 2; open /Applications/LiveWall.app; }; then
-    echo "==> Installed to /Applications and launched."
-  else
-    echo "==> Installed to /Applications. Launch LiveWall from Spotlight."
-  fi
 fi
+if pgrep -x -u "$USER" LiveWall >/dev/null 2>&1; then
+  echo "LiveWall is still running; quit it and run the script again." >&2
+  exit 1
+fi
+rm -rf /Applications/LiveWall.app
+ditto "$APP" /Applications/LiveWall.app
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/LiveWall.app >/dev/null 2>&1 || true
+open /Applications/LiveWall.app
+echo "==> Installed to /Applications and launched."

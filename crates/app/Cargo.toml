@@ -1,0 +1,266 @@
+[package]
+name = "livewall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LiveWall menu-bar wallpaper engine"
+
+[lib]
+name = "livewall"
+path = "src/lib.rs"
+
+[[bin]]
+name = "LiveWall"
+path = "src/main.rs"
+
+[[test]]
+name = "e2e_desktop"
+path = "tests/e2e_desktop.rs"
+harness = false
+
+[[test]]
+name = "e2e_hotkeys"
+path = "tests/e2e_hotkeys.rs"
+harness = false
+
+[[test]]
+name = "e2e_media"
+path = "tests/e2e_media.rs"
+harness = false
+
+[features]
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+sha2.workspace = true
+base64.workspace = true
+semver.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-oslog.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = [
+  "std",
+  "NSObject",
+  "NSNotification",
+  "NSString",
+  "NSArray",
+  "NSDictionary",
+  "NSAttributedString",
+  "NSData",
+  "NSURL",
+  "NSValue",
+  "NSBundle",
+  "NSAppleEventDescriptor",
+  "NSAppleEventManager",
+  "NSGeometry",
+  "NSOperation",
+  "NSTimer",
+  "NSDate",
+  "NSRunLoop",
+  "NSError",
+  "NSLocale",
+  "NSDistributedNotificationCenter",
+  "NSProcessInfo",
+  "block2",
+] }
+objc2-app-kit = { workspace = true, features = [
+  "std",
+  "NSApplication",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSWindow",
+  "NSView",
+  "NSScreen",
+  "NSColor",
+  "NSWorkspace",
+  "NSGraphics",
+  "NSMenu",
+  "NSMenuItem",
+  "NSStatusBar",
+  "NSStatusItem",
+  "NSStatusBarButton",
+  "NSButton",
+  "NSControl",
+  "NSImage",
+  "NSCell",
+  "NSAppearance",
+  "NSAlert",
+  "NSAnimation",
+  "NSAnimationContext",
+  "NSAttributedString",
+  "NSBox",
+  "NSColorList",
+  "NSColorWell",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSParagraphStyle",
+  "NSSavePanel",
+  "objc2-core-graphics",
+  "NSButtonCell",
+  "NSClipView",
+  "NSColorSpace",
+  "NSEvent",
+  "NSFont",
+  "NSFontDescriptor",
+  "NSGlassEffectView",
+  "NSImageView",
+  "NSLayoutAnchor",
+  "NSLayoutConstraint",
+  "NSMenuToolbarItem",
+  "NSPopUpButton",
+  "NSScrollView",
+  "NSSearchField",
+  "NSSearchToolbarItem",
+  "NSSegmentedControl",
+  "NSSlider",
+  "NSSplitView",
+  "NSSplitViewController",
+  "NSSplitViewItem",
+  "NSStackView",
+  "NSSwitch",
+  "NSTabView",
+  "NSTabViewController",
+  "NSTabViewItem",
+  "NSText",
+  "NSTextField",
+  "NSTextView",
+  "NSTintProminence",
+  "NSToolbar",
+  "NSToolbarItem",
+  "NSToolbarItemGroup",
+  "NSTrackingArea",
+  "NSUserInterfaceLayout",
+  "NSViewController",
+  "NSVisualEffectView",
+  "NSWindowController",
+  "block2",
+  "objc2-quartz-core",
+  "objc2-core-foundation",
+] }
+objc2-core-foundation = { workspace = true, features = [
+  "std",
+  "CFArray",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+  "CFURL",
+  "CFUUID",
+  "CFData",
+  "CFError",
+  "CFPropertyList",
+  "CFCGTypes",
+] }
+objc2-core-graphics = { workspace = true, features = [
+  "std",
+  "CGWindow",
+  "CGWindowLevel",
+  "CGGeometry",
+  "CGDirectDisplay",
+  "CGError",
+  "CGEventSource",
+  "CGEventTypes",
+  "CGImage",
+  "CGContext",
+  "CGColorSpace",
+  "CGBitmapContext",
+] }
+objc2-core-media = { workspace = true, features = [
+  "std",
+  "CMBase",
+  "CMTime",
+  "CMFormatDescription",
+  "CMSampleBuffer",
+  "CMBlockBuffer",
+  "objc2",
+] }
+objc2-core-video = { workspace = true, features = [
+  "std",
+  "CVBase",
+  "CVBuffer",
+  "CVImageBuffer",
+  "CVPixelBuffer",
+  "CVPixelBufferPool",
+  "CVReturn",
+  "objc2",
+  "objc2-core-graphics",
+] }
+objc2-quartz-core = { workspace = true, features = [
+  "std",
+  "CALayer",
+  "CAGradientLayer",
+  "CATransform3D",
+  "CAMediaTimingFunction",
+  "CATransaction",
+  "objc2-core-foundation",
+] }
+objc2-av-foundation = { workspace = true, features = [
+  "std",
+  "AVAsset",
+  "AVAssetTrack",
+  "AVAssetReader",
+  "AVAssetReaderOutput",
+  "AVAssetImageGenerator",
+  "AVAssetWriter",
+  "AVAssetWriterInput",
+  "AVMediaFormat",
+  "AVVideoSettings",
+  "AVAsynchronousKeyValueLoading",
+  "AVPlayer",
+  "AVPlayerItem",
+  "AVPlayerLayer",
+  "AVPlayerLooper",
+  "AVAnimation",
+  "block2",
+  "dispatch2",
+  "objc2-core-media",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+  "objc2-core-video",
+  "objc2-quartz-core",
+] }
+objc2-image-io = { workspace = true, features = [
+  "std",
+  "CGImageSource",
+  "CGImageDestination",
+  "CGImageProperties",
+  "objc2-core-graphics",
+] }
+objc2-color-sync = { workspace = true, features = ["std", "ColorSyncDevice"] }
+objc2-service-management = { workspace = true, features = [
+  "std",
+  "SMAppService",
+  "objc2",
+  "objc2-foundation",
+] }
+objc2-video-toolbox = { workspace = true, features = [
+  "std",
+  "objc2",
+  "objc2-core-media",
+  "VTDecompressionSession",
+  "VTCompressionProperties",
+  "VTUtilities",
+] }
+objc2-local-authentication = { workspace = true, features = [
+  "std",
+  "LAContext",
+  "block2",
+] }
+plist.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+libc.workspace = true
+proto.workspace = true
+
+[dev-dependencies]
+livewall = { path = ".", features = ["test-support"] }
