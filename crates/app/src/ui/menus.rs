@@ -201,7 +201,6 @@ pub fn context_menu(mtm: MainThreadMarker, index: usize) -> Option<Retained<NSMe
         for (position, name) in ui.library.folders.iter().enumerate() {
             let entry = item(name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL));
             lock_mark(&entry, folder_glyph(&ui.library, position), current == Some(position));
-            entry.setEnabled(!ui.library.sealed(position));
             folders.addItem(&entry);
         }
         folders.addItem(&NSMenuItem::separatorItem(mtm));

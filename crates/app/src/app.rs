@@ -992,10 +992,10 @@ impl App {
 
     pub fn create_folder(&mut self, name: String, item: Option<ItemId>) -> Uuid {
         let id = self.library.create_folder(name);
-        if let Some(item) = item {
-            self.library.move_items(&[item], Some(id));
-        }
         self.persist_library();
+        if let Some(item) = item {
+            let _ = self.move_to_folder(&[item], Some(id));
+        }
         return id;
     }
 

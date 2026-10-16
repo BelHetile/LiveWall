@@ -118,8 +118,7 @@ pub fn denies(library: &Library, request: &Request) -> bool {
     let item = |id: &String| id.parse::<ItemId>().is_ok_and(|id| library.is_private_id(id));
     let folder = |id: &String| id.parse::<FolderId>().is_ok_and(|id| library.is_locked_folder(Some(id)));
     return match request {
-        Request::LibraryRemove { ids } => ids.iter().any(item),
-        Request::LibraryMove { ids, folder: target } => ids.iter().any(item) || target.as_ref().is_some_and(folder),
+        Request::LibraryRemove { ids } | Request::LibraryMove { ids, .. } => ids.iter().any(item),
         Request::LibraryRename { id, .. }
         | Request::Optimize { id }
         | Request::OptimizeCancel { id }
@@ -289,6 +288,9 @@ impl App {
         }
         self.library.set_folder_flags(id, locked, hidden);
         self.persist_library();
+        if locked == Some(true) && !was_locked {
+            self.lock();
+        }
         self.refresh_visibility();
         return ok(&serde_json::json!({ "id": id.to_string(), "locked": locked, "hidden": hidden }));
     }
@@ -467,7 +469,6 @@ mod tests {
         let denied = [
             Request::LibraryRemove { ids: vec![open.clone(), private.clone()] },
             Request::LibraryMove { ids: vec![private.clone()], folder: None },
-            Request::LibraryMove { ids: vec![open.clone()], folder: Some(folder.clone()) },
             Request::LibraryRename { id: private.clone(), title: "x".into() },
             Request::SetItem { item: private.clone(), volume: None, speed: None, muted: None, still_time: None },
             Request::SetGeometry { item: private.clone(), mode: FillMode::Fill, geometry: proto::Geometry::default() },
@@ -475,7 +476,7 @@ mod tests {
             Request::Optimize { id: private.clone() },
             Request::OptimizeCancel { id: private },
             Request::FolderRename { id: folder.clone(), name: "x".into() },
-            Request::FolderDelete { id: folder },
+            Request::FolderDelete { id: folder.clone() },
         ];
         for request in denied {
             assert!(denies(&library, &request), "{request:?}");
@@ -483,6 +484,7 @@ mod tests {
         let allowed = [
             Request::LibraryRemove { ids: vec![open.clone()] },
             Request::LibraryMove { ids: vec![open.clone()], folder: None },
+            Request::LibraryMove { ids: vec![open.clone()], folder: Some(folder) },
             Request::Apply { item: Some(open.clone()), target: ApplyTarget::Default, transition: None },
             Request::Apply { item: None, target: ApplyTarget::Default, transition: None },
             Request::SetItem { item: open, volume: None, speed: None, muted: None, still_time: None },
