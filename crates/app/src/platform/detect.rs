@@ -20,11 +20,6 @@ use crate::rules;
 
 pub const FULLSCREEN_TOLERANCE: f64 = 2.0;
 
-pub struct Screen {
-    pub uuid: String,
-    pub frame: rules::Rect,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Signals {
     pub display_asleep: bool,
@@ -32,12 +27,17 @@ pub struct Signals {
     pub low_power: bool,
 }
 
-pub fn snapshot(screens: &[Screen], signals: Signals) -> rules::Snapshot {
-    let windows = on_screen_windows(screens);
+pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
+    let windows = on_screen_windows(frame);
     let own = own_pid();
-    let displays = screens.iter().map(|screen| display_state(screen, &windows, own)).collect();
+    let candidates: Vec<rules::Rect> =
+        windows.iter().filter(|window| is_candidate(window, own)).map(|window| window.bounds).collect();
+    let fullscreen = candidates.iter().any(|window| approximately_covers(*window, frame, FULLSCREEN_TOLERANCE));
+    let coverage = coverage_fraction(&candidates, frame);
     return rules::Snapshot {
-        displays,
+        frame,
+        fullscreen,
+        coverage,
         other_app_audio: external_audio_playing(),
         frontmost: frontmost_bundle(),
         running_apps: running_bundles(),
@@ -59,15 +59,7 @@ fn own_pid() -> i32 {
     return std::process::id().cast_signed();
 }
 
-fn flip_height(screens: &[Screen]) -> f64 {
-    if let Some(primary) = screens.iter().find(|screen| screen.frame.x == 0.0 && screen.frame.y == 0.0) {
-        return primary.frame.h;
-    }
-    return screens.iter().map(|screen| screen.frame.y + screen.frame.h).fold(0.0, f64::max);
-}
-
-fn on_screen_windows(screens: &[Screen]) -> Vec<Window> {
-    let flip = flip_height(screens);
+fn on_screen_windows(frame: rules::Rect) -> Vec<Window> {
     let options = CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
     let Some(raw) = CGWindowListCopyWindowInfo(options, kCGNullWindowID) else {
         return Vec::new();
@@ -86,7 +78,7 @@ fn on_screen_windows(screens: &[Screen]) -> Vec<Window> {
         let pid =
             cf_i64(dictionary, unsafe { kCGWindowOwnerPID }).and_then(|value| i32::try_from(value).ok()).unwrap_or(0);
         let alpha = cf_f64(dictionary, unsafe { kCGWindowAlpha }).unwrap_or(1.0);
-        let flipped = rules::Rect::new(bounds.x, flip - (bounds.y + bounds.h), bounds.w, bounds.h);
+        let flipped = rules::Rect::new(bounds.x, frame.h - (bounds.y + bounds.h), bounds.w, bounds.h);
         windows.push(Window { bounds: flipped, layer, pid, alpha });
     }
     return windows;
@@ -112,14 +104,6 @@ fn cf_f64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option
 
 fn is_candidate(window: &Window, own: i32) -> bool {
     return window.pid != own && window.layer == 0 && window.alpha > 0.0;
-}
-
-fn display_state(screen: &Screen, windows: &[Window], own: i32) -> rules::DisplayState {
-    let candidates: Vec<rules::Rect> =
-        windows.iter().filter(|window| is_candidate(window, own)).map(|window| window.bounds).collect();
-    let fullscreen = candidates.iter().any(|window| approximately_covers(*window, screen.frame, FULLSCREEN_TOLERANCE));
-    let coverage = coverage_fraction(&candidates, screen.frame);
-    return rules::DisplayState { display: screen.uuid.clone(), frame: screen.frame, fullscreen, coverage };
 }
 
 pub fn coverage_fraction(windows: &[rules::Rect], screen: rules::Rect) -> f64 {

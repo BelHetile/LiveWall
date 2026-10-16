@@ -119,7 +119,7 @@ pub struct Engine {
     mtm: MainThreadMarker,
     cgs: spaces::Cgs,
     topology: spaces::Topology,
-    displays: Vec<Display>,
+    display: Display,
     surfaces: HashMap<SurfaceKey, Surface>,
     nodes: HashMap<ItemId, Node>,
     desktop: Desktop,
@@ -137,25 +137,14 @@ pub struct Playback {
     pub paused: bool,
     pub muted: bool,
     pub stop_after: u32,
-    pub verdicts: Vec<rules::Verdict>,
-}
-
-impl Playback {
-    fn action_for(&self, display: &str) -> rules::Action {
-        for verdict in &self.verdicts {
-            if verdict.display == display {
-                return verdict.action;
-            }
-        }
-        return rules::Action::KeepRunning;
-    }
+    pub verdict: rules::Verdict,
 }
 
 impl Engine {
     pub fn new(mtm: MainThreadMarker, paths: &Paths) -> Self {
         let cgs = spaces::Cgs::load();
-        let displays = collect_displays(mtm);
-        let topology = cgs.topology();
+        let display = main_display(mtm);
+        let topology = cgs.topology(&display.uuid);
         let api = crate::platform::desktop::DesktopApi::load();
         let mode = if topology.fallback || !api.per_space() { Mode::Screen } else { Mode::PerSpace };
         let mut desktop = Desktop::new(paths.swap_state_file(), mode);
@@ -164,7 +153,7 @@ impl Engine {
             mtm,
             cgs,
             topology,
-            displays,
+            display,
             surfaces: HashMap::new(),
             nodes: HashMap::new(),
             desktop,
@@ -181,8 +170,7 @@ impl Engine {
 
     pub fn sync(&mut self, library: &Library, playback: &Playback) {
         self.refresh();
-        let screens: Vec<String> = self.displays.iter().map(|display| display.uuid.clone()).collect();
-        let plan = spaces::plan(&self.topology, &screens);
+        let plan = spaces::plan(&self.topology);
         for action in spaces::diff(&self.existing(), &plan) {
             self.apply_action(action);
         }
@@ -239,15 +227,12 @@ impl Engine {
     }
 
     pub fn desktop_targets(&self) -> Vec<Target> {
-        let mut seen = HashSet::new();
-        let mut targets = Vec::new();
+        let mut targets: Vec<Target> = Vec::new();
         for surface in self.surfaces.values() {
-            let key = &surface.spec.key;
-            if !seen.insert((key.display.clone(), key.space.clone())) {
+            if targets.iter().any(|target| target.space == surface.spec.key.space) {
                 continue;
             }
-            let Some(display) = self.displays.iter().find(|display| display.uuid == key.display) else { continue };
-            targets.push(Target { display: key.display.clone(), space: key.space.clone(), display_id: display.id });
+            targets.push(Target { space: surface.spec.key.space.clone(), display_id: self.display.id });
         }
         return targets;
     }
@@ -255,11 +240,11 @@ impl Engine {
     fn resolve_stills(&mut self, library: &Library, targets: &[Target]) -> std::collections::BTreeMap<String, String> {
         let mut stills = std::collections::BTreeMap::new();
         for target in targets {
-            let surface = SurfaceKey::new(target.display.clone(), target.space.clone());
+            let surface = SurfaceKey::new(target.space.clone());
             let Some(item_id) = playable_item(library, resolve_item(library, &surface)) else { continue };
             let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
             if let Some(path) = self.still_for(item) {
-                stills.insert(desktop::key(&target.display, &target.space), path);
+                stills.insert(target.space.clone(), path);
             }
         }
         return stills;
@@ -419,8 +404,14 @@ impl Engine {
         return NSScreen::screensHaveSeparateSpaces(self.mtm);
     }
 
-    pub fn displays(&self) -> &[Display] {
-        return &self.displays;
+    pub fn display(&self) -> &Display {
+        return &self.display;
+    }
+
+    pub fn max_display_px(&self) -> u32 {
+        let width = pixel_size(self.display.frame.size.width * self.display.scale);
+        let height = pixel_size(self.display.frame.size.height * self.display.scale);
+        return width.max(height);
     }
 
     pub fn windows(&self) -> Vec<WindowReport> {
@@ -432,7 +423,6 @@ impl Engine {
                 None => (0.0, false),
             };
             reports.push(WindowReport {
-                display: key.display.clone(),
                 space: key.space.clone(),
                 number: surface.window.window_number(),
                 level,
@@ -450,7 +440,7 @@ impl Engine {
                 ready,
             });
         }
-        reports.sort_by_key(|report| (report.display.clone(), report.space.clone()));
+        reports.sort_by(|a, b| a.space.cmp(&b.space));
         return reports;
     }
 
@@ -461,7 +451,7 @@ impl Engine {
                 item: item.to_string(),
                 kind: node.kind,
                 layers: node.layer_count(),
-                keys: node.keys().iter().map(|key| format!("{}/{}", key.display, key.space)).collect(),
+                keys: node.keys().iter().map(|key| key.space.clone()).collect(),
             });
         }
         reports.sort_by(|a, b| a.item.cmp(&b.item));
@@ -469,17 +459,14 @@ impl Engine {
     }
 
     fn refresh(&mut self) {
-        self.displays = collect_displays(self.mtm);
-        self.topology = self.cgs.topology();
+        self.display = main_display(self.mtm);
+        self.topology = self.cgs.topology(&self.display.uuid);
     }
 
     fn reposition(&mut self) {
-        let frames: Vec<(SurfaceKey, CGRect)> =
-            self.surfaces.keys().map(|key| (key.clone(), self.display_frame(&key.display))).collect();
-        for (key, frame) in frames {
-            if let Some(surface) = self.surfaces.get_mut(&key)
-                && surface.frame != frame
-            {
+        let frame = self.display.frame;
+        for surface in self.surfaces.values_mut() {
+            if surface.frame != frame {
                 surface.window.set_frame(frame);
                 surface.frame = frame;
             }
@@ -488,7 +475,7 @@ impl Engine {
 
     fn refresh_active(&mut self) {
         let active: Vec<(SurfaceKey, bool)> =
-            self.surfaces.keys().map(|key| (key.clone(), self.topology.is_active(&key.display, &key.space))).collect();
+            self.surfaces.keys().map(|key| (key.clone(), self.topology.is_active(&key.space))).collect();
         for (key, is_active) in active {
             if let Some(surface) = self.surfaces.get_mut(&key) {
                 surface.active = is_active;
@@ -528,12 +515,12 @@ impl Engine {
     }
 
     fn create_surface(&mut self, spec: spaces::SurfaceSpec) {
-        let frame = self.display_frame(&spec.key.display);
+        let frame = self.display.frame;
         let window = WallpaperWindow::create(self.mtm, frame, spec.can_join_all);
         if let Some(space_id) = spec.space_id {
             self.cgs.pin_window(window.window_number(), space_id);
         }
-        let active = self.topology.is_active(&spec.key.display, &spec.key.space);
+        let active = self.topology.is_active(&spec.key.space);
         self.surfaces.insert(spec.key.clone(), Surface { window, spec, frame, active, item: None });
     }
 
@@ -671,11 +658,11 @@ impl Engine {
     }
 
     fn update_playback(&mut self, library: &Library, playback: &Playback) {
-        let states: HashMap<SurfaceKey, (String, bool)> =
-            self.surfaces.iter().map(|(key, surface)| (key.clone(), (key.display.clone(), surface.active))).collect();
+        let states: HashMap<SurfaceKey, bool> =
+            self.surfaces.iter().map(|(key, surface)| (key.clone(), surface.active)).collect();
         let should = |key: &SurfaceKey| -> bool {
-            let Some((display, active)) = states.get(key) else { return false };
-            return should_play(playback.paused, playback.action_for(display), *active);
+            let Some(active) = states.get(key) else { return false };
+            return should_play(playback.paused, playback.verdict.action, *active);
         };
         let mut playing_count = 0usize;
         let mut transitions: Vec<(ItemId, bool, bool)> = Vec::new();
@@ -734,7 +721,7 @@ impl Engine {
             return;
         }
         let Some(entry) = library.items.iter().find(|entry| entry.id == item) else { return };
-        let max_px = self.max_pixel_size();
+        let max_px = usize::try_from(self.max_display_px()).unwrap_or(0);
         let body = match entry.kind {
             ItemKind::Video => Some(NodeBody::Video(video::VideoNode::new(self.mtm, item, &entry.path))),
             ItemKind::Gif => gif::GifNode::new(item, &entry.path, max_px).map(NodeBody::Gif),
@@ -743,25 +730,6 @@ impl Engine {
         if let Some(body) = body {
             self.nodes.insert(item, Node { kind: entry.kind, body });
         }
-    }
-
-    fn display_frame(&self, uuid: &str) -> CGRect {
-        for display in &self.displays {
-            if display.uuid == uuid {
-                return display.frame;
-            }
-        }
-        return self.displays.first().map_or(CGRect::ZERO, |display| display.frame);
-    }
-
-    fn max_pixel_size(&self) -> usize {
-        let mut max = 0u32;
-        for display in &self.displays {
-            let width = pixel_size(display.frame.size.width * display.scale);
-            let height = pixel_size(display.frame.size.height * display.scale);
-            max = max.max(width.max(height));
-        }
-        return usize::try_from(max).unwrap_or(0);
     }
 }
 
@@ -787,11 +755,6 @@ pub fn resolve_item(library: &Library, key: &SurfaceKey) -> Option<ItemId> {
     {
         return assignment.item;
     }
-    if let Some(assignment) = library.placement.displays.get(&key.display)
-        && assignment.item.is_some()
-    {
-        return assignment.item;
-    }
     return library.placement.default.item;
 }
 
@@ -799,20 +762,18 @@ pub fn playable_item(library: &Library, item: Option<ItemId>) -> Option<ItemId> 
     return item.filter(|id| library.items.iter().find(|entry| entry.id == *id).is_some_and(|entry| entry.playable));
 }
 
-fn collect_displays(mtm: MainThreadMarker) -> Vec<Display> {
+fn main_display(mtm: MainThreadMarker) -> Display {
     let screens = NSScreen::screens(mtm);
-    let mut displays = Vec::new();
-    for index in 0..screens.count() {
-        let screen = screens.objectAtIndex(index);
-        let id = display_id(&screen);
-        displays.push(Display {
-            uuid: display_uuid(&screen),
-            id,
-            frame: screen.frame(),
-            scale: screen.backingScaleFactor(),
-        });
+    if screens.count() == 0 {
+        return Display { uuid: String::new(), id: 0, frame: CGRect::ZERO, scale: 1.0 };
     }
-    return displays;
+    let screen = screens.objectAtIndex(0);
+    return Display {
+        uuid: display_uuid(&screen),
+        id: display_id(&screen),
+        frame: screen.frame(),
+        scale: screen.backingScaleFactor(),
+    };
 }
 
 fn screen_number(screen: &NSScreen) -> Option<u32> {
@@ -839,7 +800,6 @@ fn display_uuid(screen: &NSScreen) -> String {
 #[derive(serde::Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct WindowReport {
-    pub display: String,
     pub space: String,
     pub number: u32,
     pub level: i64,
@@ -888,16 +848,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_item_prefers_space_then_display_then_default() {
+    fn resolve_item_prefers_space_then_default() {
         let item_a = ItemId::max();
         let item_b = ItemId::nil();
         let mut library = Library::default();
         library.placement.default.item = Some(item_b);
-        library.placement.displays.insert("D".into(), Assignment { item: Some(item_a), geometry_override: None });
-        assert_eq!(resolve_item(&library, &SurfaceKey::new("D", "S")), Some(item_a));
-        library.placement.spaces.insert("S".into(), Assignment { item: Some(item_b), geometry_override: None });
-        assert_eq!(resolve_item(&library, &SurfaceKey::new("D", "S")), Some(item_b));
-        assert_eq!(resolve_item(&library, &SurfaceKey::new("X", "Y")), Some(item_b));
+        library.placement.spaces.insert("S".into(), Assignment { item: Some(item_a), geometry_override: None });
+        assert_eq!(resolve_item(&library, &SurfaceKey::new("S")), Some(item_a));
+        assert_eq!(resolve_item(&library, &SurfaceKey::new("X")), Some(item_b));
     }
 
     #[test]

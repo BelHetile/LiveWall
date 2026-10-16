@@ -155,7 +155,6 @@ impl Default for Hotkeys {
 #[serde(rename_all = "kebab-case")]
 pub enum ApplyTarget {
     Default,
-    Display { display: String },
     Space { space: String },
 }
 
@@ -395,7 +394,6 @@ pub enum Request {
     Status,
     Current,
     Quit,
-    Displays,
     Spaces,
     Windows,
     Desktop,
@@ -589,7 +587,6 @@ mod tests {
             Request::Status,
             Request::Current,
             Request::Quit,
-            Request::Displays,
             Request::Spaces,
             Request::Windows,
             Request::Desktop,
@@ -603,7 +600,6 @@ mod tests {
             Request::FolderRename { id: "f".into(), name: "Renamed".into() },
             Request::FolderDelete { id: "f".into() },
             Request::Apply { item: Some("a".into()), target: ApplyTarget::Default, transition: None },
-            Request::Apply { item: None, target: ApplyTarget::Display { display: "d".into() }, transition: None },
             Request::Apply {
                 item: Some("a".into()),
                 target: ApplyTarget::Space { space: "s".into() },

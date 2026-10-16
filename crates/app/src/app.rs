@@ -37,7 +37,7 @@ const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
     Quit,
-    ScreensChanged,
+    DisplayChanged,
     SpacesChanged,
     FrontmostChanged,
     AudioChanged,
@@ -71,7 +71,7 @@ pub struct App {
     screen_locked: bool,
     low_power: bool,
     snapshot: rules::Snapshot,
-    verdicts: Vec<rules::Verdict>,
+    verdict: rules::Verdict,
     geometry_timer: Option<Retained<NSTimer>>,
     engine: Engine,
     nap: system::AppNap,
@@ -117,7 +117,7 @@ impl App {
             screen_locked: false,
             low_power: system::low_power_mode(),
             snapshot: rules::Snapshot::default(),
-            verdicts: Vec::new(),
+            verdict: rules::Verdict::default(),
             geometry_timer: None,
             library,
             settings,
@@ -145,7 +145,7 @@ impl App {
                 process::kill_all();
                 quit();
             }
-            Event::ScreensChanged => {
+            Event::DisplayChanged => {
                 self.sync(false);
                 self.refresh_rules();
             }
@@ -435,13 +435,7 @@ impl App {
     }
 
     fn max_display_px(&self) -> u32 {
-        let mut max = 0u32;
-        for display in self.engine.displays() {
-            let width = to_px(display.frame.size.width * display.scale);
-            let height = to_px(display.frame.size.height * display.scale);
-            max = max.max(width.max(height));
-        }
-        return max;
+        return self.engine.max_display_px();
     }
 
     fn run_hotkey(&mut self, action: HotkeyAction) {
@@ -514,37 +508,30 @@ impl App {
             paused: self.paused,
             muted: self.muted,
             stop_after: self.settings.stop_after_seconds,
-            verdicts: self.verdicts.clone(),
+            verdict: self.verdict.clone(),
         };
     }
 
     fn detect(&self) -> rules::Snapshot {
-        let screens: Vec<detect::Screen> = self
-            .engine
-            .displays()
-            .iter()
-            .map(|display| detect::Screen {
-                uuid: display.uuid.clone(),
-                frame: rules::Rect::new(
-                    display.frame.origin.x,
-                    display.frame.origin.y,
-                    display.frame.size.width,
-                    display.frame.size.height,
-                ),
-            })
-            .collect();
+        let display = self.engine.display();
+        let frame = rules::Rect::new(
+            display.frame.origin.x,
+            display.frame.origin.y,
+            display.frame.size.width,
+            display.frame.size.height,
+        );
         let signals = detect::Signals {
             display_asleep: self.display_asleep,
             screen_locked: self.screen_locked,
             low_power: self.low_power,
         };
-        return detect::snapshot(&screens, signals);
+        return detect::snapshot(frame, signals);
     }
 
     fn refresh_rules(&mut self) {
         self.snapshot = self.detect();
         let config = rules::Config::from_settings(&self.settings);
-        self.verdicts = rules::evaluate(&self.snapshot, &config);
+        self.verdict = rules::evaluate(&self.snapshot, &config);
         let playback = self.playback();
         self.engine.refresh_playback(&self.library, &playback);
         self.refresh_power();
@@ -560,7 +547,7 @@ impl App {
     }
 
     fn update_geometry_timer(&mut self) {
-        let needed = rules::geometry_poll_needed(self.engine.any_playing(), &self.verdicts, &self.settings);
+        let needed = rules::geometry_poll_needed(self.engine.any_playing(), &self.verdict, &self.settings);
         match (needed, self.geometry_timer.is_some()) {
             (true, false) => self.start_geometry_timer(),
             (false, true) => {
@@ -642,6 +629,7 @@ impl App {
                     current: self.current_item().map(|id| id.to_string()),
                     surfaces: self.engine.windows().len(),
                     playing: self.engine.playing_count(),
+                    max_pixels: self.max_display_px(),
                     app_nap_token: self.nap.active(),
                     paused_by: self.paused_by(),
                 });
@@ -752,7 +740,6 @@ impl App {
             Request::SetItem { item, volume, speed, muted, still_time } => {
                 return self.set_item(item, *volume, *speed, *muted, *still_time);
             }
-            Request::Displays => return ok(&self.displays_report()),
             Request::Spaces => {
                 return ok(&serde_json::json!({
                     "separate_spaces": self.engine.separate_spaces(),
@@ -906,27 +893,21 @@ impl App {
         return ok(&serde_json::json!({ "status": status }));
     }
 
-    fn paused_by(&self) -> Vec<DisplayPause> {
-        let mut reports = Vec::with_capacity(self.snapshot.displays.len());
-        for display in &self.snapshot.displays {
-            let mut by = Vec::new();
-            if self.paused {
-                by.push("user".to_string());
-            }
-            if let Some(verdict) = self.verdicts.iter().find(|verdict| verdict.display == display.display)
-                && let Some(cause) = &verdict.cause
-            {
-                by.push(format!("rule:{}", cause.label()));
-            }
-            reports.push(DisplayPause { display: display.display.clone(), by });
+    fn paused_by(&self) -> Vec<String> {
+        let mut by = Vec::new();
+        if self.paused {
+            by.push("user".to_string());
         }
-        return reports;
+        if let Some(cause) = &self.verdict.cause {
+            by.push(format!("rule:{}", cause.label()));
+        }
+        return by;
     }
 
     fn rules_report(&self) -> RulesReport<'_> {
         return RulesReport {
             snapshot: &self.snapshot,
-            actions: &self.verdicts,
+            action: &self.verdict,
             geometry_polling: self.geometry_timer.is_some(),
             app_nap_token: self.nap.active(),
         };
@@ -948,32 +929,11 @@ impl App {
         };
     }
 
-    fn displays_report(&self) -> Vec<DisplayReport> {
-        return self
-            .engine
-            .displays()
-            .iter()
-            .map(|display| DisplayReport {
-                uuid: display.uuid.clone(),
-                frame: [
-                    display.frame.origin.x,
-                    display.frame.origin.y,
-                    display.frame.size.width,
-                    display.frame.size.height,
-                ],
-                scale: display.scale,
-            })
-            .collect();
-    }
-
     fn remove_items(&mut self, ids: &[String]) -> usize {
         let parsed: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
         let before = self.library.items.len();
         self.library.items.retain(|item| !parsed.contains(&item.id));
         self.library.placement.default.item = clear_if_removed(self.library.placement.default.item, &parsed);
-        for assignment in self.library.placement.displays.values_mut() {
-            assignment.item = clear_if_removed(assignment.item, &parsed);
-        }
         for assignment in self.library.placement.spaces.values_mut() {
             assignment.item = clear_if_removed(assignment.item, &parsed);
         }
@@ -983,10 +943,6 @@ impl App {
     fn apply_target(&mut self, item: Option<ItemId>, target: &ApplyTarget) {
         match target {
             ApplyTarget::Default => self.library.placement.default.item = item,
-            ApplyTarget::Display { display } => {
-                let assignment = self.library.placement.displays.entry(display.clone()).or_default();
-                assignment.item = item;
-            }
             ApplyTarget::Space { space } => {
                 let assignment = self.library.placement.spaces.entry(space.clone()).or_default();
                 assignment.item = item;
@@ -1057,14 +1013,7 @@ fn current_title(library: &Library) -> Option<String> {
     return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn to_px(points: f64) -> u32 {
-    if !points.is_finite() || points <= 0.0 {
-        return 0;
-    }
-    return points.min(f64::from(u32::MAX)) as u32;
-}
-
+#[allow(clippy::cast_possible_truncation)]
 fn random_index(len: usize, current: Option<usize>) -> usize {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1084,20 +1033,15 @@ struct StatusReport {
     current: Option<String>,
     surfaces: usize,
     playing: usize,
+    max_pixels: u32,
     app_nap_token: bool,
-    paused_by: Vec<DisplayPause>,
-}
-
-#[derive(Serialize)]
-struct DisplayPause {
-    display: String,
-    by: Vec<String>,
+    paused_by: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct RulesReport<'a> {
     snapshot: &'a rules::Snapshot,
-    actions: &'a [rules::Verdict],
+    action: &'a rules::Verdict,
     geometry_polling: bool,
     app_nap_token: bool,
 }
@@ -1135,13 +1079,6 @@ struct CurrentReport {
     rate: f64,
     ready: bool,
     surfaces: usize,
-}
-
-#[derive(Serialize)]
-struct DisplayReport {
-    uuid: String,
-    frame: [f64; 4],
-    scale: f64,
 }
 
 #[derive(Serialize)]

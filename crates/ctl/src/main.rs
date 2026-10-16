@@ -48,7 +48,6 @@ enum Command {
     Status,
     Current,
     Quit,
-    Displays,
     Spaces,
     Windows,
     Desktop,
@@ -271,7 +270,6 @@ enum TransitionKindArg {
 #[derive(Clone, Copy, ValueEnum)]
 enum TargetKind {
     Default,
-    Display,
     Space,
 }
 
@@ -358,7 +356,6 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Status => Request::Status,
         Command::Current => Request::Current,
         Command::Quit => Request::Quit,
-        Command::Displays => Request::Displays,
         Command::Spaces => Request::Spaces,
         Command::Windows => Request::Windows,
         Command::Desktop => Request::Desktop,
@@ -378,9 +375,6 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Apply { item, target, target_id, transition } => {
             let target = match target {
                 TargetKind::Default => ApplyTarget::Default,
-                TargetKind::Display => {
-                    ApplyTarget::Display { display: target_id.ok_or("--target-id is required for --target display")? }
-                }
                 TargetKind::Space => {
                     ApplyTarget::Space { space: target_id.ok_or("--target-id is required for --target space")? }
                 }

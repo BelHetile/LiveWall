@@ -191,7 +191,6 @@ fn every_verb() {
         &["random"],
         &["status"],
         &["current"],
-        &["displays"],
         &["spaces"],
         &["windows"],
         &["desktop"],
@@ -211,7 +210,7 @@ fn every_verb() {
     ok_json(&socket, &["library", "rename", &id, "--title", "Renamed"]);
     ok_json(&socket, &["library", "move", &id]);
     ok_json(&socket, &["library", "remove", MISSING]);
-    ok_json(&socket, &["apply", "--item", &id, "--target", "display", "--target-id", "ghost"]);
+    ok_json(&socket, &["apply", "--item", &id, "--target", "space", "--target-id", "ghost"]);
     ok_json(&socket, &["set-geometry", &id, "--mode", "custom", "--x", "0.1", "--y", "0.2", "--zoom", "2"]);
     ok_json(&socket, &["set-item", &id, "--volume", "0.5", "--speed", "1.5", "--muted", "false", "--still-time", "12"]);
     ok_json(&socket, &["settings", "set", "{}"]);

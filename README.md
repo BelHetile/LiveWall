@@ -1,8 +1,8 @@
 # LiveWall
 
 Native macOS animated-wallpaper engine, rewritten in pure Rust. One `.app` owns
-the whole stack: per-display and per-Space wallpaper surfaces, a menu-bar item,
-the IPC server, and `lwctl`. Video, GIF and image wallpapers with hardware
+the whole stack: per-desktop wallpaper surfaces on the main display, a menu-bar
+item, the IPC server, and `lwctl`. Video, GIF and image wallpapers with hardware
 decode; the desktop picture is taken over and restored on quit or after a crash.
 The GUI is deferred — `lwctl` drives every feature until it exists.
 
@@ -43,10 +43,10 @@ additionally needs `scripts/fixtures.sh` to have run.
 Exit codes: 0 ok, 1 error, 2 app not running, 64 usage.
 
     pause  resume  toggle-pause  mute  unmute  next  previous  random
-    status  current  quit  displays  spaces  windows  desktop  rules
+    status  current  quit  spaces  windows  desktop  rules
     library {list,add,remove,rename,move}
     folder {create,rename,delete}
-    apply [--item ID] [--target default|display|space] [--target-id ID]
+    apply [--item ID] [--target default|space] [--target-id ID]
     set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
     set-item ID [--volume N --speed N --muted BOOL --still-time N]
     settings {get,set JSON}

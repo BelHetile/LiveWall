@@ -25,18 +25,12 @@ pub enum Mode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
-    pub display: String,
     pub space: String,
     pub display_id: u32,
 }
 
-pub fn key(display: &str, space: &str) -> String {
-    return format!("{display}|{space}");
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Original {
-    pub display: String,
     pub space: String,
     pub display_id: u32,
     pub config: Option<String>,
@@ -58,11 +52,7 @@ impl Default for SwapState {
 }
 
 pub fn capture_targets(recorded: &BTreeMap<String, Original>, targets: &[Target]) -> Vec<Target> {
-    return targets
-        .iter()
-        .filter(|target| !recorded.contains_key(&key(&target.display, &target.space)))
-        .cloned()
-        .collect();
+    return targets.iter().filter(|target| !recorded.contains_key(&target.space)).cloned().collect();
 }
 
 pub fn apply_targets(
@@ -73,7 +63,7 @@ pub fn apply_targets(
 ) -> Vec<(Target, String)> {
     let mut plan = Vec::new();
     for target in targets {
-        let surface = key(&target.display, &target.space);
+        let surface = target.space.clone();
         if !recorded.contains_key(&surface) {
             continue;
         }
@@ -173,11 +163,10 @@ impl Desktop {
             return;
         }
         for target in needed {
-            let surface = key(&target.display, &target.space);
+            let surface = target.space.clone();
             let original = match self.mode {
                 Mode::PerSpace => match self.api.copy(target.display_id, &target.space) {
                     Some(config) => Original {
-                        display: target.display.clone(),
                         space: target.space.clone(),
                         display_id: target.display_id,
                         url: ffi::image_path(&config),
@@ -189,7 +178,6 @@ impl Desktop {
                 Mode::Screen => {
                     let url = ffi::screen_url(mtm, target.display_id);
                     Original {
-                        display: target.display.clone(),
                         space: target.space.clone(),
                         display_id: target.display_id,
                         url: url.clone(),
@@ -209,7 +197,7 @@ impl Desktop {
         }
         self.deferred.retain(|surface, (_, still)| stills.get(surface) == Some(still));
         for (target, still) in apply_targets(&self.recorded, &self.applied, stills, targets) {
-            let surface = key(&target.display, &target.space);
+            let surface = target.space.clone();
             if self.pending.contains_key(&surface) {
                 self.deferred.insert(surface, (target, still));
                 continue;
@@ -231,7 +219,7 @@ impl Desktop {
                 }
             }
         }
-        let surface = key(&target.display, &target.space);
+        let surface = target.space.clone();
         self.applied.insert(surface.clone(), still.clone());
         self.pending.insert(surface, Pending { display_id: target.display_id, space: target.space.clone(), still });
         self.verify_started = Some(Instant::now());
@@ -359,7 +347,7 @@ impl Desktop {
     pub fn report(&self, mtm: MainThreadMarker, targets: &[Target]) -> DesktopReport {
         let mut surfaces = Vec::new();
         for target in targets {
-            let surface = key(&target.display, &target.space);
+            let surface = target.space.clone();
             let original = self.recorded.get(&surface);
             let current = match self.mode {
                 Mode::PerSpace => {
@@ -369,7 +357,6 @@ impl Desktop {
             };
             let owned = self.applied.contains_key(&surface);
             surfaces.push(SurfaceStatus {
-                display: target.display.clone(),
                 space: target.space.clone(),
                 captured: original.is_some(),
                 original_url: original.and_then(|value| value.url.clone()),
@@ -397,7 +384,6 @@ pub enum SurfaceState {
 
 #[derive(Debug, Serialize)]
 pub struct SurfaceStatus {
-    pub display: String,
     pub space: String,
     pub captured: bool,
     pub original_url: Option<String>,
@@ -419,13 +405,12 @@ pub struct DesktopReport {
 mod tests {
     use super::*;
 
-    fn target(display: &str, space: &str) -> Target {
-        return Target { display: display.into(), space: space.into(), display_id: 1 };
+    fn target(space: &str) -> Target {
+        return Target { space: space.into(), display_id: 1 };
     }
 
-    fn original(display: &str, space: &str) -> Original {
+    fn original(space: &str) -> Original {
         return Original {
-            display: display.into(),
             space: space.into(),
             display_id: 1,
             config: Some("x".into()),
@@ -436,45 +421,40 @@ mod tests {
 
     #[test]
     fn capture_only_targets_not_already_recorded() {
-        let recorded = BTreeMap::from([(key("D", "S1"), original("D", "S1"))]);
-        let targets = [target("D", "S1"), target("D", "S2")];
+        let recorded = BTreeMap::from([("S1".to_string(), original("S1"))]);
+        let targets = [target("S1"), target("S2")];
         let needed = capture_targets(&recorded, &targets);
-        assert_eq!(needed, vec![target("D", "S2")]);
+        assert_eq!(needed, vec![target("S2")]);
     }
 
     #[test]
     fn apply_skips_unrecorded_and_unchanged() {
-        let recorded = BTreeMap::from([(key("D", "S1"), original("D", "S1")), (key("D", "S2"), original("D", "S2"))]);
-        let applied = BTreeMap::from([(key("D", "S1"), "/still1.png".to_string())]);
+        let recorded = BTreeMap::from([("S1".to_string(), original("S1")), ("S2".to_string(), original("S2"))]);
+        let applied = BTreeMap::from([("S1".to_string(), "/still1.png".to_string())]);
         let stills = BTreeMap::from([
-            (key("D", "S1"), "/still1.png".to_string()),
-            (key("D", "S2"), "/still2.png".to_string()),
-            (key("D", "S3"), "/still3.png".to_string()),
+            ("S1".to_string(), "/still1.png".to_string()),
+            ("S2".to_string(), "/still2.png".to_string()),
+            ("S3".to_string(), "/still3.png".to_string()),
         ]);
-        let targets = [target("D", "S1"), target("D", "S2"), target("D", "S3")];
+        let targets = [target("S1"), target("S2"), target("S3")];
         let plan = apply_targets(&recorded, &applied, &stills, &targets);
-        assert_eq!(plan, vec![(target("D", "S2"), "/still2.png".to_string())]);
+        assert_eq!(plan, vec![(target("S2"), "/still2.png".to_string())]);
     }
 
     #[test]
     fn apply_retries_when_the_still_changes() {
-        let recorded = BTreeMap::from([(key("D", "S1"), original("D", "S1"))]);
-        let applied = BTreeMap::from([(key("D", "S1"), "/old.png".to_string())]);
-        let stills = BTreeMap::from([(key("D", "S1"), "/new.png".to_string())]);
-        let plan = apply_targets(&recorded, &applied, &stills, &[target("D", "S1")]);
-        assert_eq!(plan, vec![(target("D", "S1"), "/new.png".to_string())]);
+        let recorded = BTreeMap::from([("S1".to_string(), original("S1"))]);
+        let applied = BTreeMap::from([("S1".to_string(), "/old.png".to_string())]);
+        let stills = BTreeMap::from([("S1".to_string(), "/new.png".to_string())]);
+        let plan = apply_targets(&recorded, &applied, &stills, &[target("S1")]);
+        assert_eq!(plan, vec![(target("S1"), "/new.png".to_string())]);
     }
 
     #[test]
     fn restore_list_covers_every_recorded_surface() {
-        let recorded = BTreeMap::from([(key("D", "S1"), original("D", "S1")), (key("D", "S2"), original("D", "S2"))]);
+        let recorded = BTreeMap::from([("S1".to_string(), original("S1")), ("S2".to_string(), original("S2"))]);
         let mut restored: Vec<String> = restore_list(&recorded).into_iter().map(|value| value.space).collect();
         restored.sort();
         assert_eq!(restored, vec!["S1".to_string(), "S2".to_string()]);
-    }
-
-    #[test]
-    fn key_is_display_space_pair() {
-        assert_eq!(key("D", "S"), "D|S");
     }
 }

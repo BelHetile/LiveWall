@@ -100,8 +100,6 @@ pub struct Placement {
     #[serde(default)]
     pub default: Assignment,
     #[serde(default)]
-    pub displays: BTreeMap<String, Assignment>,
-    #[serde(default)]
     pub spaces: BTreeMap<String, Assignment>,
 }
 
@@ -344,6 +342,16 @@ mod tests {
         let library: Library = serde_json::from_str("{}").expect("empty object");
         assert_eq!(library, Library::default());
         assert_eq!(library.v, LIBRARY_VERSION);
+    }
+
+    #[test]
+    fn legacy_per_display_placement_is_dropped() {
+        let library: Library = serde_json::from_str(
+            r#"{"v":1,"placement":{"default":{"item":null},"displays":{"D":{"item":"11111111-1111-1111-1111-111111111111"}},"spaces":{"S":{"item":null}}}}"#,
+        )
+        .expect("legacy placement");
+        assert_eq!(library.placement.spaces.len(), 1);
+        assert!(library.placement.spaces.contains_key("S"));
     }
 
     #[test]

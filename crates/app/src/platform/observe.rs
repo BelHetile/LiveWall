@@ -121,7 +121,7 @@ impl Observers {
 
         let app_center = NSNotificationCenter::defaultCenter();
         let screens_block = RcBlock::new(|_notification: NonNull<NSNotification>| {
-            post(Event::ScreensChanged);
+            post(Event::DisplayChanged);
         });
         let screens = unsafe {
             app_center.addObserverForName_object_queue_usingBlock(

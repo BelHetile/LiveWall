@@ -277,17 +277,10 @@ fn wait_for_path(path: &Path) {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn display_max_px(sandbox: &Sandbox) -> u32 {
-    let displays = sandbox.ok(Request::Displays);
-    let mut max = 0u32;
-    for display in displays.as_array().expect("displays") {
-        let frame = display["frame"].as_array().expect("frame");
-        let scale = display["scale"].as_f64().unwrap_or(1.0);
-        let width = frame[2].as_f64().unwrap_or(0.0) * scale;
-        let height = frame[3].as_f64().unwrap_or(0.0) * scale;
-        max = max.max(width as u32).max(height as u32);
-    }
-    assert!(max > 0, "no connected displays reported");
-    return max;
+    let status = sandbox.ok(Request::Status);
+    let max = status["max_pixels"].as_u64().unwrap_or(0);
+    assert!(max > 0, "main display size was not reported");
+    return u32::try_from(max).unwrap_or(u32::MAX);
 }
 
 fn library_item(sandbox: &Sandbox, id: &str) -> Option<Value> {

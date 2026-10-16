@@ -25,42 +25,30 @@ pub struct Space {
     pub kind: SpaceKind,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct DisplayTopology {
-    pub uuid: String,
-    pub current: String,
-    pub spaces: Vec<Space>,
-}
-
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
 pub struct Topology {
-    pub displays: Vec<DisplayTopology>,
+    pub current: String,
+    pub spaces: Vec<Space>,
     pub fallback: bool,
 }
 
 impl Topology {
-    pub fn is_active(&self, display_uuid: &str, space_uuid: &str) -> bool {
+    pub fn is_active(&self, space_uuid: &str) -> bool {
         if space_uuid == ALL_SPACES {
             return true;
         }
-        for display in &self.displays {
-            if display.uuid == display_uuid {
-                return display.current == space_uuid;
-            }
-        }
-        return false;
+        return self.current == space_uuid;
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SurfaceKey {
-    pub display: String,
     pub space: String,
 }
 
 impl SurfaceKey {
-    pub fn new(display: impl Into<String>, space: impl Into<String>) -> Self {
-        return Self { display: display.into(), space: space.into() };
+    pub fn new(space: impl Into<String>) -> Self {
+        return Self { space: space.into() };
     }
 }
 
@@ -85,26 +73,26 @@ pub enum Action {
     Repin(SurfaceKey, Option<u64>),
 }
 
-pub fn plan(topology: &Topology, screens: &[String]) -> Vec<SurfaceSpec> {
-    let collapsed = topology.fallback || topology.displays.iter().all(|display| display.uuid == "Main");
-    let mut specs = Vec::new();
-    for screen in screens {
-        if collapsed {
-            specs.push(SurfaceSpec { key: SurfaceKey::new(screen, ALL_SPACES), space_id: None, can_join_all: true });
-            continue;
-        }
-        let display = topology.displays.iter().find(|display| &display.uuid == screen);
-        let Some(display) = display else {
-            specs.push(SurfaceSpec { key: SurfaceKey::new(screen, ALL_SPACES), space_id: None, can_join_all: true });
-            continue;
-        };
-        for space in display.spaces.iter().filter(|space| space.kind == SpaceKind::User) {
-            specs.push(SurfaceSpec {
-                key: SurfaceKey::new(screen, space.uuid.clone()),
-                space_id: Some(space.id),
-                can_join_all: false,
-            });
-        }
+fn all_spaces() -> SurfaceSpec {
+    return SurfaceSpec { key: SurfaceKey::new(ALL_SPACES), space_id: None, can_join_all: true };
+}
+
+pub fn plan(topology: &Topology) -> Vec<SurfaceSpec> {
+    if topology.fallback {
+        return vec![all_spaces()];
+    }
+    let specs: Vec<SurfaceSpec> = topology
+        .spaces
+        .iter()
+        .filter(|space| space.kind == SpaceKind::User)
+        .map(|space| SurfaceSpec {
+            key: SurfaceKey::new(space.uuid.clone()),
+            space_id: Some(space.id),
+            can_join_all: false,
+        })
+        .collect();
+    if specs.is_empty() {
+        return vec![all_spaces()];
     }
     return specs;
 }
@@ -168,18 +156,21 @@ impl Cgs {
         return unsafe { (ptrs.main_connection)() };
     }
 
-    pub fn topology(&self) -> Topology {
+    pub fn topology(&self, main_uuid: &str) -> Topology {
         let Some(ptrs) = self.ptrs else {
-            return Topology { displays: Vec::new(), fallback: true };
+            return Topology { current: String::new(), spaces: Vec::new(), fallback: true };
         };
         let cid = self.connection();
         let raw = unsafe { (ptrs.copy_display_spaces)(cid) };
         let Some(ptr) = NonNull::new(raw.cast::<CFArray>()) else {
-            return Topology { displays: Vec::new(), fallback: true };
+            return Topology { current: String::new(), spaces: Vec::new(), fallback: true };
         };
         let array = unsafe { CFRetained::from_raw(ptr) };
         let entries: &CFArray<CFType> = unsafe { array.cast_unchecked() };
-        return Topology { displays: parse_displays(entries), fallback: false };
+        let Some(display) = parse_displays(entries).into_iter().find(|display| display.uuid == main_uuid) else {
+            return Topology { current: String::new(), spaces: Vec::new(), fallback: true };
+        };
+        return Topology { current: display.current, spaces: display.spaces, fallback: false };
     }
 
     pub fn pin_window(&self, window: u32, space_id: u64) {
@@ -237,6 +228,12 @@ fn resolve() -> Option<FnPtrs> {
             remove_windows: std::mem::transmute::<*mut c_void, CgsRemoveWindowsFromSpaces>(remove_windows),
         });
     }
+}
+
+struct DisplayTopology {
+    uuid: String,
+    current: String,
+    spaces: Vec<Space>,
 }
 
 fn parse_displays(entries: &CFArray<CFType>) -> Vec<DisplayTopology> {
@@ -319,93 +316,87 @@ fn cf_u64(value: &CFType) -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn display(uuid: &str, current: &str, spaces: &[(&str, u64, i64)]) -> DisplayTopology {
-        return DisplayTopology {
+    fn space(uuid: &str, id: u64, kind: i64) -> Space {
+        return Space {
             uuid: uuid.into(),
-            current: current.into(),
-            spaces: spaces
-                .iter()
-                .map(|(uuid, id, kind)| Space {
-                    uuid: (*uuid).into(),
-                    id: *id,
-                    kind: match kind {
-                        2 => SpaceKind::System,
-                        4 => SpaceKind::Fullscreen,
-                        _ => SpaceKind::User,
-                    },
-                })
-                .collect(),
+            id,
+            kind: match kind {
+                2 => SpaceKind::System,
+                4 => SpaceKind::Fullscreen,
+                _ => SpaceKind::User,
+            },
         };
     }
 
-    fn topology(displays: Vec<DisplayTopology>) -> Topology {
-        return Topology { displays, fallback: false };
+    fn topology(current: &str, spaces: &[(&str, u64, i64)]) -> Topology {
+        return Topology {
+            current: current.into(),
+            spaces: spaces.iter().map(|(uuid, id, kind)| space(uuid, *id, *kind)).collect(),
+            fallback: false,
+        };
     }
 
     #[test]
-    fn plan_creates_one_surface_per_display_space() {
-        let topology = topology(vec![display("A", "s1", &[("s1", 10, 0), ("s2", 11, 0), ("sys", 12, 2)])]);
-        let specs = plan(&topology, &["A".into()]);
+    fn plan_creates_one_surface_per_user_space() {
+        let topology = topology("s1", &[("s1", 10, 0), ("s2", 11, 0), ("sys", 12, 2)]);
+        let specs = plan(&topology);
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].key, SurfaceKey::new("A", "s1"));
+        assert_eq!(specs[0].key, SurfaceKey::new("s1"));
         assert_eq!(specs[0].space_id, Some(10));
         assert!(!specs[0].can_join_all);
         assert_eq!(specs[1].space_id, Some(11));
     }
 
     #[test]
-    fn plan_collapses_when_separate_spaces_are_off() {
-        let topology = topology(vec![display("Main", "s1", &[("s1", 10, 0), ("s2", 11, 0)])]);
-        let specs = plan(&topology, &["A".into(), "B".into()]);
-        assert_eq!(specs.len(), 2);
-        assert!(specs.iter().all(|spec| spec.can_join_all && spec.space_id.is_none()));
-        assert_eq!(specs[0].key, SurfaceKey::new("A", ALL_SPACES));
+    fn plan_falls_back_when_symbols_are_missing() {
+        let specs = plan(&Topology { current: String::new(), spaces: Vec::new(), fallback: true });
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].can_join_all);
+        assert_eq!(specs[0].key, SurfaceKey::new(ALL_SPACES));
     }
 
     #[test]
-    fn plan_falls_back_when_symbols_are_missing() {
-        let specs = plan(&Topology { displays: Vec::new(), fallback: true }, &["A".into()]);
+    fn plan_falls_back_when_no_user_spaces_exist() {
+        let specs = plan(&topology("sys", &[("sys", 12, 2)]));
         assert_eq!(specs.len(), 1);
         assert!(specs[0].can_join_all);
     }
 
     #[test]
     fn diff_creates_new_and_removes_stale() {
-        let topology = topology(vec![display("A", "s1", &[("s1", 10, 0)])]);
-        let specs = plan(&topology, &["A".into()]);
+        let specs = plan(&topology("s1", &[("s1", 10, 0)]));
         let existing = vec![
-            Existing { key: SurfaceKey::new("A", "s9"), space_id: Some(99), can_join_all: false },
-            Existing { key: SurfaceKey::new("B", "s1"), space_id: Some(10), can_join_all: false },
+            Existing { key: SurfaceKey::new("s9"), space_id: Some(99), can_join_all: false },
+            Existing { key: SurfaceKey::new("s0"), space_id: Some(1), can_join_all: false },
         ];
         let actions = diff(&existing, &specs);
         assert!(actions.contains(&Action::Create(specs[0].clone())));
-        assert!(actions.contains(&Action::Remove(SurfaceKey::new("A", "s9"))));
-        assert!(actions.contains(&Action::Remove(SurfaceKey::new("B", "s1"))));
+        assert!(actions.contains(&Action::Remove(SurfaceKey::new("s9"))));
+        assert!(actions.contains(&Action::Remove(SurfaceKey::new("s0"))));
     }
 
     #[test]
     fn diff_repins_when_runtime_id_changes() {
-        let topology = topology(vec![display("A", "s1", &[("s1", 42, 0)])]);
-        let specs = plan(&topology, &["A".into()]);
-        let existing = vec![Existing { key: SurfaceKey::new("A", "s1"), space_id: Some(7), can_join_all: false }];
+        let specs = plan(&topology("s1", &[("s1", 42, 0)]));
+        let existing = vec![Existing { key: SurfaceKey::new("s1"), space_id: Some(7), can_join_all: false }];
         let actions = diff(&existing, &specs);
-        assert_eq!(actions, vec![Action::Repin(SurfaceKey::new("A", "s1"), Some(42))]);
+        assert_eq!(actions, vec![Action::Repin(SurfaceKey::new("s1"), Some(42))]);
     }
 
     #[test]
     fn diff_recreates_when_collection_behavior_changes() {
-        let specs = vec![SurfaceSpec { key: SurfaceKey::new("A", ALL_SPACES), space_id: None, can_join_all: true }];
-        let existing = vec![Existing { key: SurfaceKey::new("A", ALL_SPACES), space_id: None, can_join_all: false }];
+        let specs = plan(&Topology { current: String::new(), spaces: Vec::new(), fallback: true });
+        let existing = vec![Existing { key: SurfaceKey::new(ALL_SPACES), space_id: None, can_join_all: false }];
         let actions = diff(&existing, &specs);
-        assert_eq!(actions, vec![Action::Remove(SurfaceKey::new("A", ALL_SPACES)), Action::Create(specs[0].clone())]);
+        assert_eq!(actions, vec![Action::Remove(SurfaceKey::new(ALL_SPACES)), Action::Create(specs[0].clone())]);
     }
 
     #[test]
     fn active_space_resolution() {
-        let topology = topology(vec![display("A", "s1", &[("s1", 10, 0), ("s2", 11, 0)])]);
-        assert!(topology.is_active("A", "s1"));
-        assert!(!topology.is_active("A", "s2"));
-        assert!(topology.is_active("A", ALL_SPACES));
+        let topology = topology("s1", &[("s1", 10, 0), ("s2", 11, 0)]);
+        assert!(topology.is_active("s1"));
+        assert!(!topology.is_active("s2"));
+        assert!(topology.is_active(ALL_SPACES));
     }
 
     #[test]
@@ -463,10 +454,6 @@ mod tests {
 
     #[test]
     fn symbols_resolve_on_this_machine() {
-        let cgs = Cgs::load();
-        if cgs.is_available() {
-            let topology = cgs.topology();
-            assert!(!topology.fallback);
-        }
+        assert!(Cgs::load().is_available(), "CGS symbols did not resolve");
     }
 }
