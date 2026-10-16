@@ -230,7 +230,6 @@ pub fn keycode(key: &str) -> Option<u32> {
     return KEYS.iter().find(|(name, _)| *name == key).map(|(_, code)| *code);
 }
 
-#[cfg(test)]
 pub fn key_name(code: u32) -> Option<&'static str> {
     return KEYS.iter().find(|(_, value)| *value == code).map(|(name, _)| *name);
 }

@@ -1,34 +1,83 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::ptr::NonNull;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSColor, NSEvent, NSImage, NSScrollView, NSTrackingArea, NSTrackingAreaOptions, NSView};
+use objc2::runtime::AnyObject;
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2_app_kit::{
+    NSAnimatablePropertyContainer, NSAnimationContext, NSColor, NSEvent, NSEventModifierFlags, NSMenu, NSScrollView,
+    NSStackView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+};
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation::NSString;
-use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspectFill};
+use objc2_core_graphics::CGColor;
+use objc2_foundation::{NSArray, NSNumber, NSString};
+use objc2_quartz_core::{
+    CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CATransaction, CATransform3D,
+    CATransform3DIdentity, CATransition, kCAGravityResizeAspectFill, kCAMediaTimingFunctionEaseIn,
+    kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut, kCATransitionFade,
+};
 
 use crate::model::ItemKind;
 use crate::ui::fixture::{Item, Library};
-use crate::ui::palette::Theme;
+use crate::ui::palette::{Theme, is_dark};
+use crate::ui::state::{Marker, Scope, markers};
 use crate::ui::widgets::{self, Weight};
 
-const PADDING: CGFloat = 20.0;
-const MIN_TILE: CGFloat = 220.0;
-const COLUMN_GAP: CGFloat = 20.0;
-const ROW_GAP: CGFloat = 26.0;
-const LABEL_HEIGHT: CGFloat = 44.0;
-const RADIUS: CGFloat = 14.0;
+const PADDING: CGFloat = 16.0;
+const MIN_TILE: CGFloat = 240.0;
+const COLUMN_GAP: CGFloat = 16.0;
+const ROW_GAP: CGFloat = 22.0;
+const LABEL_HEIGHT: CGFloat = 42.0;
+const RADIUS: CGFloat = 16.0;
 const RING_GAP: CGFloat = 5.0;
+const ROW_HEIGHT: CGFloat = 78.0;
+const ROW_ART: CGFloat = 96.0;
+const MORPH: f64 = 0.3;
+const FADE_IN: f64 = 0.24;
+const FADE_OUT: f64 = 0.18;
+const SELECT: f64 = 0.22;
+const CHIPS: f64 = 0.22;
+const SCROLL_MIN: f64 = 0.16;
+const SCROLL_MAX: f64 = 0.35;
+
+fn ease_out() -> Retained<CAMediaTimingFunction> {
+    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
+}
+
+fn ease_in() -> Retained<CAMediaTimingFunction> {
+    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseIn });
+}
+
+fn ease_in_out() -> Retained<CAMediaTimingFunction> {
+    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseInEaseOut });
+}
+
+fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
+    return markers.iter().map(|marker| (marker.icon, marker.text.clone(), marker.active)).collect();
+}
 
 pub struct TileIvars {
-    index: usize,
-    art: Retained<NSView>,
+    index: Cell<usize>,
+    ident: usize,
+    plate: Retained<CALayer>,
+    clip: Retained<CALayer>,
     image: Retained<CALayer>,
-    ring: Retained<NSView>,
-    chips: Retained<NSView>,
-    name: Retained<NSView>,
-    meta: Retained<NSView>,
+    ring: Retained<CALayer>,
+    highlight: Retained<CALayer>,
+    chips: Retained<NSStackView>,
+    chip_views: RefCell<Vec<Retained<NSView>>>,
+    name: Retained<NSTextField>,
+    meta: Retained<NSTextField>,
+    accent: RefCell<Retained<NSColor>>,
+    chips_key: RefCell<Vec<(&'static str, String, bool)>>,
     selected: Cell<bool>,
+    painted: Cell<bool>,
+    hovered: Cell<bool>,
+    list: Cell<bool>,
+    fresh: Cell<bool>,
+    stale: Cell<bool>,
 }
 
 define_class!(
@@ -45,12 +94,19 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            let index = self.ivars().index;
+            let index = self.ivars().index.get();
+            crate::ui::focus();
+            crate::ui::select(Some(index));
             if event.clickCount() >= 2 {
                 crate::ui::apply(index);
-                return;
             }
+        }
+
+        #[unsafe(method_id(menuForEvent:))]
+        fn menu_for_event(&self, _event: &NSEvent) -> Option<Retained<NSMenu>> {
+            let index = self.ivars().index.get();
             crate::ui::select(Some(index));
+            crate::ui::context_menu(index)
         }
 
         #[unsafe(method(mouseEntered:))]
@@ -66,66 +122,79 @@ define_class!(
 );
 
 impl TileView {
-    fn new(mtm: MainThreadMarker, index: usize, item: &Item, library: &Library, theme: &Theme) -> Retained<Self> {
-        let art = NSView::new(mtm);
-        art.setWantsLayer(true);
+    fn new(mtm: MainThreadMarker, index: usize, library: &Library, scope: Scope, theme: &Theme) -> Retained<Self> {
+        let item = &library.items[index];
+        let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(mtm).effectiveAppearance());
+
+        let plate = CALayer::new();
+        plate.setShadowColor(Some(&widgets::cg(mtm, &NSColor::blackColor())));
+        plate.setShadowOpacity(if dark { 0.4 } else { 0.14 });
+        plate.setShadowRadius(8.0);
+        plate.setShadowOffset(CGSize::new(0.0, 3.0));
+        plate.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::windowBackgroundColor())));
+        let clip = CALayer::new();
+        clip.setMasksToBounds(true);
+        clip.setBorderWidth(0.5);
+        clip.setBorderColor(Some(&widgets::cg(mtm, &theme.hairline)));
+        clip.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
         let image = CALayer::new();
-        if let Some(layer) = art.layer() {
-            layer.setCornerRadius(RADIUS);
-            layer.setMasksToBounds(true);
-            layer.setBorderWidth(0.5);
-            layer.setBorderColor(Some(&widgets::cg(mtm, &NSColor::separatorColor())));
-            layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternarySystemFillColor())));
-            layer.addSublayer(&image);
-        }
-        if let Some(path) = &item.thumb
-            && let Some(thumb) =
-                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path.to_string_lossy()))
-        {
-            unsafe { image.setContents(Some(&thumb)) };
-        }
         image.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
-
-        let ring = NSView::new(mtm);
-        ring.setWantsLayer(true);
-        if let Some(layer) = ring.layer() {
-            layer.setCornerRadius(RADIUS + RING_GAP);
-            layer.setBorderWidth(3.0);
-            layer.setBorderColor(Some(&widgets::cg(mtm, &theme.accent)));
+        if let Some(thumb) = &item.image {
+            unsafe { image.setContents(Some(thumb)) };
         }
-        ring.setHidden(true);
+        clip.addSublayer(&image);
+        plate.addSublayer(&clip);
 
-        let chip_views: Vec<Retained<NSView>> = widgets::marker_text(library, &library.markers(index))
-            .into_iter()
-            .map(|(text, icon)| widgets::chip(mtm, &text, icon))
-            .collect();
+        let ring = CALayer::new();
+        ring.setBorderColor(Some(&widgets::cg(mtm, &theme.accent)));
+        ring.setOpacity(0.0);
+        let highlight = CALayer::new();
+        highlight.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent_soft)));
+        highlight.setCornerRadius(12.0);
+        highlight.setOpacity(0.0);
+
+        let marker_list = markers(library, index, scope);
+        let chip_views: Vec<Retained<NSView>> =
+            marker_list.iter().map(|marker| widgets::chip(mtm, marker, theme)).collect();
         let chip_refs: Vec<&NSView> = chip_views.iter().map(|view| &**view).collect();
-        let chips = widgets::view(&widgets::stack(mtm, &chip_refs, false, 6.0));
+        let chips = widgets::stack(mtm, &chip_refs, false, 5.0);
+        chips.setWantsLayer(true);
 
         let name = widgets::label(mtm, &item.title, 13.0, &Weight::Medium, &NSColor::labelColor());
         let meta = widgets::label(mtm, &meta_line(item), 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
 
         let this = Self::alloc(mtm).set_ivars(TileIvars {
-            index,
-            art,
+            index: Cell::new(index),
+            ident: item.added,
+            plate,
+            clip,
             image,
             ring,
+            highlight,
             chips,
-            name: widgets::view(&name),
-            meta: widgets::view(&meta),
+            chip_views: RefCell::new(chip_views),
+            name,
+            meta,
+            accent: RefCell::new(theme.accent.clone()),
+            chips_key: RefCell::new(chip_key(&marker_list)),
             selected: Cell::new(false),
+            painted: Cell::new(false),
+            hovered: Cell::new(false),
+            list: Cell::new(false),
+            fresh: Cell::new(true),
+            stale: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
         let ivars = this.ivars();
-        this.addSubview(&ivars.ring);
-        this.addSubview(&ivars.art);
+        if let Some(layer) = this.layer() {
+            layer.addSublayer(&ivars.highlight);
+            layer.addSublayer(&ivars.ring);
+            layer.addSublayer(&ivars.plate);
+        }
         this.addSubview(&ivars.chips);
         this.addSubview(&ivars.name);
         this.addSubview(&ivars.meta);
-        if let Some(layer) = this.layer() {
-            layer.setShadowOpacity(0.0);
-        }
         let options = NSTrackingAreaOptions::MouseEnteredAndExited
             | NSTrackingAreaOptions::ActiveInKeyWindow
             | NSTrackingAreaOptions::InVisibleRect;
@@ -142,55 +211,239 @@ impl TileView {
         return this;
     }
 
-    fn place(&self, frame: CGRect) {
-        self.setFrame(frame);
+    fn place(&self, frame: CGRect, list: bool, animate: bool) {
         let ivars = self.ivars();
+        ivars.list.set(list);
+        let animate = animate && !ivars.fresh.replace(false);
         let width = frame.size.width;
-        let height = width * 10.0 / 16.0;
-        let art = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, height));
-        ivars.art.setFrame(art);
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
-        ivars.image.setFrame(CGRect::new(CGPoint::ZERO, art.size));
-        CATransaction::commit();
-        ivars.ring.setFrame(CGRect::new(
-            CGPoint::new(-RING_GAP, -RING_GAP),
-            CGSize::new(width + RING_GAP * 2.0, height + RING_GAP * 2.0),
-        ));
         let chips = ivars.chips.fittingSize();
-        ivars.chips.setFrame(CGRect::new(CGPoint::new(10.0, 10.0), chips));
-        ivars.name.setFrame(CGRect::new(CGPoint::new(2.0, height + 8.0), CGSize::new(width - 4.0, 18.0)));
-        ivars.meta.setFrame(CGRect::new(CGPoint::new(2.0, height + 26.0), CGSize::new(width - 4.0, 15.0)));
+        let (art, radius) = if list {
+            (CGRect::new(CGPoint::new(10.0, 9.0), CGSize::new(ROW_ART, ROW_ART * 10.0 / 16.0)), 8.0)
+        } else {
+            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * 10.0 / 16.0)), RADIUS)
+        };
+        let ring = CGRect::new(
+            CGPoint::new(art.origin.x - RING_GAP, art.origin.y - RING_GAP),
+            CGSize::new(art.size.width + RING_GAP * 2.0, art.size.height + RING_GAP * 2.0),
+        );
+        let border = if list { 0.0 } else { 3.0 };
+        let highlight = CGRect::new(CGPoint::ZERO, frame.size);
+        let (name, meta, chip_frame) = if list {
+            let text = ROW_ART + 24.0;
+            let room = (width - text - chips.width - 28.0).max(80.0);
+            (
+                CGRect::new(CGPoint::new(text, 21.0), CGSize::new(room, 18.0)),
+                CGRect::new(CGPoint::new(text, 41.0), CGSize::new(room, 15.0)),
+                CGRect::new(CGPoint::new(width - chips.width - 14.0, (ROW_HEIGHT - chips.height) / 2.0), chips),
+            )
+        } else {
+            let top = art.size.height + 9.0;
+            (
+                CGRect::new(CGPoint::new(4.0, top), CGSize::new(width - 8.0, 18.0)),
+                CGRect::new(CGPoint::new(4.0, top + 18.0), CGSize::new(width - 8.0, 15.0)),
+                CGRect::new(CGPoint::new(10.0, 10.0), chips),
+            )
+        };
+        let layers = {
+            let plate = ivars.plate.clone();
+            let clip = ivars.clip.clone();
+            let image = ivars.image.clone();
+            let ring_layer = ivars.ring.clone();
+            let highlight_layer = ivars.highlight.clone();
+            move || {
+                plate.setFrame(art);
+                plate.setCornerRadius(radius);
+                clip.setFrame(CGRect::new(CGPoint::ZERO, art.size));
+                clip.setCornerRadius(radius);
+                put(&image, CGRect::new(CGPoint::ZERO, art.size));
+                put(&ring_layer, ring);
+                ring_layer.setCornerRadius(radius + RING_GAP);
+                ring_layer.setBorderWidth(border);
+                highlight_layer.setFrame(highlight);
+            }
+        };
+        if animate {
+            let this = self.retain();
+            let chips_view = ivars.chips.clone();
+            let name_view = ivars.name.clone();
+            let meta_view = ivars.meta.clone();
+            let group = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+                let context = unsafe { context.as_ref() };
+                context.setDuration(MORPH);
+                context.setTimingFunction(Some(&ease_in_out()));
+                context.setAllowsImplicitAnimation(true);
+                this.animator().setFrame(frame);
+                chips_view.setFrame(chip_frame);
+                name_view.setFrame(name);
+                meta_view.setFrame(meta);
+                CATransaction::begin();
+                CATransaction::setAnimationDuration(MORPH);
+                CATransaction::setAnimationTimingFunction(Some(&ease_in_out()));
+                layers();
+                CATransaction::commit();
+            });
+            NSAnimationContext::runAnimationGroup(&group);
+        } else {
+            self.setFrame(frame);
+            ivars.chips.setFrame(chip_frame);
+            ivars.name.setFrame(name);
+            ivars.meta.setFrame(meta);
+            CATransaction::begin();
+            CATransaction::setDisableActions(true);
+            layers();
+            CATransaction::commit();
+        }
+        self.paint_selection();
     }
 
     fn hover(&self, on: bool) {
-        let scale = if on { 1.04 } else { 1.0 };
-        let transform = objc2_quartz_core::CATransform3D {
+        let ivars = self.ivars();
+        ivars.hovered.set(on);
+        let scale = if on && !ivars.list.get() { 1.03 } else { 1.0 };
+        CATransaction::begin();
+        CATransaction::setAnimationDuration(0.22);
+        CATransaction::setAnimationTimingFunction(Some(&CAMediaTimingFunction::functionWithName(unsafe {
+            kCAMediaTimingFunctionEaseOut
+        })));
+        ivars.image.setTransform(CATransform3D {
             m11: scale,
             m22: scale,
             m33: 1.0,
             m44: 1.0,
-            ..unsafe { objc2_quartz_core::CATransform3DIdentity }
-        };
-        self.ivars().image.setTransform(transform);
+            ..unsafe { CATransform3DIdentity }
+        });
+        ivars.plate.setShadowRadius(if on { 16.0 } else { 8.0 });
+        ivars.plate.setShadowOffset(CGSize::new(0.0, if on { 8.0 } else { 3.0 }));
+        CATransaction::commit();
+        self.paint_selection();
     }
 
-    pub fn set_selected(&self, selected: bool) {
+    fn set_selected(&self, selected: bool) {
         self.ivars().selected.set(selected);
-        self.ivars().ring.setHidden(!selected);
+        self.paint_selection();
+    }
+
+    fn invalidate(&self) {
+        self.ivars().stale.set(true);
+    }
+
+    fn content(&self, library: &Library, index: usize, scope: Scope, theme: &Theme) {
+        let ivars = self.ivars();
+        ivars.index.set(index);
+        let marker_list = markers(library, index, scope);
+        let key = chip_key(&marker_list);
+        if !ivars.stale.replace(false) && *ivars.chips_key.borrow() == key {
+            return;
+        }
+        *ivars.chips_key.borrow_mut() = key;
+        *ivars.accent.borrow_mut() = theme.accent.clone();
+        ivars.clip.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.hairline)));
+        ivars.ring.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
+        ivars.highlight.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent_soft)));
+        if let Some(layer) = ivars.chips.layer() {
+            let fade = CATransition::animation();
+            fade.setType(unsafe { kCATransitionFade });
+            fade.setDuration(CHIPS);
+            fade.setTimingFunction(Some(&ease_in_out()));
+            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("chips")));
+        }
+        for view in ivars.chip_views.borrow_mut().drain(..) {
+            ivars.chips.removeArrangedSubview(&view);
+            view.removeFromSuperview();
+        }
+        for marker in &marker_list {
+            let chip = widgets::chip(self.mtm(), marker, theme);
+            ivars.chips.addArrangedSubview(&chip);
+            ivars.chip_views.borrow_mut().push(chip);
+        }
+        self.paint_selection();
+    }
+
+    fn fade(&self, entering: bool) {
+        let context = if entering { ease_out() } else { ease_in() };
+        let duration = if entering { FADE_IN } else { FADE_OUT };
+        let target = if entering { 1.0 } else { 0.0 };
+        let this = self.retain();
+        let next = this.clone();
+        let go = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
+            let animation = unsafe { animation.as_ref() };
+            animation.setDuration(duration);
+            animation.setTimingFunction(Some(&context));
+            this.animator().setAlphaValue(target);
+        });
+        if entering {
+            NSAnimationContext::runAnimationGroup(&go);
+            return;
+        }
+        let done = RcBlock::new(move || next.removeFromSuperview());
+        NSAnimationContext::runAnimationGroup_completionHandler(&go, Some(&done));
+    }
+
+    fn paint_selection(&self) {
+        let ivars = self.ivars();
+        let selected = ivars.selected.get();
+        let list = ivars.list.get();
+        let scale = if selected { 1.0 } else { 0.94 };
+        CATransaction::begin();
+        CATransaction::setAnimationDuration(SELECT);
+        CATransaction::setAnimationTimingFunction(Some(&ease_out()));
+        ivars.ring.setOpacity(if selected && !list { 1.0 } else { 0.0 });
+        ivars.ring.setTransform(CATransform3D {
+            m11: scale,
+            m22: scale,
+            m33: 1.0,
+            m44: 1.0,
+            ..unsafe { CATransform3DIdentity }
+        });
+        let row = match (selected, ivars.hovered.get()) {
+            (true, _) => 1.0,
+            (false, true) => 0.45,
+            (false, false) => 0.0,
+        };
+        ivars.highlight.setOpacity(if list { row } else { 0.0 });
+        CATransaction::commit();
+        if ivars.painted.replace(selected) != selected
+            && let Some(layer) = ivars.name.layer()
+        {
+            let fade = CATransition::animation();
+            fade.setType(unsafe { kCATransitionFade });
+            fade.setDuration(SELECT);
+            fade.setTimingFunction(Some(&ease_out()));
+            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("tint")));
+        }
+        let color = if selected { ivars.accent.borrow().clone() } else { NSColor::labelColor() };
+        ivars.name.setTextColor(Some(&color));
     }
 }
 
-pub fn meta_line(item: &Item) -> String {
-    let kind = match item.kind {
+fn put(layer: &CALayer, frame: CGRect) {
+    layer.setBounds(CGRect::new(CGPoint::ZERO, frame.size));
+    layer.setPosition(CGPoint::new(frame.origin.x + frame.size.width / 2.0, frame.origin.y + frame.size.height / 2.0));
+}
+
+pub fn resolution(item: &Item) -> Option<String> {
+    let short = item.width.min(item.height);
+    return match short {
+        0 => None,
+        2160.. => Some("4K".to_string()),
+        1440.. => Some("1440p".to_string()),
+        1080.. => Some("1080p".to_string()),
+        720.. => Some("720p".to_string()),
+        _ => Some(format!("{}×{}", item.width, item.height)),
+    };
+}
+
+pub fn kind_name(kind: ItemKind) -> &'static str {
+    return match kind {
         ItemKind::Video => "Video",
         ItemKind::Gif => "GIF",
         ItemKind::Image => "Image",
     };
-    let mut parts = vec![kind.to_string()];
-    if item.width > 0 {
-        parts.push(format!("{}×{}", item.width, item.height));
-    }
+}
+
+pub fn meta_line(item: &Item) -> String {
+    let mut parts = vec![kind_name(item.kind).to_string()];
+    parts.extend(resolution(item));
     if item.kind == ItemKind::Video && item.duration > 0.0 {
         parts.push(duration(item.duration));
     }
@@ -199,16 +452,13 @@ pub fn meta_line(item: &Item) -> String {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn duration(seconds: f64) -> String {
-    let total = seconds.round() as u64;
+    let total = seconds.max(0.0).round() as u64;
     return format!("{}:{:02}", total / 60, total % 60);
 }
-
-pub struct DocumentIvars;
 
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = DocumentIvars]
     struct DocumentView;
 
     impl DocumentView {
@@ -219,15 +469,37 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
+            crate::ui::focus();
             crate::ui::select(None);
         }
     }
 );
 
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    struct ShadeView;
+
+    impl ShadeView {
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: CGPoint) -> Option<Retained<NSView>> {
+            None
+        }
+    }
+);
+
 pub struct WallIvars {
+    canvas: Retained<objc2_app_kit::NSBox>,
+    shade: Retained<ShadeView>,
+    fade: Retained<CAGradientLayer>,
     scroll: Retained<NSScrollView>,
     document: Retained<DocumentView>,
+    empty: Retained<NSView>,
     tiles: RefCell<Vec<Retained<TileView>>>,
+    shown: RefCell<(Vec<usize>, bool)>,
+    list: Cell<bool>,
+    columns: Cell<usize>,
+    keyboard: Cell<bool>,
     last_width: Cell<CGFloat>,
 }
 
@@ -241,77 +513,376 @@ define_class!(
         #[unsafe(method(layout))]
         fn layout(&self) {
             let () = unsafe { msg_send![super(self), layout] };
-            self.relayout(false);
+            self.place_shade();
+            self.relayout(false, false);
+        }
+
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if !self.key(event) {
+                let () = unsafe { msg_send![super(self), keyDown: event] };
+            }
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, _event: &NSEvent) {
+            if self.ivars().keyboard.replace(false) {
+                self.rehover();
+            }
         }
     }
 );
 
+const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
+
 impl WallView {
-    pub fn new(mtm: MainThreadMarker, library: &Library, theme: &Theme) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
+        let canvas = widgets::card(mtm, &theme.canvas, 0.0);
         let scroll = NSScrollView::new(mtm);
         scroll.setDrawsBackground(false);
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
         scroll.setAutomaticallyAdjustsContentInsets(true);
-        let document = DocumentView::alloc(mtm).set_ivars(DocumentIvars);
-        let document: Retained<DocumentView> = unsafe { msg_send![super(document), init] };
+        let document: Retained<DocumentView> = unsafe { msg_send![DocumentView::alloc(mtm), init] };
+        document.setWantsLayer(true);
         scroll.setDocumentView(Some(&document));
-        let tiles: Vec<Retained<TileView>> = library
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| TileView::new(mtm, index, item, library, theme))
-            .collect();
-        for tile in &tiles {
-            document.addSubview(tile);
-        }
+        let icon = widgets::symbol_view(mtm, "photo.on.rectangle.angled", 34.0, &NSColor::tertiaryLabelColor());
+        let title = widgets::label(mtm, "No Wallpapers", 17.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+        let hint = widgets::label(
+            mtm,
+            "Try a different search, filter or folder.",
+            12.0,
+            &Weight::Regular,
+            &NSColor::tertiaryLabelColor(),
+        );
+        hint.setAlignment(NSTextAlignment::Center);
+        let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, 8.0);
+        empty.setHidden(true);
+        empty.setAlphaValue(0.0);
+        let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
+        let fade = CAGradientLayer::new();
+        fade.setStartPoint(CGPoint::new(0.5, 1.0));
+        fade.setEndPoint(CGPoint::new(0.5, 0.0));
+        shade.setLayer(Some(&fade));
+        shade.setWantsLayer(true);
         let this = Self::alloc(mtm).set_ivars(WallIvars {
+            canvas: canvas.clone(),
+            shade,
+            fade,
             scroll,
             document,
-            tiles: RefCell::new(tiles),
+            empty: widgets::view(&empty),
+            tiles: RefCell::new(Vec::new()),
+            shown: RefCell::new((Vec::new(), false)),
+            list: Cell::new(false),
+            columns: Cell::new(1),
+            keyboard: Cell::new(false),
             last_width: Cell::new(0.0),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        this.setWantsLayer(true);
-        if let Some(layer) = this.layer() {
-            layer.setBackgroundColor(Some(&widgets::cg(mtm, &theme.canvas)));
-        }
-        let scroll = &this.ivars().scroll;
-        this.addSubview(scroll);
-        widgets::pin(scroll, &this, 0.0);
+        let ivars = this.ivars();
+        this.addSubview(&canvas);
+        this.addSubview(&ivars.scroll);
+        this.addSubview(&ivars.empty);
+        this.addSubview(&ivars.shade);
+        this.paint(theme);
+        widgets::pin(&canvas, &this, 0.0);
+        widgets::pin(&ivars.scroll, &this, 0.0);
+        ivars.empty.setTranslatesAutoresizingMaskIntoConstraints(false);
+        ivars.empty.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
+        ivars.empty.centerYAnchor().constraintEqualToAnchor(&this.centerYAnchor()).setActive(true);
+        let options = NSTrackingAreaOptions::MouseMoved
+            | NSTrackingAreaOptions::ActiveInKeyWindow
+            | NSTrackingAreaOptions::InVisibleRect;
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                CGRect::ZERO,
+                options,
+                Some(&this),
+                None,
+            )
+        };
+        this.addTrackingArea(&area);
         return this;
+    }
+
+    fn key(&self, event: &NSEvent) -> bool {
+        let flags = event.modifierFlags();
+        if flags
+            .intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option)
+        {
+            return false;
+        }
+        let columns = isize::try_from(self.ivars().columns.get()).unwrap_or(1);
+        let code = event.keyCode();
+        match code {
+            123 => self.step(-1),
+            124 => self.step(1),
+            125 => self.step(columns),
+            126 => self.step(-columns),
+            36 | 76 => crate::ui::apply_selection(),
+            49 => crate::ui::toggle_play(),
+            43 => crate::ui::frame(-1),
+            47 => crate::ui::frame(1),
+            50 => crate::ui::place(self.target(), Scope::All),
+            _ => match DIGITS.iter().position(|digit| *digit == code) {
+                Some(space) => crate::ui::place(self.target(), Scope::Space(space)),
+                None => return false,
+            },
+        }
+        return true;
+    }
+
+    fn target(&self) -> Option<usize> {
+        let ivars = self.ivars();
+        let tiles = ivars.tiles.borrow();
+        let hovered = tiles.iter().find(|tile| !ivars.keyboard.get() && tile.ivars().hovered.get());
+        return hovered
+            .or_else(|| tiles.iter().find(|tile| tile.ivars().selected.get()))
+            .map(|tile| tile.ivars().index.get());
+    }
+
+    fn step(&self, delta: isize) {
+        let ivars = self.ivars();
+        ivars.keyboard.set(true);
+        let index = {
+            let tiles = ivars.tiles.borrow();
+            for tile in tiles.iter().filter(|tile| tile.ivars().hovered.get()) {
+                tile.hover(false);
+            }
+            let next = match tiles.iter().position(|tile| tile.ivars().selected.get()) {
+                Some(position) => {
+                    position.checked_add_signed(delta).filter(|next| *next < tiles.len()).unwrap_or(position)
+                }
+                None => 0,
+            };
+            tiles.get(next).map(|tile| tile.ivars().index.get())
+        };
+        if let Some(index) = index {
+            crate::ui::reveal(index);
+        }
+    }
+
+    pub fn paint(&self, theme: &Theme) {
+        let ivars = self.ivars();
+        ivars.canvas.setFillColor(&theme.canvas);
+        let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(self.mtm()).effectiveAppearance());
+        let (base, alpha) = if dark { (NSColor::blackColor(), 0.4) } else { (theme.canvas.clone(), 0.4) };
+        let colors: Vec<Retained<CGColor>> = [alpha, alpha * 0.85, 0.0]
+            .iter()
+            .map(|alpha| widgets::cg(self.mtm(), &base.colorWithAlphaComponent(*alpha)))
+            .collect();
+        let locations: Vec<Retained<NSNumber>> =
+            [0.0, 0.7, 1.0].iter().map(|location| NSNumber::new_f64(*location)).collect();
+        let objects: Vec<&AnyObject> =
+            colors.iter().map(|color| unsafe { &*std::ptr::from_ref::<CGColor>(color).cast::<AnyObject>() }).collect();
+        unsafe {
+            ivars.fade.setColors(Some(&NSArray::from_slice(&objects)));
+            ivars.fade.setLocations(Some(&NSArray::from_retained_slice(&locations)));
+        }
+        for tile in ivars.tiles.borrow().iter() {
+            tile.invalidate();
+        }
+    }
+
+    fn place_shade(&self) {
+        let ivars = self.ivars();
+        let bounds = self.bounds();
+        let height = self.safeAreaInsets().top + 22.0;
+        ivars.shade.setFrame(CGRect::new(
+            CGPoint::new(0.0, bounds.size.height - height),
+            CGSize::new(bounds.size.width, height),
+        ));
+    }
+
+    pub fn reload(
+        &self,
+        library: &Library,
+        visible: &[usize],
+        selected: Option<usize>,
+        scope: Scope,
+        list: bool,
+        theme: &Theme,
+    ) {
+        let mtm = self.mtm();
+        let ivars = self.ivars();
+        let key = (visible.to_vec(), list);
+        let morph = *ivars.shown.borrow() != key;
+        *ivars.shown.borrow_mut() = key;
+        let mut previous: HashMap<usize, Retained<TileView>> = ivars
+            .tiles
+            .borrow_mut()
+            .drain(..)
+            .map(|tile| {
+                let ident = tile.ivars().ident;
+                return (ident, tile);
+            })
+            .collect();
+        let mut tiles: Vec<Retained<TileView>> = Vec::with_capacity(visible.len());
+        let mut entering: Vec<Retained<TileView>> = Vec::new();
+        for index in visible {
+            if let Some(tile) = previous.remove(&library.items[*index].added) {
+                tile.content(library, *index, scope, theme);
+                tiles.push(tile);
+                continue;
+            }
+            let tile = TileView::new(mtm, *index, library, scope, theme);
+            tile.setAlphaValue(0.0);
+            ivars.document.addSubview(&tile);
+            entering.push(tile.clone());
+            tiles.push(tile);
+        }
+        for tile in previous.into_values() {
+            tile.fade(false);
+        }
+        *ivars.tiles.borrow_mut() = tiles;
+        ivars.list.set(list);
+        self.show_empty(visible.is_empty());
+        self.set_selected(selected);
+        self.relayout(morph, morph);
+        for tile in entering {
+            tile.fade(true);
+        }
+        self.rehover();
+    }
+
+    fn show_empty(&self, show: bool) {
+        let empty = self.ivars().empty.clone();
+        if show {
+            if !empty.isHidden() && empty.alphaValue() >= 1.0 {
+                return;
+            }
+            empty.setHidden(false);
+            let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
+                let animation = unsafe { animation.as_ref() };
+                animation.setDuration(FADE_IN);
+                animation.setTimingFunction(Some(&ease_out()));
+                empty.animator().setAlphaValue(1.0);
+            });
+            NSAnimationContext::runAnimationGroup(&fade);
+            return;
+        }
+        if empty.isHidden() {
+            return;
+        }
+        let next = empty.clone();
+        let done = RcBlock::new(move || {
+            if next.alphaValue() == 0.0 {
+                next.setHidden(true);
+            }
+        });
+        let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
+            let animation = unsafe { animation.as_ref() };
+            animation.setDuration(FADE_OUT);
+            animation.setTimingFunction(Some(&ease_in()));
+            empty.animator().setAlphaValue(0.0);
+        });
+        NSAnimationContext::runAnimationGroup_completionHandler(&fade, Some(&done));
+    }
+
+    fn rehover(&self) {
+        if self.ivars().keyboard.get() {
+            return;
+        }
+        let Some(window) = self.window() else {
+            return;
+        };
+        let point = window.mouseLocationOutsideOfEventStream();
+        for tile in self.ivars().tiles.borrow().iter() {
+            let local = tile.convertPoint_fromView(point, None);
+            let under = tile.visibleRect().size.width > 0.0 && objc2_foundation::NSPointInRect(local, tile.bounds());
+            if under != tile.ivars().hovered.get() {
+                tile.hover(under);
+            }
+        }
     }
 
     pub fn set_selected(&self, selected: Option<usize>) {
         for tile in self.ivars().tiles.borrow().iter() {
-            tile.set_selected(Some(tile.ivars().index) == selected);
+            tile.set_selected(Some(tile.ivars().index.get()) == selected);
         }
     }
 
+    pub fn reveal(&self, index: usize) {
+        let ivars = self.ivars();
+        let frame = ivars.tiles.borrow().iter().find(|tile| tile.ivars().index.get() == index).map(|tile| tile.frame());
+        if let Some(frame) = frame {
+            let clip = ivars.scroll.contentView();
+            let visible = clip.bounds();
+            let rect = CGRect::new(
+                CGPoint::new(frame.origin.x, frame.origin.y - PADDING),
+                CGSize::new(frame.size.width, frame.size.height + PADDING * 2.0),
+            );
+            if rect.origin.y < visible.origin.y
+                || rect.origin.y + rect.size.height > visible.origin.y + visible.size.height
+            {
+                let limit = (ivars.document.frame().size.height - visible.size.height).max(0.0);
+                let origin = if rect.origin.y < visible.origin.y {
+                    rect.origin.y
+                } else {
+                    rect.origin.y + rect.size.height - visible.size.height
+                }
+                .clamp(0.0, limit);
+                let span = visible.size.height.max(1.0);
+                let duration =
+                    SCROLL_MIN + ((origin - visible.origin.y).abs() / span).min(1.0) * (SCROLL_MAX - SCROLL_MIN);
+                let scroll = ivars.scroll.clone();
+                let target = CGPoint::new(visible.origin.x, origin);
+                let wall = self.retain();
+                let group = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+                    let context = unsafe { context.as_ref() };
+                    context.setDuration(duration);
+                    context.setTimingFunction(Some(&ease_in_out()));
+                    clip.animator().setBoundsOrigin(target);
+                    scroll.reflectScrolledClipView(&clip);
+                });
+                let done = RcBlock::new(move || wall.rehover());
+                NSAnimationContext::runAnimationGroup_completionHandler(&group, Some(&done));
+            }
+        }
+        self.rehover();
+    }
+
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn relayout(&self, force: bool) {
+    fn relayout(&self, force: bool, animate: bool) {
         let ivars = self.ivars();
         let width = ivars.scroll.contentSize().width;
         if !force && (width - ivars.last_width.get()).abs() < 0.5 {
             return;
         }
         ivars.last_width.set(width);
-        let usable = (width - PADDING * 2.0).max(MIN_TILE);
-        let columns = ((usable + COLUMN_GAP) / (MIN_TILE + COLUMN_GAP)).floor().max(1.0);
-        let tile = (usable - COLUMN_GAP * (columns - 1.0)) / columns;
-        let height = tile * 10.0 / 16.0 + LABEL_HEIGHT;
         let tiles = ivars.tiles.borrow();
-        let columns = columns as usize;
+        let usable = (width - PADDING * 2.0).max(MIN_TILE);
+        let list = ivars.list.get();
+        let (columns, tile, height, gap) = if list {
+            (1, usable, ROW_HEIGHT, 2.0)
+        } else {
+            let columns = ((usable + COLUMN_GAP) / (MIN_TILE + COLUMN_GAP)).floor().max(1.0);
+            let tile = (usable - COLUMN_GAP * (columns - 1.0)) / columns;
+            (columns as usize, tile, tile * 10.0 / 16.0 + LABEL_HEIGHT, ROW_GAP)
+        };
+        ivars.columns.set(columns);
+        let top = 14.0;
         for (position, view) in tiles.iter().enumerate() {
             let column = (position % columns) as CGFloat;
             let row = (position / columns) as CGFloat;
-            view.place(CGRect::new(
-                CGPoint::new(PADDING + column * (tile + COLUMN_GAP), 12.0 + row * (height + ROW_GAP)),
-                CGSize::new(tile, height),
-            ));
+            view.place(
+                CGRect::new(
+                    CGPoint::new(PADDING + column * (tile + COLUMN_GAP), top + row * (height + gap)),
+                    CGSize::new(tile, if list { ROW_HEIGHT } else { height }),
+                ),
+                list,
+                animate,
+            );
         }
         let rows = tiles.len().div_ceil(columns) as CGFloat;
-        let total = 12.0 + rows * (height + ROW_GAP) + PADDING;
+        let total = top + rows * (height + gap) + PADDING;
         let visible = ivars.scroll.contentSize().height;
         ivars.document.setFrameSize(CGSize::new(width, total.max(visible)));
     }

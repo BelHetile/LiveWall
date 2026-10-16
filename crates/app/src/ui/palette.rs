@@ -2,7 +2,7 @@ use std::path::Path;
 use std::ptr::NonNull;
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor};
+use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
 use objc2_foundation::NSArray;
 use serde::Deserialize;
 
@@ -22,18 +22,24 @@ impl TryFrom<String> for Rgb {
         if hex.len() != 6 {
             return Err(format!("expected #RRGGBB, got '{text}'"));
         }
-        let channel = |range: std::ops::Range<usize>| {
-            return u8::from_str_radix(&hex[range], 16)
-                .map(|value| f64::from(value) / 255.0)
-                .map_err(|_| format!("invalid hex color '{text}'"));
-        };
-        return Ok(Self { r: channel(0..2)?, g: channel(2..4)?, b: channel(4..6)? });
+        let value = u32::from_str_radix(hex, 16).map_err(|_| format!("invalid hex color '{text}'"))?;
+        return Ok(Self::hex(value));
     }
 }
 
 impl Rgb {
-    const WHITE: Self = Self { r: 1.0, g: 1.0, b: 1.0 };
-    const INK: Self = Self { r: 26.0 / 255.0, g: 24.0 / 255.0, b: 30.0 / 255.0 };
+    const WHITE: Self = Self::hex(0x00FF_FFFF);
+    const INK: Self = Self::hex(0x001A_181E);
+    const PAPER: Self = Self::hex(0x00F4_F2F6);
+    const NIGHT: Self = Self::hex(0x001C_1A21);
+
+    const fn hex(value: u32) -> Self {
+        return Self {
+            r: (value >> 16 & 0xFF) as f64 / 255.0,
+            g: (value >> 8 & 0xFF) as f64 / 255.0,
+            b: (value & 0xFF) as f64 / 255.0,
+        };
+    }
 
     fn mix(self, other: Self, amount: f64) -> Self {
         let lerp = |a: f64, b: f64| a + (b - a) * amount;
@@ -45,16 +51,20 @@ impl Rgb {
         return 0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b);
     }
 
-    fn contrast(self, other: Self) -> f64 {
-        let (a, b) = (self.luminance(), other.luminance());
-        return (a.max(b) + 0.05) / (a.min(b) + 0.05);
-    }
-
     fn legible(self) -> Self {
-        return if self.contrast(Self::WHITE) >= self.contrast(Self::INK) { Self::WHITE } else { Self::INK };
+        let contrast = |other: Self| {
+            let (a, b) = (self.luminance(), other.luminance());
+            return (a.max(b) + 0.05) / (a.min(b) + 0.05);
+        };
+        return if contrast(Self::WHITE) >= 3.0 { Self::WHITE } else { Self::INK };
     }
 
-    fn color(self, alpha: f64) -> Retained<NSColor> {
+    pub fn from_color(color: &NSColor) -> Option<Self> {
+        let srgb = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+        return Some(Self { r: srgb.redComponent(), g: srgb.greenComponent(), b: srgb.blueComponent() });
+    }
+
+    pub fn color(self, alpha: f64) -> Retained<NSColor> {
         return NSColor::colorWithSRGBRed_green_blue_alpha(self.r, self.g, self.b, alpha);
     }
 }
@@ -63,18 +73,34 @@ impl Rgb {
 pub struct Palette {
     pub accent: Rgb,
     pub canvas: Rgb,
+    #[serde(default)]
+    pub accent_dark: Option<Rgb>,
 }
 
 impl Default for Palette {
     fn default() -> Self {
-        return Self {
-            accent: Rgb { r: 134.0 / 255.0, g: 104.0 / 255.0, b: 143.0 / 255.0 },
-            canvas: Rgb { r: 156.0 / 255.0, g: 122.0 / 255.0, b: 146.0 / 255.0 },
-        };
+        return Self::BUILT_IN[0].1;
     }
 }
 
 impl Palette {
+    const fn new(accent: u32, accent_dark: u32, canvas: u32) -> Self {
+        return Self { accent: Rgb::hex(accent), canvas: Rgb::hex(canvas), accent_dark: Some(Rgb::hex(accent_dark)) };
+    }
+
+    pub const BUILT_IN: [(&str, Self); 6] = [
+        ("Violet", Self::new(0x0086_75AC, 0x00A9_96D6, 0x007D_6F9E)),
+        ("Rose", Self::new(0x00B0_7885, 0x00DB_A2B0, 0x009E_7881)),
+        ("Ocean", Self::new(0x0068_889F, 0x0087_B0CC, 0x006F_8B9E)),
+        ("Forest", Self::new(0x0060_8875, 0x0088_BDA2, 0x0075_9E8A)),
+        ("Amber", Self::new(0x009C_8766, 0x00D1_BA97, 0x009E_8B6F)),
+        ("Graphite", Self::new(0x0075_7980, 0x00BE_C2CC, 0x0095_989E)),
+    ];
+
+    pub fn custom(accent: Rgb, canvas: Rgb) -> Self {
+        return Self { accent, canvas, accent_dark: None };
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
         return serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()));
@@ -84,25 +110,71 @@ impl Palette {
 pub struct Theme {
     pub accent: Retained<NSColor>,
     pub accent_text: Retained<NSColor>,
-    pub fill: Retained<NSColor>,
+    pub accent_fill: Retained<NSColor>,
+    pub accent_soft: Retained<NSColor>,
     pub canvas: Retained<NSColor>,
     pub chrome: Retained<NSColor>,
+    pub hairline: Retained<NSColor>,
 }
 
 impl Theme {
     pub fn new(palette: Palette) -> Self {
-        let light = palette.accent;
-        let dark = palette.accent.mix(Rgb::WHITE, 0.35);
+        let Palette { accent, canvas, accent_dark } = palette;
+        let dark = accent_dark.unwrap_or_else(|| accent.mix(Rgb::WHITE, 0.35));
         return Self {
-            accent: dynamic(light.color(1.0), dark.color(1.0)),
-            accent_text: light.legible().color(1.0),
-            fill: light.color(1.0),
-            canvas: dynamic(palette.canvas.color(0.14), palette.canvas.color(0.22)),
+            accent: dynamic(accent.color(1.0), dark.color(1.0)),
+            accent_text: dynamic(accent.legible().color(1.0), dark.legible().color(1.0)),
+            accent_fill: dynamic(accent.mix(Rgb::WHITE, 0.2).color(1.0), dark.color(1.0)),
+            accent_soft: dynamic(accent.color(0.14), dark.color(0.2)),
+            canvas: dynamic(Rgb::PAPER.mix(canvas, 0.1).color(1.0), Rgb::NIGHT.mix(canvas, 0.2).color(1.0)),
             chrome: dynamic(
-                palette.canvas.mix(Rgb::WHITE, 0.3).color(0.22),
-                palette.canvas.mix(Rgb::INK, 0.3).color(0.26),
+                Rgb::PAPER.mix(canvas.mix(Rgb::WHITE, 0.3), 0.08).mix(Rgb::WHITE, 0.72).color(1.0),
+                Rgb::NIGHT.mix(canvas.mix(Rgb::INK, 0.3), 0.14).mix(Rgb::WHITE, 0.04).color(1.0),
             ),
+            hairline: dynamic(Rgb::INK.color(0.08), Rgb::WHITE.color(0.1)),
         };
+    }
+}
+
+pub struct Look {
+    pub mode: usize,
+    pub theme: usize,
+    pub themes: Vec<(String, Palette)>,
+    pub colors: Theme,
+}
+
+impl Look {
+    pub const MODES: [&str; 3] = ["System", "Light", "Dark"];
+
+    pub fn new(mode: usize, custom: Option<Palette>) -> Self {
+        let mut themes: Vec<(String, Palette)> =
+            Palette::BUILT_IN.iter().map(|(name, palette)| ((*name).to_string(), *palette)).collect();
+        let selected = if custom.is_some() { themes.len() } else { 0 };
+        let custom = custom.unwrap_or_else(|| Palette::custom(Rgb::hex(0x0086_6A8C), Rgb::hex(0x0094_7C8E)));
+        themes.push(("Custom".to_string(), custom));
+        let colors = Theme::new(themes[selected].1);
+        return Self { mode, theme: selected, themes, colors };
+    }
+
+    pub fn custom_index(&self) -> usize {
+        return self.themes.len() - 1;
+    }
+
+    pub fn palette(&self) -> Palette {
+        return self.themes[self.theme].1;
+    }
+
+    pub fn select(&mut self, theme: usize) {
+        if let Some((_, palette)) = self.themes.get(theme) {
+            self.theme = theme;
+            self.colors = Theme::new(*palette);
+        }
+    }
+
+    pub fn set_custom(&mut self, palette: Palette) {
+        let index = self.custom_index();
+        self.themes[index].1 = palette;
+        self.select(index);
     }
 }
 

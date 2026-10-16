@@ -1,22 +1,29 @@
+use std::cell::{Cell, RefCell};
+
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSImage, NSMenu, NSMenuItem, NSMenuToolbarItem, NSSearchToolbarItem, NSToolbar,
-    NSToolbarDelegate, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarInspectorTrackingSeparatorItemIdentifier,
-    NSToolbarItem, NSToolbarItemGroup, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier, NSToolbarItemStyle,
-    NSToolbarToggleInspectorItemIdentifier, NSView,
+    NSAnimatablePropertyContainer, NSButton, NSColor, NSEvent, NSImage, NSLayoutConstraint, NSMenu, NSMenuItem,
+    NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup, NSToolbarItemGroupSelectionMode,
+    NSToolbarItemIdentifier, NSToolbarToggleInspectorItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
-use objc2_quartz_core::{CALayer, kCAGravityResizeAspectFill};
+use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
-use crate::ui::fixture::{Library, Target};
-use crate::ui::palette::Theme;
+use crate::ui::fixture::Library;
+use crate::ui::palette::Look;
+use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, lock_tip, showing};
 use crate::ui::widgets::{self, Weight};
 
+const PILL_WIDTH: CGFloat = 124.0;
+const PILL_HEIGHT: CGFloat = 26.0;
+
 pub struct PillIvars {
-    index: usize,
+    index: Cell<Option<usize>>,
+    menu: RefCell<Option<Retained<NSMenu>>>,
 }
 
 define_class!(
@@ -28,10 +35,45 @@ define_class!(
     impl PillView {
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
-            crate::ui::select(Some(self.ivars().index));
+            let ivars = self.ivars();
+            let menu = ivars.menu.borrow().clone();
+            if let Some(menu) = menu {
+                menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(0.0, -6.0), Some(self));
+            } else if let Some(index) = ivars.index.get() {
+                crate::ui::reveal(index);
+            }
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.hover(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.hover(false);
         }
     }
 );
+
+impl PillView {
+    fn hover(&self, on: bool) {
+        let Some(layer) = self.layer() else {
+            return;
+        };
+        let ivars = self.ivars();
+        let active = ivars.index.get().is_some() || ivars.menu.borrow().is_some();
+        let fill = if on && active {
+            widgets::cg(self.mtm(), &NSColor::quaternaryLabelColor())
+        } else {
+            widgets::cg(self.mtm(), &NSColor::clearColor())
+        };
+        CATransaction::begin();
+        CATransaction::setAnimationDuration(0.15);
+        layer.setBackgroundColor(Some(&fill));
+        CATransaction::commit();
+    }
+}
 
 pub struct DelegateIvars {
     items: Vec<(Retained<NSString>, Retained<NSToolbarItem>)>,
@@ -69,108 +111,206 @@ define_class!(
     }
 );
 
-impl ToolbarDelegate {
-    pub fn toolbar(&self, mtm: MainThreadMarker) -> Retained<NSToolbar> {
+pub struct Toolbar {
+    pub bar: Retained<NSToolbar>,
+    pub layout: Retained<NSToolbarItemGroup>,
+    pub search: Retained<NSSearchField>,
+    scope: Retained<NSPopUpButton>,
+    folder: Retained<NSPopUpButton>,
+    sort: Retained<NSMenuToolbarItem>,
+    add: Retained<NSButton>,
+    add_menu: Retained<NSMenu>,
+    desktop: Pill,
+    screen: Pill,
+    scope_title: RefCell<String>,
+    folder_title: RefCell<String>,
+    _delegate: Retained<ToolbarDelegate>,
+}
+
+struct Pill {
+    view: Retained<PillView>,
+    thumb: Retained<NSView>,
+    title: Retained<NSTextField>,
+    badge: Retained<NSTextField>,
+    chevron: Retained<NSView>,
+    width: Retained<NSLayoutConstraint>,
+}
+
+impl Toolbar {
+    pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
+        let scope = popup(mtm, 128.0);
+        let folder = popup(mtm, 136.0);
+        let sort =
+            NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &NSString::from_str("sort"));
+        sort.setShowsIndicator(false);
+        if let Some(image) = widgets::symbol("arrow.up.arrow.down", 13.0) {
+            sort.setImage(Some(&image));
+        }
+        sort.setLabel(&NSString::from_str("Sort & Filter"));
+        sort.setToolTip(Some(&NSString::from_str("Sort & Filter")));
+        let layout = layout_group(mtm, target);
+        let search = NSSearchField::new(mtm);
+        search.setControlSize(objc2_app_kit::NSControlSize::Large);
+        search.setPlaceholderString(Some(&NSString::from_str("Search")));
+        search.setSendsSearchStringImmediately(true);
+        unsafe {
+            search.setTarget(Some(target));
+            search.setAction(Some(sel!(search:)));
+        }
+        let search_box = NSView::new(mtm);
+        search_box.addSubview(&search);
+        search.setTranslatesAutoresizingMaskIntoConstraints(false);
+        search.leadingAnchor().constraintEqualToAnchor_constant(&search_box.leadingAnchor(), 4.0).setActive(true);
+        search.trailingAnchor().constraintEqualToAnchor_constant(&search_box.trailingAnchor(), -4.0).setActive(true);
+        search.centerYAnchor().constraintEqualToAnchor(&search_box.centerYAnchor()).setActive(true);
+        search_box.widthAnchor().constraintEqualToConstant(120.0).setActive(true);
+        search_box.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
+        let add = widgets::button(mtm, "Add", Some("plus"), sel!(showAdd:), target);
+        add.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(13.0, unsafe {
+            objc2_app_kit::NSFontWeightSemibold
+        })));
+        add.setToolTip(Some(&NSString::from_str("Add wallpapers from files, a folder or a video link")));
+        add.widthAnchor().constraintEqualToConstant(76.0).setActive(true);
+        let settings =
+            NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &NSString::from_str("settings"));
+        if let Some(image) = widgets::symbol("gearshape", 13.0) {
+            settings.setImage(Some(&image));
+        }
+        settings.setLabel(&NSString::from_str("Settings"));
+        settings.setToolTip(Some(&NSString::from_str("Settings")));
+        unsafe {
+            settings.setTarget(Some(target));
+            settings.setAction(Some(sel!(showSettings:)));
+        }
+        let desktop = Pill::new(mtm, "Desktop", "display");
+        let screen = Pill::new(mtm, "Lock Screen", "lock.fill");
+        let line = widgets::card(mtm, &NSColor::separatorColor(), 0.0);
+        line.widthAnchor().constraintEqualToConstant(1.0).setActive(true);
+        line.heightAnchor().constraintEqualToConstant(16.0).setActive(true);
+        let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, 3.0);
+        row.setEdgeInsets(widgets::insets(0.0, 5.0, 0.0, 5.0));
+        let showing = view_item(mtm, "showing", "Now Showing", &row);
+
+        let items: Vec<Retained<NSToolbarItem>> = vec![
+            view_item(mtm, "scope", "Desktop", &scope),
+            view_item(mtm, "folder", "Folder", &folder),
+            showing.clone(),
+            Retained::into_super(sort.clone()),
+            Retained::into_super(layout.clone()),
+            view_item(mtm, "search", "Search", &search_box),
+            view_item(mtm, "add", "Add", &add),
+            settings,
+        ];
+        let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
+        let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
+        let order: Vec<Retained<NSString>> = vec![
+            NSString::from_str("scope"),
+            NSString::from_str("folder"),
+            flexible.copy(),
+            NSString::from_str("showing"),
+            flexible.copy(),
+            NSString::from_str("sort"),
+            NSString::from_str("layout"),
+            NSString::from_str("search"),
+            NSString::from_str("add"),
+            NSString::from_str("settings"),
+            toggle.copy(),
+        ];
+        let items = items.into_iter().map(|item| (item.itemIdentifier(), item)).collect();
+        let delegate = ToolbarDelegate::alloc(mtm).set_ivars(DelegateIvars { items, order });
+        let delegate: Retained<ToolbarDelegate> = unsafe { msg_send![super(delegate), init] };
         let toolbar = NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str("library"));
-        toolbar.setDelegate(Some(ProtocolObject::from_ref(self)));
+        toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         toolbar.setAllowsUserCustomization(false);
-        toolbar.setDisplayMode(objc2_app_kit::NSToolbarDisplayMode::IconOnly);
-        return toolbar;
+        toolbar.setAllowsDisplayModeCustomization(false);
+        toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
+        return Self {
+            bar: toolbar,
+            layout,
+            search,
+            scope,
+            folder,
+            sort,
+            add,
+            add_menu: add_menu(target),
+            desktop,
+            screen,
+            scope_title: RefCell::new(String::new()),
+            folder_title: RefCell::new(String::new()),
+            _delegate: delegate,
+        };
+    }
+
+    pub fn sync(&self, _mtm: MainThreadMarker, library: &Library, filter: &Filter, look: &Look, target: &AnyObject) {
+        let title = filter.scope.title();
+        if self.scope_title.borrow().as_str() != title {
+            widgets::fade(&self.scope);
+            self.scope_title.borrow_mut().clone_from(&title);
+        }
+        self.scope.setMenu(Some(&scope_menu(library, filter.scope, &title, sel!(scope:), target)));
+        let folder_title =
+            filter.folder.and_then(|index| library.folders.get(index)).map_or("All Wallpapers", |name| name);
+        if self.folder_title.borrow().as_str() != folder_title {
+            widgets::fade(&self.folder);
+            *self.folder_title.borrow_mut() = folder_title.to_string();
+        }
+        self.folder.setMenu(Some(&folder_menu(library, filter.folder, folder_title, target)));
+        self.sort.setMenu(&sort_menu(filter, target));
+        self.layout.setSelectedIndex(isize::from(filter.list));
+        widgets::prominent(&self.add, &look.colors);
+        let summary = showing(library, filter.scope);
+        let menu = (summary.others > 0).then(|| desktops_menu(library, &summary, target));
+        let item =
+            summary.main.map(|index| &library.items[index]).map(|entry| (entry.title.clone(), entry.image.as_deref()));
+        let tip = if summary.others > 0 {
+            format!("{} · {} different wallpapers", filter.scope.title(), summary.others + 1)
+        } else {
+            filter.scope.title()
+        };
+        self.desktop.update(summary.main, item, "Desktop", summary.others, menu);
+        self.desktop.view.setToolTip(Some(&NSString::from_str(&tip)));
+        let lock_index = library.lock();
+        let screen = lock_index.map(|index| &library.items[index]).map(|entry| {
+            let image = library.still.as_ref().map_or(entry.image.as_deref(), |still| Some(&*still.image));
+            return (entry.title.clone(), image);
+        });
+        self.screen.update(lock_index, screen, "Lock Screen", 0, None);
+        self.screen.view.setToolTip(Some(&NSString::from_str(&lock_tip(library))));
     }
 }
 
-pub fn delegate(
-    mtm: MainThreadMarker,
-    library: &Library,
-    theme: &Theme,
-    target: &AnyObject,
-) -> Retained<ToolbarDelegate> {
-    let mut items: Vec<(Retained<NSString>, Retained<NSToolbarItem>)> = Vec::new();
-    let mut push = |item: Retained<NSToolbarItem>| {
-        items.push((item.itemIdentifier(), item));
-    };
-
-    push(menu_item(mtm, "scope", "display", "Display 1 · Space 1", &scope_menu(library, target), target));
-    push(menu_item(mtm, "folder", "folder", "All Wallpapers", &folder_menu(library, target), target));
-    push(pills(mtm, library));
-    push(menu_item(mtm, "sort", "line.3.horizontal.decrease", "Sort & Filter", &sort_menu(target), target));
-    push(layout_group(mtm, target));
-    push(search(mtm));
-    let add = menu_item(mtm, "add", "plus", "Add", &add_menu(target), target);
-    add.setStyle(NSToolbarItemStyle::Prominent);
-    add.setBackgroundTintColor(Some(&theme.fill));
-    push(add);
-    push(button_item(mtm, "settings", "gearshape", "Settings", target));
-
-    let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
-    let separator = unsafe { NSToolbarInspectorTrackingSeparatorItemIdentifier };
-    let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
-    let order: Vec<Retained<NSString>> = vec![
-        NSString::from_str("scope"),
-        NSString::from_str("folder"),
-        flexible.copy(),
-        NSString::from_str("pills"),
-        flexible.copy(),
-        NSString::from_str("sort"),
-        NSString::from_str("layout"),
-        NSString::from_str("search"),
-        NSString::from_str("add"),
-        separator.copy(),
-        NSString::from_str("settings"),
-        toggle.copy(),
-    ];
-
-    let this = ToolbarDelegate::alloc(mtm).set_ivars(DelegateIvars { items, order });
-    return unsafe { msg_send![super(this), init] };
+impl Toolbar {
+    pub fn add_parts(&self) -> (Retained<NSButton>, Retained<NSMenu>) {
+        return (self.add.clone(), self.add_menu.clone());
+    }
 }
 
-fn menu_item(
-    mtm: MainThreadMarker,
-    id: &str,
-    icon: &str,
-    title: &str,
-    menu: &NSMenu,
-    target: &AnyObject,
-) -> Retained<NSToolbarItem> {
-    let item = NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &NSString::from_str(id));
-    item.setMenu(menu);
-    item.setShowsIndicator(id != "add" && id != "sort");
-    if let Some(image) = widgets::symbol(icon, 13.0) {
-        item.setImage(Some(&image));
-    }
-    if id == "scope" || id == "folder" {
-        item.setTitle(&NSString::from_str(title));
-    }
-    item.setLabel(&NSString::from_str(title));
-    item.setToolTip(Some(&NSString::from_str(title)));
-    unsafe {
-        item.setTarget(Some(target));
-        item.setAction(Some(sel!(noop:)));
-    }
-    return Retained::into_super(item);
+pub fn drop_down(button: &NSButton, menu: &NSMenu) {
+    let height = button.bounds().size.height;
+    menu.popUpMenuPositioningItem_atLocation_inView(
+        None,
+        objc2_core_foundation::CGPoint::new(0.0, height + 6.0),
+        Some(button),
+    );
 }
 
-fn button_item(
-    mtm: MainThreadMarker,
-    id: &str,
-    icon: &str,
-    title: &str,
-    target: &AnyObject,
-) -> Retained<NSToolbarItem> {
+fn popup(mtm: MainThreadMarker, width: CGFloat) -> Retained<NSPopUpButton> {
+    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
+    popup.setBezelStyle(objc2_app_kit::NSBezelStyle::Glass);
+    popup.setControlSize(objc2_app_kit::NSControlSize::Large);
+    popup.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
+    popup.widthAnchor().constraintEqualToConstant(width).setActive(true);
+    return popup;
+}
+
+fn view_item(mtm: MainThreadMarker, id: &str, title: &str, view: &NSView) -> Retained<NSToolbarItem> {
     let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &NSString::from_str(id));
-    if let Some(image) = widgets::symbol(icon, 13.0) {
-        item.setImage(Some(&image));
-    }
+    item.setView(Some(view));
     item.setLabel(&NSString::from_str(title));
-    item.setToolTip(Some(&NSString::from_str(title)));
-    unsafe {
-        item.setTarget(Some(target));
-        item.setAction(Some(sel!(noop:)));
-    }
     return item;
 }
 
-fn layout_group(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSToolbarItem> {
+fn layout_group(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSToolbarItemGroup> {
     let images: Vec<Retained<NSImage>> =
         ["square.grid.2x2", "list.bullet"].iter().filter_map(|name| widgets::symbol(name, 13.0)).collect();
     let labels = [NSString::from_str("Grid"), NSString::from_str("List")];
@@ -181,85 +321,150 @@ fn layout_group(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSToolbar
             NSToolbarItemGroupSelectionMode::SelectOne,
             Some(&NSArray::from_retained_slice(&labels)),
             Some(target),
-            Some(sel!(noop:)),
+            Some(sel!(layout:)),
             mtm,
         )
     };
     group.setSelectedIndex(0);
-    return Retained::into_super(group);
+    return group;
 }
 
-fn search(mtm: MainThreadMarker) -> Retained<NSToolbarItem> {
-    let item =
-        NSSearchToolbarItem::initWithItemIdentifier(NSSearchToolbarItem::alloc(mtm), &NSString::from_str("search"));
-    item.searchField().setPlaceholderString(Some(&NSString::from_str("Search")));
-    item.setPreferredWidthForSearchField(200.0);
-    return Retained::into_super(item);
-}
-
-fn pills(mtm: MainThreadMarker, library: &Library) -> Retained<NSToolbarItem> {
-    let mut views: Vec<Retained<NSView>> = Vec::new();
-    if let Some(index) = library.desktop() {
-        views.push(pill(mtm, library, index, "Desktop", "menubar.dock.rectangle"));
+fn desktops_menu(library: &Library, summary: &Showing, target: &AnyObject) -> Retained<NSMenu> {
+    let mut items = Vec::new();
+    for &(space, item) in &summary.desktops {
+        let wallpaper = item.map(|index| &library.items[index]);
+        let title = format!("Desktop {} — {}", space + 1, wallpaper.map_or("None", |entry| entry.title.as_str()));
+        let tag = item.and_then(|index| isize::try_from(index).ok()).unwrap_or(-1);
+        let entry = entry(&title, sel!(reveal:), tag, false, target);
+        entry.setEnabled(item.is_some());
+        if let Some(image) = wallpaper.and_then(|entry| entry.image.as_ref()) {
+            let thumb: Retained<NSImage> = image.copy();
+            thumb.setSize(objc2_foundation::NSSize::new(32.0, 20.0));
+            entry.setImage(Some(&thumb));
+        }
+        items.push(entry);
     }
-    if let Some(index) = library.lock() {
-        views.push(pill(mtm, library, index, "Lock Screen", "lock.fill"));
-    }
-    let refs: Vec<&NSView> = views.iter().map(|view| &**view).collect();
-    let stack = widgets::stack(mtm, &refs, false, 6.0);
-    let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &NSString::from_str("pills"));
-    item.setView(Some(&stack));
-    item.setLabel(&NSString::from_str("Now Showing"));
-    return item;
+    return menu(&items);
 }
 
-fn pill(mtm: MainThreadMarker, library: &Library, index: usize, caption: &str, icon: &str) -> Retained<NSView> {
-    let item = &library.items[index];
-    let thumb = NSView::new(mtm);
-    thumb.setWantsLayer(true);
-    let layer = CALayer::new();
-    layer.setCornerRadius(5.0);
-    layer.setMasksToBounds(true);
-    layer.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
-    if let Some(path) = &item.thumb
-        && let Some(image) =
-            NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path.to_string_lossy()))
-    {
-        unsafe { layer.setContents(Some(&image)) };
+impl Pill {
+    fn new(mtm: MainThreadMarker, caption: &str, icon: &str) -> Self {
+        let glyph = widgets::symbol_view(mtm, icon, 11.0, &NSColor::secondaryLabelColor());
+        let thumb = NSView::new(mtm);
+        thumb.setWantsLayer(true);
+        if let Some(layer) = thumb.layer() {
+            layer.setCornerRadius(4.0);
+            layer.setMasksToBounds(true);
+            layer.setBorderWidth(0.5);
+            layer.setBorderColor(Some(&widgets::cg(mtm, &NSColor::separatorColor())));
+            layer.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
+            layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
+        }
+        thumb.widthAnchor().constraintEqualToConstant(29.0).setActive(true);
+        thumb.heightAnchor().constraintEqualToConstant(18.0).setActive(true);
+        let title = widgets::label(mtm, caption, 12.0, &Weight::Medium, &NSColor::tertiaryLabelColor());
+        title.setWantsLayer(true);
+        let badge = widgets::label(mtm, "", 10.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+        badge.setContentCompressionResistancePriority_forOrientation(
+            1000.0,
+            objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
+        );
+        badge.setHidden(true);
+        let chevron = widgets::symbol_view(mtm, "chevron.down", 8.0, &NSColor::tertiaryLabelColor());
+        chevron.setHidden(true);
+        let row = widgets::stack(mtm, &[&glyph, &thumb, &title, &badge, &chevron], false, 6.0);
+        row.setEdgeInsets(widgets::insets(0.0, 8.0, 0.0, 8.0));
+        row.setCustomSpacing_afterView(3.0, &badge);
+        let view = PillView::alloc(mtm).set_ivars(PillIvars { index: Cell::new(None), menu: RefCell::new(None) });
+        let view: Retained<PillView> = unsafe { msg_send![super(view), init] };
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            layer.setCornerRadius(PILL_HEIGHT / 2.0);
+        }
+        view.addSubview(&row);
+        widgets::pin(&row, &view, 0.0);
+        let width = view.widthAnchor().constraintEqualToConstant(PILL_WIDTH);
+        width.setActive(true);
+        view.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
+        let options = NSTrackingAreaOptions::MouseEnteredAndExited
+            | NSTrackingAreaOptions::ActiveInKeyWindow
+            | NSTrackingAreaOptions::InVisibleRect;
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                CGRect::ZERO,
+                options,
+                Some(&view),
+                None,
+            )
+        };
+        view.addTrackingArea(&area);
+        return Self { view, thumb, title, badge, chevron, width };
     }
-    thumb.setLayer(Some(&layer));
-    thumb.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(36.0, 22.5)));
-    thumb.widthAnchor().constraintEqualToConstant(36.0).setActive(true);
-    thumb.heightAnchor().constraintEqualToConstant(22.5).setActive(true);
-    let glyph = widgets::symbol_view(mtm, icon, 10.0, &NSColor::secondaryLabelColor());
-    let top = widgets::label(mtm, caption, 10.0, &Weight::Medium, &NSColor::secondaryLabelColor());
-    let caption_row = widgets::stack(mtm, &[&glyph, &top], false, 3.0);
-    let title = widgets::label(mtm, &item.title, 12.0, &Weight::Semibold, &NSColor::labelColor());
-    title.widthAnchor().constraintLessThanOrEqualToConstant(120.0).setActive(true);
-    let text = widgets::stack(mtm, &[&caption_row, &title], true, 0.0);
-    text.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
-    let row = widgets::stack(mtm, &[&thumb, &text], false, 8.0);
-    row.setEdgeInsets(widgets::insets(0.0, 4.0, 0.0, 10.0));
-    let view = PillView::alloc(mtm).set_ivars(PillIvars { index });
-    let view: Retained<PillView> = unsafe { msg_send![super(view), init] };
-    view.addSubview(&row);
-    widgets::pin(&row, &view, 0.0);
-    return Retained::into_super(view);
+
+    fn update(
+        &self,
+        index: Option<usize>,
+        shown: Option<(String, Option<&NSImage>)>,
+        caption: &str,
+        others: usize,
+        menu: Option<Retained<NSMenu>>,
+    ) {
+        let (name, image) = shown.unzip();
+        widgets::fade(&self.thumb);
+        if let Some(layer) = self.thumb.layer() {
+            unsafe {
+                match image.flatten() {
+                    Some(image) => layer.setContents(Some(image)),
+                    None => layer.setContents(None),
+                }
+            }
+        }
+        widgets::fade(&self.title);
+        let color = if name.is_some() { NSColor::labelColor() } else { NSColor::tertiaryLabelColor() };
+        self.title.setStringValue(&NSString::from_str(name.as_deref().unwrap_or(caption)));
+        self.title.setTextColor(Some(&color));
+        let expanded = others > 0;
+        self.badge.setStringValue(&NSString::from_str(&format!("+{others}")));
+        if self.badge.isHidden() == expanded {
+            widgets::animate(0.2, || {
+                self.badge.animator().setHidden(!expanded);
+                self.chevron.animator().setHidden(!expanded);
+                self.width.setConstant(PILL_WIDTH + if expanded { 26.0 } else { 0.0 });
+                if let Some(container) = unsafe { self.view.superview() } {
+                    container.layoutSubtreeIfNeeded();
+                }
+            });
+        }
+        let ivars = self.view.ivars();
+        ivars.index.set(index);
+        *ivars.menu.borrow_mut() = menu;
+    }
 }
 
-fn entry(title: &str, target: &AnyObject, checked: bool, indent: isize) -> Retained<NSMenuItem> {
+fn entry(title: &str, action: Sel, tag: isize, checked: bool, target: &AnyObject) -> Retained<NSMenuItem> {
     let mtm = MainThreadMarker::new().unwrap_or_else(|| unreachable!());
     let item = unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             NSMenuItem::alloc(mtm),
             &NSString::from_str(title),
-            Some(sel!(noop:)),
+            Some(action),
             &NSString::new(),
         )
     };
     unsafe { item.setTarget(Some(target)) };
+    item.setTag(tag);
     item.setState(isize::from(checked));
-    item.setIndentationLevel(indent);
+    return item;
+}
+
+fn title_entry(title: &str, icon: &str) -> Retained<NSMenuItem> {
+    let mtm = MainThreadMarker::new().unwrap_or_else(|| unreachable!());
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(&NSString::from_str(title));
+    if let Some(image) = widgets::symbol(icon, 12.0) {
+        item.setImage(Some(&image));
+    }
     return item;
 }
 
@@ -268,65 +473,72 @@ fn header(title: &str) -> Retained<NSMenuItem> {
     return NSMenuItem::sectionHeaderWithTitle(&NSString::from_str(title), mtm);
 }
 
+fn separator() -> Retained<NSMenuItem> {
+    let mtm = MainThreadMarker::new().unwrap_or_else(|| unreachable!());
+    return NSMenuItem::separatorItem(mtm);
+}
+
 fn menu(items: &[Retained<NSMenuItem>]) -> Retained<NSMenu> {
     let mtm = MainThreadMarker::new().unwrap_or_else(|| unreachable!());
     let menu = NSMenu::new(mtm);
+    menu.setAutoenablesItems(false);
     for item in items {
         menu.addItem(item);
     }
     return menu;
 }
 
-fn separator() -> Retained<NSMenuItem> {
-    let mtm = MainThreadMarker::new().unwrap_or_else(|| unreachable!());
-    return NSMenuItem::separatorItem(mtm);
-}
-
-fn scope_menu(library: &Library, target: &AnyObject) -> Retained<NSMenu> {
-    let mut items = vec![entry("All Displays", target, false, 0)];
-    for (display, info) in library.displays.iter().enumerate() {
-        items.push(separator());
-        items.push(header(&format!("Display {} — {}", display + 1, info.name)));
-        items.push(entry("All Spaces", target, false, 1));
-        for space in 0..info.spaces {
-            let checked = display == 0 && space == 0;
-            let used = library.assignments.iter().any(|(target, _)| *target == Target::Space { display, space });
-            let title = if used { format!("Space {} ·", space + 1) } else { format!("Space {}", space + 1) };
-            items.push(entry(title.trim_end_matches(" ·"), target, checked, 1));
-        }
+pub fn scope_menu(library: &Library, current: Scope, title: &str, action: Sel, target: &AnyObject) -> Retained<NSMenu> {
+    let mut items = vec![
+        title_entry(title, "display"),
+        entry("All Desktops", action, Scope::All.tag(), current == Scope::All, target),
+        separator(),
+    ];
+    for space in 0..library.desktops {
+        let scope = Scope::Space(space);
+        items.push(entry(&format!("Desktop {}", space + 1), action, scope.tag(), current == scope, target));
     }
     return menu(&items);
 }
 
-fn folder_menu(library: &Library, target: &AnyObject) -> Retained<NSMenu> {
-    let mut items = vec![entry("All Wallpapers", target, true, 0), separator()];
-    items.extend(library.folders.iter().map(|name| entry(name, target, false, 0)));
+fn folder_menu(library: &Library, current: Option<usize>, title: &str, target: &AnyObject) -> Retained<NSMenu> {
+    let action = sel!(folder:);
+    let mut items = vec![title_entry(title, "folder"), entry("All Wallpapers", action, -1, current.is_none(), target)];
     items.push(separator());
-    items.push(entry("New Folder…", target, false, 0));
+    for (index, name) in library.folders.iter().enumerate() {
+        let tag = isize::try_from(index).unwrap_or(-1);
+        items.push(entry(name, action, tag, current == Some(index), target));
+    }
+    items.push(separator());
+    items.push(entry("New Folder", action, -2, false, target));
     return menu(&items);
 }
 
-fn sort_menu(target: &AnyObject) -> Retained<NSMenu> {
-    return menu(&[
-        header("Sort By"),
-        entry("Name (A–Z)", target, true, 0),
-        entry("Name (Z–A)", target, false, 0),
-        entry("Date Added (Newest)", target, false, 0),
-        entry("Date Added (Oldest)", target, false, 0),
-        separator(),
-        header("Show"),
-        entry("All Kinds", target, true, 0),
-        entry("Videos", target, false, 0),
-        entry("GIFs", target, false, 0),
-        entry("Images", target, false, 0),
-    ]);
+fn sort_menu(filter: &Filter, target: &AnyObject) -> Retained<NSMenu> {
+    let mut items = vec![header("Sort By")];
+    for (position, (sort, title)) in Sort::ALL.iter().enumerate() {
+        let tag = isize::try_from(position).unwrap_or(0);
+        items.push(entry(title, sel!(sort:), tag, filter.sort == *sort, target));
+    }
+    items.push(separator());
+    items.push(header("Show"));
+    for (position, (kind, title)) in KINDS.iter().enumerate() {
+        let tag = isize::try_from(position).unwrap_or(0);
+        items.push(entry(title, sel!(kind:), tag, filter.kind == *kind, target));
+    }
+    return menu(&items);
 }
 
 fn add_menu(target: &AnyObject) -> Retained<NSMenu> {
-    return menu(&[
-        entry("Add Files…", target, false, 0),
-        entry("Add Folder…", target, false, 0),
-        separator(),
-        entry("Download from URL…", target, false, 0),
-    ]);
+    let items = [
+        entry("From Files…", sel!(addFiles:), 0, false, target),
+        entry("From Folder…", sel!(addFiles:), 1, false, target),
+        entry("From Video Link…", sel!(download:), 0, false, target),
+    ];
+    for (item, icon) in items.iter().zip(["doc.badge.plus", "folder.badge.plus", "link.badge.plus"]) {
+        if let Some(image) = widgets::symbol(icon, 13.0) {
+            item.setImage(Some(&image));
+        }
+    }
+    return menu(&[header("Add Wallpapers"), items[0].clone(), items[1].clone(), separator(), items[2].clone()]);
 }
