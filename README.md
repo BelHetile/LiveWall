@@ -1,107 +1,174 @@
-# LiveWall
+<p align="center"><img src="resources/AppIcon.iconset/icon_256x256.png" width="128" alt="LiveWall icon"></p>
 
-Native macOS animated-wallpaper engine, rewritten in pure Rust. One `.app` owns
-the whole stack: per-desktop wallpaper surfaces on the main display, the library
-window, a menu-bar item, the IPC server, and `lwctl`. Video, GIF and image
-wallpapers with hardware decode; the desktop picture is taken over and restored on
-quit or after a crash. The library window runs inside the engine process; `lwctl`
-drives the same state over the socket.
+<h1 align="center">LiveWall</h1>
+
+<p align="center">
+  Videos, GIFs and images as your macOS desktop wallpaper, below the desktop icons, on every Space.
+  A native app written in Rust, with hardware video decoding and no permission prompts.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-15%2B-blue" alt="macOS 15+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon-only-lightgrey" alt="Apple Silicon only">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+</p>
+
+<p align="center"><b>English</b> · <a href="README.ru.md">Русский</a></p>
 
 ## Requirements
 
-- macOS 15 or newer on Apple Silicon (arm64). Intel and older macOS are unsupported.
-- Rust with the 2024 edition (CommandLineTools only; no Swift, no Xcode).
-- Optional, for transcoding on import and for downloads: Homebrew `ffmpeg`,
-  `yt-dlp`, `deno`. Plain `mp4`/`mov` import and playback need none of them.
+- macOS 15 Sequoia or newer.
+- A Mac with Apple Silicon (M1 or newer).
+- Optional: [Homebrew](https://brew.sh). LiveWall uses it to install `ffmpeg` (for WebM, MKV, VP8 and AV1 on Macs
+  without AV1 decoding) and `yt-dlp` + `deno` (for links). It asks before installing anything. MP4, MOV, GIF and
+  images need nothing extra.
 
-## Build
+## Install
 
-    scripts/bundle.sh
+```bash
+curl -fsSL https://raw.githubusercontent.com/BelHetile/LiveWall/main/scripts/install.sh | bash
+```
 
-Builds a release binary and assembles `build/LiveWall.app` (`lwctl` lives in
-`Contents/MacOS`, `AppIcon.icns` is built from `resources/AppIcon.iconset`), then
-ad-hoc codesigns it.
+The script downloads the latest release, checks it against the release's `SHA256SUMS.txt`, installs it to
+`/Applications` and launches it. Run it again to update.
 
-## Run
+Or from the DMG:
 
-    build/LiveWall.app/Contents/MacOS/LiveWall
+1. Download `LiveWall.dmg` from the [latest release](https://github.com/BelHetile/LiveWall/releases/latest).
+2. Open it and drag **LiveWall** to **Applications**.
+3. LiveWall is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security**,
+   scroll down and click **Open Anyway**. Alternatively run
+   `xattr -dr com.apple.quarantine /Applications/LiveWall.app` once.
 
-## Test
+## Build from source
 
-    cargo test                     # unit tests for the pure modules
-    scripts/fixtures.sh            # ffmpeg-generated media into target/fixtures
-    LW_E2E=1 cargo test -p livewall --test e2e_desktop
-    LW_E2E=1 cargo test -p livewall --test e2e_hotkeys
-    LW_E2E=1 cargo test -p livewall --test e2e_media
-    LW_E2E=1 cargo test -p livewall --test e2e_ipc
+Needs the Command Line Tools (`xcode-select --install`) and [rustup](https://rustup.rs);
+`rust-toolchain.toml` pins the Rust version.
 
-`LW_E2E=1` enables the end-to-end suites. They need a logged-in GUI session and
-manipulate the real desktop picture (they restore it on exit). `e2e_media`
-additionally needs `scripts/fixtures.sh` to have run.
+```bash
+git clone https://github.com/BelHetile/LiveWall.git
+cd LiveWall
+./scripts/build.sh --install
+```
 
-## lwctl
+`./scripts/build.sh` alone builds `build/LiveWall.app` without installing it. See
+[CONTRIBUTING](.github/CONTRIBUTING.md) for tests.
 
-`lwctl [--json] <command>` talks to a running LiveWall over a Unix socket.
-Exit codes: 0 ok, 1 error, 2 app not running, 64 usage.
+## Features
 
-    pause  resume  toggle-pause  mute  unmute  next  previous  random
-    status  current  quit  spaces  windows  desktop  rules
-    library {list,add,remove,rename,move}
-    folder {create,rename,delete}
-    apply [--item ID] [--target default|space] [--target-id ID]
-    set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
-    set-item ID [--volume N --speed N --muted BOOL --still-time N]
-    settings {get,set JSON}
-    hotkeys {get,set ACTION [COMBO]}
-    login-item {get,set BOOL}
-    menu  tools  tools-install TOOL [--consent]
-    probe PATH
-    download URL [--consent] [--no-wait]  download-status ID  download-cancel ID  downloads
-    optimize ID  optimize-status ID  optimize-cancel ID
+- **Wallpapers:** videos (mp4, mov, m4v, webm, mkv), animated GIFs and images (png, jpg, heic, webp, tiff, bmp),
+  below the desktop icons on every Space, including full-screen app Spaces. One wallpaper for all desktops, or a
+  different one per desktop (keys 1–9 in the library, ` for all).
+- **Library:** add files and folders with a button or by drag & drop (files are copied into the library), or
+  paste a video link (YouTube first; other sites [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports may work).
+  New files land in the folder you are viewing. Folders (created private right away if you like, renamed and
+  deleted from the folder menu), search, grid and list views; Delete removes the wallpaper under the pointer.
+- **Per-wallpaper settings:** **Fill, Fit, Stretch, Center** or **Custom** (position and zoom), volume, mute and
+  playback speed. The inspector preview can play with sound while the desktop copy stays silent.
+- **Transitions:** fade, wipe, wave, grow, directional sweeps and more between wallpapers, rendered on the GPU.
+- **Optimize for This Mac:** videos are converted to HEVC at your screen's size with a frame-rate limit
+  (VideoToolbox, HDR and 10-bit kept). New imports are optimized automatically when it helps; videos that are
+  already light are left alone.
+- **Smart pause:** playback pauses when an app is full screen, windows cover the desktop, the Mac runs in Low
+  Power Mode or gets hot, another app is focused (optional), or an app from your own rules runs; it stops while
+  the display sleeps, the screen is locked or the screen saver runs. The menu bar and the library toolbar show
+  whether the wallpaper plays, is paused or unloaded and why, and whether sound is on, muted for this wallpaper or
+  muted everywhere. A video paused long enough is unloaded and replaced by its exact paused frame. On battery
+  the wallpaper keeps playing.
+- **Lock screen:** the macOS desktop picture follows the wallpaper as a still frame, so the lock screen and
+  Mission Control match. Pick the frame in the inspector, or choose a separate lock screen wallpaper. Your own
+  desktop picture comes back when LiveWall quits, even after a crash.
+- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library, the menu bar and
+  the desktop until you unlock with Touch ID (or your Mac password). They lock again when the screen locks, the
+  display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is hidden too. This keeps
+  wallpapers away from casual glances; the files are not encrypted.
+- **Rotation:** change the wallpaper on a timer, in order or shuffled.
+- **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
+  while the library window is open.
+- **Appearance:** light, dark or system; six color themes plus a custom accent.
+- **Languages:** the menu bar item and messages are in English and Russian; the library window is in English.
+- **Command line:** `lwctl` controls the running app (see below).
 
-## Transitions
+## Hotkeys
 
-Every wallpaper change animates on the GPU (awww-style). `apply`, `next`,
-`previous` and `random` accept:
+Change or clear them in **Settings → Shortcuts**:
 
-    -t, --transition KIND   none simple fade left right top bottom wipe wave
-                            grow center any outer random        (default fade)
-    --duration SECONDS      default 1.0
-    --bezier A,B,C,D        default 0.54,0,0.34,0.99
-    --angle DEG             wipe/wave direction; 0 = right-to-left, 90 = top-to-bottom; default 45
-    --pos X,Y | ALIAS       circle origin: fractions, pixels or center/top-right/...
-    --invert-y              flip the y axis of --pos
-    --wave PERIOD,AMPLITUDE default 20,20
+| Action | Default |
+| --- | --- |
+| Next wallpaper | ⌃⌥⌘→ |
+| Previous wallpaper | ⌃⌥⌘← |
+| Random wallpaper | ⌃⌥⌘R |
+| Pause / resume | ⌃⌥⌘Space |
+| Mute / unmute | ⌃⌥⌘M |
+| Volume up / down | ⌃⌥⌘↑ / ⌃⌥⌘↓ |
+| Lock private folders | ⌃⌥⌘X |
 
-    lwctl next -t wipe --angle 90 --duration 0.8
-    lwctl settings set '{"transition":{"kind":"grow","pos":"bottom-left"}}'
+Hotkeys need no permissions. Combinations macOS already uses are refused, and LiveWall says what uses them.
 
-The global default lives in `settings.json` under `transition`; per-request flags
-override it. Topology changes, startup and crash recovery switch instantly.
+## Command line
+
+`lwctl` is inside the app. Link it somewhere on your `PATH` if you like:
+
+```bash
+ln -s /Applications/LiveWall.app/Contents/MacOS/lwctl /usr/local/bin/lwctl
+```
+
+`lwctl [--json] <command>` talks to the running LiveWall. Exit codes: 0 ok, 1 error, 2 LiveWall not running,
+64 usage error.
+
+```
+pause  resume  toggle-pause  mute  unmute  next  previous  random  lock
+status  current  quit  spaces  windows  desktop  rules
+library {list,add [--folder ID],remove,rename,move}
+folder {create,rename,delete,lock}
+apply [--item ID] [--target default|space] [--target-id ID]
+set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
+set-item ID [--volume N --speed N --muted BOOL --still-time N]
+settings {get,set JSON}
+hotkeys {get,set ACTION [COMBO]}
+login-item {get,set BOOL}
+menu  tools  tools-install TOOL [--consent]
+probe PATH
+download URL [--consent] [--no-wait]  download-status ID  download-cancel ID  downloads
+optimize ID  optimize-status ID  optimize-cancel ID
+```
+
+`apply`, `next`, `previous` and `random` take a transition:
+
+```
+-t, --transition KIND   none simple fade left right top bottom wipe wave grow center any outer random
+--duration SECONDS      default 1.0
+--bezier A,B,C,D        default 0.54,0,0.34,0.99
+--angle DEG             wipe/wave direction
+--pos X,Y | ALIAS       circle origin: fractions, pixels or center/top-right/...
+--invert-y              flip the y axis of --pos
+--wave PERIOD,AMPLITUDE default 20,20
+```
+
+```bash
+lwctl next -t wipe --angle 90 --duration 0.8
+lwctl settings set '{"transition":{"kind":"grow","pos":"bottom-left"}}'
+```
 
 ## Data
 
-`~/Library/Application Support/LiveWall/`:
+Everything lives in `~/Library/Application Support/LiveWall/`:
 
-    library.json      items, folders, placement (per-desktop items, lock screen)
-    settings.json     settings, hotkeys, language, tool consent, appearance
-    swap-state.json   captured original desktop pictures (for restore/crash recovery)
-    Wallpapers/       imported media, as Wallpapers/<uuid>.<ext>
-    Thumbs/           <item-id>.jpg thumbnails
-    Stills/           <hash>.png still frames
-    Incoming/         download staging (wiped on launch)
-    Tools/            optional ffmpeg/yt-dlp/deno overrides
-    control.sock      IPC socket (mode 0600; parent directory 0700)
+| Path | Contents |
+| --- | --- |
+| `library.json` | wallpapers, folders, what is shown where |
+| `settings.json` | settings and hotkeys |
+| `swap-state.json` | your original desktop pictures, while LiveWall replaces them |
+| `Wallpapers/`, `Thumbs/`, `Stills/` | media, thumbnails, still frames |
+| `private/` | the same for locked folders (hidden, owner-only) |
+| `Incoming/` | downloads in progress |
 
-Environment overrides: `LIVEWALL_DATA_DIR`, `LIVEWALL_SOCKET`, `LIVEWALL_BREW`.
+## Uninstall
 
-## Screenshots
+Quit LiveWall from the menu bar (this puts your desktop picture back), then delete
+`/Applications/LiveWall.app`. To remove your wallpapers and settings too, delete
+`~/Library/Application Support/LiveWall`.
 
-    scripts/ui-shot.sh OUT.png [ENV=VAL...]
+## License
 
-Launches the debug build with a temporary data directory and socket, imports
-`~/Documents/livewall-design/design/fixtures/Library` through `lwctl`, captures the
-library window and restores the desktop picture. Knobs: `LW_UI_SETTINGS_JSON`
-(seed `settings.json`), `LW_UI_SETTINGS` (open a Settings tab), `LW_UI_SCOPE`,
-`LW_UI_FOLDER`, `LW_UI_SEARCH`, `LW_UI_SELECT` (title), `LW_UI_SIZE`
-(`WxH`), `LW_UI_SETTLE` (seconds), `LW_UI_NO_APPLY`, `LW_UI_TMP`.
+[MIT](LICENSE) © 2026 BelHetile

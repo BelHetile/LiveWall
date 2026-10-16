@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          rustup show active-toolchain || rustup toolchain install
+          cargo --version
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --workspace --lib --locked
+
+      - name: Build LiveWall.app
+        run: ./scripts/build.sh
+
+      - name: Package
+        run: ditto -c -k --keepParent build/LiveWall.app build/LiveWall-macOS.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: LiveWall-macOS
+          path: build/LiveWall-macOS.zip
