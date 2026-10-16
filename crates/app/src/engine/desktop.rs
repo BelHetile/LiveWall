@@ -97,8 +97,8 @@ pub fn adopt_foreign(original: Original, recorded: &BTreeMap<String, Original>, 
     return Original { config: donor.config.clone(), url: donor.url.clone(), ..original };
 }
 
-pub fn restore_list(recorded: &BTreeMap<String, Original>) -> Vec<Original> {
-    return recorded.values().cloned().collect();
+pub fn restore_list(recorded: &BTreeMap<String, Original>, owned: &[PathBuf]) -> Vec<Original> {
+    return recorded.values().filter(|original| !is_owned(original, owned)).cloned().collect();
 }
 
 #[derive(Clone, Debug)]
@@ -343,7 +343,7 @@ impl Desktop {
     }
 
     fn send_originals(&self, mtm: MainThreadMarker) {
-        let originals = restore_list(&self.recorded);
+        let originals = restore_list(&self.recorded, &self.owned);
         for original in &originals {
             self.send_original(mtm, original);
         }
@@ -537,8 +537,17 @@ mod tests {
     #[test]
     fn restore_list_covers_every_recorded_surface() {
         let recorded = BTreeMap::from([("S1".to_string(), original("S1")), ("S2".to_string(), original("S2"))]);
-        let mut restored: Vec<String> = restore_list(&recorded).into_iter().map(|value| value.space).collect();
+        let mut restored: Vec<String> = restore_list(&recorded, &[]).into_iter().map(|value| value.space).collect();
         restored.sort();
         assert_eq!(restored, vec!["S1".to_string(), "S2".to_string()]);
+    }
+
+    #[test]
+    fn a_leftover_livewall_still_is_never_restored() {
+        let owned = vec![PathBuf::from("/data/Stills"), PathBuf::from("/data/private/Stills")];
+        let leftover = Original { url: Some("/data/Stills/old.png".into()), ..original("S1") };
+        let recorded = BTreeMap::from([("S1".to_string(), leftover), ("S2".to_string(), original("S2"))]);
+        let restored: Vec<String> = restore_list(&recorded, &owned).into_iter().map(|value| value.space).collect();
+        assert_eq!(restored, vec!["S2".to_string()], "the picture on screen stays instead of an old still");
     }
 }
