@@ -436,6 +436,8 @@ pub enum Request {
     LibraryList,
     LibraryAdd {
         paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
     },
     LibraryRemove {
         ids: Vec<String>,
@@ -633,7 +635,8 @@ mod tests {
             Request::Desktop,
             Request::Rules,
             Request::LibraryList,
-            Request::LibraryAdd { paths: vec!["/a/b.mp4".into(), "/c/d.gif".into()] },
+            Request::LibraryAdd { paths: vec!["/a/b.mp4".into(), "/c/d.gif".into()], folder: None },
+            Request::LibraryAdd { paths: vec!["/a/b.mp4".into()], folder: Some("f".into()) },
             Request::LibraryRemove { ids: vec!["a".into(), "b".into()] },
             Request::LibraryRename { id: "a".into(), title: "Title".into() },
             Request::LibraryMove { ids: vec!["a".into()], folder: Some("f".into()) },

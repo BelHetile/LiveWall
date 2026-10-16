@@ -89,7 +89,8 @@ impl Sandbox {
     }
 
     fn add_and_apply(&self, fixture: &Path) -> bool {
-        let added = self.request(Request::LibraryAdd { paths: vec![fixture.to_string_lossy().into_owned()] });
+        let added =
+            self.request(Request::LibraryAdd { paths: vec![fixture.to_string_lossy().into_owned()], folder: None });
         let ResponseBody::Ok { data } = added.body else { return false };
         if data["added"].as_u64().unwrap_or(0) != 1 {
             return false;

@@ -95,7 +95,9 @@ impl Ui {
             if self.awaiting { self.library.items.iter().position(|item| !known.contains(&item.id)) } else { None };
         if let Some(index) = fresh {
             self.awaiting = false;
-            self.filter.folder = None;
+            if self.library.items[index].folder != self.filter.folder {
+                self.filter.folder = None;
+            }
             self.filter.query.clear();
             self.toolbar.search.setStringValue(&ns(""));
             self.selected = Some(index);

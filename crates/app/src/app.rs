@@ -79,7 +79,7 @@ pub enum Event {
     TransitionDone { key: SurfaceKey },
     Hotkey(HotkeyAction),
     Menu(MenuAction),
-    ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
+    ImportDone { report: import::Report, folder: Option<FolderId>, reply: oneshot::Sender<Response> },
     OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
     DownloadImported { job: String, items: Vec<Item> },
     DownloadResolved,
@@ -293,8 +293,8 @@ impl App {
             Event::Request(request, reply) => self.request(request, reply),
             Event::Hotkey(action) => self.run_hotkey(action),
             Event::Menu(action) => self.run_menu(action),
-            Event::ImportDone { report, reply } => {
-                let response = self.finish_import(&report);
+            Event::ImportDone { report, folder, reply } => {
+                let response = self.finish_import(&report, folder);
                 let _ = reply.send(response);
             }
             Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
@@ -415,7 +415,7 @@ impl App {
 
     fn request(&mut self, request: Request, reply: oneshot::Sender<Response>) {
         match request {
-            Request::LibraryAdd { paths } => self.start_import(paths, reply),
+            Request::LibraryAdd { paths, folder } => self.start_import(paths, folder.as_deref(), reply),
             Request::Probe { path } => self.start_probe(path, reply),
             Request::Tools => self.start_tools(reply),
             Request::ToolsInstall { tool, consent } => self.start_tools_install(&tool, consent, reply),
@@ -444,20 +444,41 @@ impl App {
         });
     }
 
-    fn start_import(&mut self, paths: Vec<String>, reply: oneshot::Sender<Response>) {
+    fn start_import(&mut self, paths: Vec<String>, folder: Option<&str>, reply: oneshot::Sender<Response>) {
+        let folder = match folder.map(parse_folder).transpose() {
+            Ok(folder) => folder,
+            Err(response) => {
+                let _ = reply.send(response);
+                return;
+            }
+        };
+        if folder.is_some_and(|id| !self.library.has_folder(id)) {
+            let _ = reply.send(Response::err(ErrorCode::NotFound, NO_SUCH_FOLDER));
+            return;
+        }
+        if !self.unlocked && self.library.is_locked_folder(folder) {
+            let _ = reply.send(Response::err(ErrorCode::Locked, LOCKED));
+            return;
+        }
         let dest = self.paths.wallpapers_dir();
         let thumbs = self.paths.thumbs_dir();
         let policy = self.probe_policy();
         self.handle.spawn(async move {
             let report = import::run(&paths, &dest, &thumbs, policy, import::Transfer::Copy).await;
-            post(Event::ImportDone { report, reply });
+            post(Event::ImportDone { report, folder, reply });
         });
     }
 
-    fn finish_import(&mut self, report: &import::Report) -> Response {
+    fn finish_import(&mut self, report: &import::Report, folder: Option<FolderId>) -> Response {
         let added = report.imported.len();
         let items: Vec<Item> = report.imported.iter().map(|imported| imported.item.clone()).collect();
+        let ids: Vec<ItemId> = items.iter().map(|item| item.id).collect();
         self.add_items(items);
+        if let Some(folder) = folder.filter(|id| self.library.has_folder(*id))
+            && !ids.is_empty()
+        {
+            let _ = self.move_to_folder(&ids, Some(folder));
+        }
         return ok(&AddReport { added, skipped: report.skipped, results: &report.results });
     }
 

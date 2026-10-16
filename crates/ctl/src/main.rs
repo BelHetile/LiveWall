@@ -134,6 +134,8 @@ enum LibraryCommand {
     List,
     Add {
         paths: Vec<String>,
+        #[arg(long)]
+        folder: Option<String>,
     },
     Remove {
         ids: Vec<String>,
@@ -361,7 +363,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::Lock => Request::Lock,
         Command::Library(command) => match command {
             LibraryCommand::List => Request::LibraryList,
-            LibraryCommand::Add { paths } => Request::LibraryAdd { paths },
+            LibraryCommand::Add { paths, folder } => Request::LibraryAdd { paths, folder },
             LibraryCommand::Remove { ids } => Request::LibraryRemove { ids },
             LibraryCommand::Rename { id, title } => Request::LibraryRename { id, title },
             LibraryCommand::Move { ids, folder } => Request::LibraryMove { ids, folder },

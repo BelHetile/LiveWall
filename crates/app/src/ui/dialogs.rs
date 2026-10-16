@@ -239,7 +239,8 @@ pub fn add_files(mtm: MainThreadMarker, directories: bool) {
         }
         later(move |ui, _| {
             ui.awaiting = true;
-            app::with(|app| app.submit(Request::LibraryAdd { paths }));
+            let folder = ui.filter.folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
+            app::with(|app| app.submit(Request::LibraryAdd { paths, folder }));
         });
     });
     panel.beginSheetModalForWindow_completionHandler(&window, &block);

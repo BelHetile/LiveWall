@@ -81,7 +81,7 @@ fn run(fixtures: &Fixtures) {
     }
 
     let expected = paths.len();
-    let added = sandbox.ok(Request::LibraryAdd { paths });
+    let added = sandbox.ok(Request::LibraryAdd { paths, folder: None });
     let results = added["results"].as_array().expect("per-path results").clone();
     assert_eq!(results.len(), expected, "one result per input: {added}");
 
@@ -190,7 +190,8 @@ fn run_unplayable(fixtures: &Fixtures) {
     let sandbox = Sandbox::new("unplayable");
     sandbox.launch();
     sandbox.ok(Request::SettingsSet { patch: json!({ "optimize_on_import": false }) });
-    let added = sandbox.ok(Request::LibraryAdd { paths: vec![fixtures.corrupt.to_string_lossy().into_owned()] });
+    let added =
+        sandbox.ok(Request::LibraryAdd { paths: vec![fixtures.corrupt.to_string_lossy().into_owned()], folder: None });
     let results = added["results"].as_array().expect("results").clone();
     assert_eq!(results[0]["status"].as_str(), Some("imported"), "corrupt not stored: {}", results[0]);
     let id = id_of(&results[0]);
@@ -219,7 +220,8 @@ fn run_cancel(fixtures: &Fixtures) {
     sandbox.launch();
 
     sandbox.ok(Request::SettingsSet { patch: json!({ "optimize_on_import": false }) });
-    let added = sandbox.ok(Request::LibraryAdd { paths: vec![fixtures.uhd60.to_string_lossy().into_owned()] });
+    let added =
+        sandbox.ok(Request::LibraryAdd { paths: vec![fixtures.uhd60.to_string_lossy().into_owned()], folder: None });
     let results = added["results"].as_array().expect("results").clone();
     let id = id_of(&results[0]);
 

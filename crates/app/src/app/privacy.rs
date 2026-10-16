@@ -120,6 +120,7 @@ pub fn denies(library: &Library, request: &Request) -> bool {
     return match request {
         Request::LibraryRemove { ids } => ids.iter().any(item),
         Request::LibraryMove { ids, folder: target } => ids.iter().any(item) || target.as_ref().is_some_and(folder),
+        Request::LibraryAdd { folder: target, .. } => target.as_ref().is_some_and(folder),
         Request::LibraryRename { id, .. }
         | Request::Optimize { id }
         | Request::OptimizeCancel { id }
