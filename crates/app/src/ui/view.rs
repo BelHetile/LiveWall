@@ -62,8 +62,37 @@ pub struct Lock {
     pub image: Option<Retained<NSImage>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Preparing,
+    Downloading,
+    Merging,
+    Importing,
+}
+
 pub struct Download {
+    pub stage: Stage,
     pub percent: f64,
+    pub speed: Option<f64>,
+    pub eta: Option<f64>,
+}
+
+impl Download {
+    fn from_report(report: &crate::download::JobReport) -> Self {
+        let stage = match report.state {
+            crate::download::Phase::Downloading if report.progress > 0.0 || report.speed.is_some() => {
+                Stage::Downloading
+            }
+            crate::download::Phase::Merging => Stage::Merging,
+            crate::download::Phase::Importing => Stage::Importing,
+            _ => Stage::Preparing,
+        };
+        return Self { stage, percent: report.progress, speed: report.speed, eta: report.eta };
+    }
+
+    fn preparing() -> Self {
+        return Self { stage: Stage::Preparing, percent: 0.0, speed: None, eta: None };
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -247,7 +276,12 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         let image = thumbs.still(app, entry, lock.time);
         return Some(Lock { time: f64::from(lock.time), image });
     });
-    let downloads = app.download_progress().into_iter().map(|report| Download { percent: report.progress }).collect();
+    let downloads = app
+        .download_progress()
+        .iter()
+        .map(Download::from_report)
+        .chain(std::iter::repeat_with(Download::preparing).take(app.preparing_downloads()))
+        .collect();
 
     return Library {
         items,

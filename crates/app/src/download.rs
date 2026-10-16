@@ -312,6 +312,7 @@ async fn run_job(id: String, spec: Spec, jobs: Registry<String, JobState>) {
         let _ = jobs::join_stderr(stderr_task).await;
         let _ = std::fs::remove_dir_all(&job_dir);
         jobs.finish(&id, JobState::Cancelled);
+        crate::ui::changed();
         return;
     }
 
@@ -378,8 +379,10 @@ fn spawn_progress(
 }
 
 fn fail(jobs: &Registry<String, JobState>, id: &String, reason: impl Into<String>) {
-    jobs.set_state(id, JobState::Failed { reason: reason.into() });
+    let reason = reason.into();
+    jobs.set_state(id, JobState::Failed { reason: reason.clone() });
     jobs.evict(id);
+    post(Event::DownloadFailed { reason });
 }
 
 fn find_output(dir: &Path) -> Option<PathBuf> {

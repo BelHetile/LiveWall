@@ -22,7 +22,7 @@ use objc2_quartz_core::{
 use crate::model::{ItemId, ItemKind};
 use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
-use crate::ui::view::{Download, Item, Library};
+use crate::ui::view::{Download, Item, Library, Stage};
 use crate::ui::widgets::{self, Weight};
 use crate::ui::{actions, menus};
 
@@ -37,6 +37,8 @@ const RING_GAP: CGFloat = 5.0;
 const ROW_HEIGHT: CGFloat = 78.0;
 const ROW_ART: CGFloat = 96.0;
 const MORPH: f64 = 0.3;
+const STATUS_WIDTH: CGFloat = 280.0;
+const STATUS_BAR: CGFloat = 4.0;
 const FADE_IN: f64 = 0.24;
 const FADE_OUT: f64 = 0.18;
 const SELECT: f64 = 0.22;
@@ -58,6 +60,41 @@ fn ease_in_out() -> Retained<CAMediaTimingFunction> {
 
 fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
     return markers.iter().map(|marker| (marker.icon, marker.text.clone(), marker.active)).collect();
+}
+
+fn overall(downloads: &[Download]) -> f64 {
+    if downloads.is_empty() {
+        return 0.0;
+    }
+    let count = f64::from(u32::try_from(downloads.len()).unwrap_or(u32::MAX));
+    return downloads.iter().map(|download| download.percent).sum::<f64>() / count;
+}
+
+fn download_line(download: &Download) -> String {
+    return match download.stage {
+        Stage::Preparing => "Getting video info…".to_string(),
+        Stage::Merging => "Merging video and audio…".to_string(),
+        Stage::Importing => "Adding to library…".to_string(),
+        Stage::Downloading => {
+            let mut parts = vec![format!("Downloading {:.0}%", download.percent * 100.0)];
+            if let Some(speed) = download.speed.filter(|speed| *speed > 0.0) {
+                parts.push(format!("{:.1} MB/s", speed / 1_048_576.0));
+            }
+            if let Some(eta) = download.eta.filter(|eta| eta.is_finite() && *eta >= 0.0) {
+                parts.push(format!("{} left", clock(eta)));
+            }
+            parts.join(" · ")
+        }
+    };
+}
+
+fn clock(seconds: f64) -> String {
+    let total = std::time::Duration::try_from_secs_f64(seconds.round()).map_or(0, |duration| duration.as_secs());
+    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 {
+        return format!("{hours}:{minutes:02}:{seconds:02}");
+    }
+    return format!("{minutes}:{seconds:02}");
 }
 
 pub struct TileIvars {
@@ -531,6 +568,7 @@ pub struct WallIvars {
     empty: Retained<NSView>,
     status: Retained<NSView>,
     status_text: Retained<NSTextField>,
+    status_fill: Retained<CALayer>,
     tiles: RefCell<Vec<Retained<TileView>>>,
     shown: RefCell<(Vec<ItemId>, bool)>,
     unlocked: Cell<bool>,
@@ -589,6 +627,31 @@ mod keys {
     pub const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
 }
 
+fn download_pill(mtm: MainThreadMarker, theme: &Theme) -> (Retained<NSView>, Retained<NSTextField>, Retained<CALayer>) {
+    let status_icon = widgets::symbol_view(mtm, "arrow.down.circle", 13.0, &NSColor::secondaryLabelColor());
+    let status_text = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
+    let status_row = widgets::stack(mtm, &[&status_icon, &status_text], false, 6.0);
+    let status_track = NSView::new(mtm);
+    status_track.setWantsLayer(true);
+    status_track.widthAnchor().constraintEqualToConstant(STATUS_WIDTH).setActive(true);
+    status_track.heightAnchor().constraintEqualToConstant(STATUS_BAR).setActive(true);
+    let status_fill = CALayer::new();
+    status_fill.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent)));
+    status_fill.setCornerRadius(STATUS_BAR / 2.0);
+    if let Some(layer) = status_track.layer() {
+        layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
+        layer.setCornerRadius(STATUS_BAR / 2.0);
+        layer.setMasksToBounds(true);
+        layer.addSublayer(&status_fill);
+    }
+    let status_body = widgets::stack(mtm, &[&status_row, &status_track], true, 7.0);
+    status_body.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
+    status_body.setEdgeInsets(widgets::insets(8.0, 14.0, 10.0, 14.0));
+    let status = widgets::glass(mtm, &status_body, 16.0, None);
+    status.setHidden(true);
+    return (status, status_text, status_fill);
+}
+
 impl WallView {
     pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
         let canvas = widgets::card(mtm, &theme.canvas, 0.0);
@@ -613,12 +676,7 @@ impl WallView {
         let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, 8.0);
         empty.setHidden(true);
         empty.setAlphaValue(0.0);
-        let status_icon = widgets::symbol_view(mtm, "arrow.down.circle", 13.0, &NSColor::secondaryLabelColor());
-        let status_text = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
-        let status_row = widgets::stack(mtm, &[&status_icon, &status_text], false, 6.0);
-        status_row.setEdgeInsets(widgets::insets(6.0, 12.0, 6.0, 12.0));
-        let status = widgets::glass(mtm, &status_row, 16.0, None);
-        status.setHidden(true);
+        let (status, status_text, status_fill) = download_pill(mtm, theme);
         let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
         let fade = CAGradientLayer::new();
         fade.setStartPoint(CGPoint::new(0.5, 1.0));
@@ -634,6 +692,7 @@ impl WallView {
             empty: widgets::view(&empty),
             status,
             status_text,
+            status_fill,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
             unlocked: Cell::new(false),
@@ -734,6 +793,7 @@ impl WallView {
     pub fn paint(&self, theme: &Theme) {
         let ivars = self.ivars();
         ivars.canvas.setFillColor(&theme.canvas);
+        ivars.status_fill.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
         let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(self.mtm()).effectiveAppearance());
         let (base, alpha) = if dark { (NSColor::blackColor(), 0.4) } else { (theme.canvas.clone(), 0.4) };
         let colors: Vec<Retained<CGColor>> = [alpha, alpha * 0.85, 0.0]
@@ -824,11 +884,13 @@ impl WallView {
         let ivars = self.ivars();
         let text = match downloads {
             [] => None,
-            [only] => Some(format!("Downloading… {:.0}%", only.percent * 100.0)),
-            many => Some(format!("Downloading {} videos…", many.len())),
+            [only] => Some(download_line(only)),
+            many => Some(format!("Downloading {} videos · {:.0}%", many.len(), overall(many) * 100.0)),
         };
         if let Some(text) = &text {
             ivars.status_text.setStringValue(&widgets::ns(text));
+            let width = STATUS_WIDTH * overall(downloads).clamp(0.0, 1.0);
+            ivars.status_fill.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
         }
         let hidden = text.is_none();
         if ivars.status.isHidden() != hidden {

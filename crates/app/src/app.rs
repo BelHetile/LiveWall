@@ -83,6 +83,8 @@ pub enum Event {
     ImportDone { report: import::Report, reply: oneshot::Sender<Response> },
     OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
     DownloadImported { job: String, items: Vec<Item> },
+    DownloadResolved,
+    DownloadFailed { reason: String },
     Reply(Request, Response),
 }
 
@@ -116,6 +118,7 @@ pub struct App {
     handle: tokio::runtime::Handle,
     optimize: Arc<optimize::Queue>,
     downloads: Arc<download::Queue>,
+    preparing_downloads: usize,
 }
 
 impl App {
@@ -171,6 +174,7 @@ impl App {
             handle,
             optimize,
             downloads,
+            preparing_downloads: 0,
             paths: paths.clone(),
         };
         app.sync(false);
@@ -192,6 +196,11 @@ impl App {
             }
             Event::OptimizeDone { item, result } => self.finish_optimize(item, result),
             Event::DownloadImported { job, items } => self.finish_download_import(&job, items),
+            Event::DownloadResolved => {
+                self.preparing_downloads = self.preparing_downloads.saturating_sub(1);
+                crate::ui::changed();
+            }
+            Event::DownloadFailed { reason } => crate::ui::download_failed(&reason),
             Event::Reply(request, response) => crate::ui::reply(&request, &response),
             Event::UnlockResult { success, epoch } => self.finish_unlock(success, epoch),
             Event::IdleTick => self.idle_tick(),
@@ -388,10 +397,13 @@ impl App {
         let policy = self.probe_policy();
         let height = self.max_display_px();
         let av1_hw = probe::av1_hardware();
+        self.preparing_downloads += 1;
+        crate::ui::changed();
         self.reply_with(reply, async move {
-            return match resolve_download(&url, consent || settings_consent, &paths, policy, height, av1_hw, &queue)
-                .await
-            {
+            let resolved =
+                resolve_download(&url, consent || settings_consent, &paths, policy, height, av1_hw, &queue).await;
+            post(Event::DownloadResolved);
+            return match resolved {
                 Ok(id) => ok(&serde_json::json!({ "id": id, "state": "queued" })),
                 Err((code, message)) => Response::err(code, message),
             };
@@ -765,6 +777,10 @@ impl App {
             optimize::JobState::Running { percent, .. } => Some(percent),
             _ => None,
         };
+    }
+
+    pub fn preparing_downloads(&self) -> usize {
+        return self.preparing_downloads;
     }
 
     pub fn download_progress(&self) -> Vec<download::JobReport> {

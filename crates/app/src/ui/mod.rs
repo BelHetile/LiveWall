@@ -250,6 +250,14 @@ fn submit(work: impl FnOnce(&mut App) -> Option<Response> + Send + 'static) {
     });
 }
 
+pub fn download_failed(reason: &str) {
+    changed();
+    let visible = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.window.isVisible()));
+    if visible {
+        dialogs::notice(&format!("Couldn’t download the video: {reason}"));
+    }
+}
+
 pub fn changed() {
     if PENDING.swap(true, Ordering::SeqCst) {
         return;

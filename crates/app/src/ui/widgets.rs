@@ -198,6 +198,20 @@ pub fn label(
     return field;
 }
 
+pub fn input(mtm: MainThreadMarker, placeholder: &str, width: CGFloat) -> Retained<NSTextField> {
+    let field = NSTextField::textFieldWithString(&ns(""), mtm);
+    field.setPlaceholderString(Some(&ns(placeholder)));
+    field.setUsesSingleLineMode(true);
+    field.setLineBreakMode(NSLineBreakMode::ByClipping);
+    if let Some(cell) = field.cell() {
+        cell.setWraps(false);
+        cell.setScrollable(true);
+    }
+    field.setFrameSize(NSSize::new(width, field.fittingSize().height));
+    field.widthAnchor().constraintEqualToConstant(width).setActive(true);
+    return field;
+}
+
 pub fn styled(text: &str, font: &NSFont, color: &NSColor) -> Retained<NSAttributedString> {
     let keys: [&NSAttributedStringKey; 2] = unsafe { [NSFontAttributeName, NSForegroundColorAttributeName] };
     let values: [&AnyObject; 2] = [font, color];

@@ -7,7 +7,7 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSLayoutAttribute, NSModalResponse, NSModalResponseOK,
     NSOpenPanel, NSPopUpButton, NSTextField,
 };
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSString};
 use proto::Request;
 
@@ -17,7 +17,6 @@ use crate::ui::{UI, later, selected_id, submit};
 
 const NAME_WIDTH: f64 = 260.0;
 const LINK_WIDTH: f64 = 340.0;
-const FIELD_HEIGHT: f64 = 24.0;
 const QUALITIES: [&str; 5] = ["Best Available", "4K", "1440p", "1080p", "720p"];
 const DEFAULT_QUALITY: isize = 3;
 
@@ -92,11 +91,7 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns("New Folder"));
     alert.setInformativeText(&ns("Locked folders keep their wallpapers hidden until you unlock them with Touch ID."));
-    let field = NSTextField::initWithFrame(
-        NSTextField::alloc(mtm),
-        CGRect::new(CGPoint::ZERO, CGSize::new(NAME_WIDTH, FIELD_HEIGHT)),
-    );
-    field.setPlaceholderString(Some(&ns("Folder name")));
+    let field = widgets::input(mtm, "Folder name", NAME_WIDTH);
     alert.setAccessoryView(Some(&field));
     alert.addButtonWithTitle(&ns("Create"));
     alert.addButtonWithTitle(&ns("Cancel"));
@@ -172,12 +167,7 @@ pub fn download_sheet(mtm: MainThreadMarker) {
     alert.setInformativeText(&ns(
         "Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.",
     ));
-    let field = NSTextField::initWithFrame(
-        NSTextField::alloc(mtm),
-        CGRect::new(CGPoint::ZERO, CGSize::new(LINK_WIDTH, FIELD_HEIGHT)),
-    );
-    field.setPlaceholderString(Some(&ns("https://youtu.be/…")));
-    field.widthAnchor().constraintEqualToConstant(LINK_WIDTH).setActive(true);
+    let field = widgets::input(mtm, "https://youtu.be/…", LINK_WIDTH);
     let quality = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
     let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(title)).collect();
     quality.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
