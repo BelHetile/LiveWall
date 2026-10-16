@@ -17,7 +17,6 @@ use objc2_foundation::{
 };
 
 use crate::app::{Event, post};
-use crate::platform::detect::AudioMonitor;
 
 type Subscription = (Retained<NSNotificationCenter>, Retained<ProtocolObject<dyn NSObjectProtocol>>);
 
@@ -62,7 +61,6 @@ pub struct Observers {
     subscriptions: Vec<Subscription>,
     lock_center: Option<Retained<NSDistributedNotificationCenter>>,
     lock_observer: Option<Retained<LockObserver>>,
-    audio: AudioMonitor,
 }
 
 impl Observers {
@@ -218,28 +216,7 @@ impl Observers {
             );
         }
 
-        return Self {
-            subscriptions,
-            lock_center: Some(lock_center),
-            lock_observer: Some(lock_observer),
-            audio: AudioMonitor::install(),
-        };
-    }
-
-    pub fn rebind_audio(&mut self) {
-        self.audio.rebind();
-    }
-
-    pub fn refresh_audio(&mut self) {
-        self.audio.refresh();
-    }
-
-    pub fn settle_audio(&mut self) {
-        self.audio.settle();
-    }
-
-    pub fn audio_active(&self) -> bool {
-        return self.audio.active();
+        return Self { subscriptions, lock_center: Some(lock_center), lock_observer: Some(lock_observer) };
     }
 }
 

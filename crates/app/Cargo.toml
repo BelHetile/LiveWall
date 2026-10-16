@@ -195,13 +195,6 @@ objc2-core-video = { workspace = true, features = [
   "objc2",
   "objc2-core-graphics",
 ] }
-objc2-core-audio = { workspace = true, features = [
-  "std",
-  "AudioHardware",
-  "objc2",
-  "block2",
-  "dispatch2",
-] }
 objc2-quartz-core = { workspace = true, features = [
   "std",
   "CALayer",

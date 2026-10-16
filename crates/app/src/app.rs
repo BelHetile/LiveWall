@@ -55,8 +55,6 @@ pub enum Event {
     DisplayChanged,
     SpacesChanged,
     FrontmostChanged,
-    AudioChanged,
-    AudioSettled,
     DisplayAsleep(bool),
     LowPowerChanged,
     ThermalChanged,
@@ -110,7 +108,7 @@ pub struct App {
     rotate_timer: Option<Retained<NSTimer>>,
     engine: Engine,
     nap: system::AppNap,
-    observers: Observers,
+    _observers: Observers,
     hotkeys: Hotkeys,
     hotkey_failures: std::collections::BTreeMap<HotkeyAction, String>,
     strings: Strings,
@@ -166,7 +164,7 @@ impl App {
             settings,
             engine: Engine::new(mtm, paths),
             nap: system::AppNap::new(),
-            observers: Observers::install(mtm),
+            _observers: Observers::install(mtm),
             hotkeys,
             hotkey_failures,
             strings,
@@ -231,15 +229,6 @@ impl App {
             Event::DisplayChanged => self.on_display_changed(),
             Event::SpacesChanged => {
                 self.sync(true);
-                self.refresh_rules();
-            }
-            Event::AudioChanged => {
-                self.observers.rebind_audio();
-                self.observers.refresh_audio();
-                self.refresh_rules();
-            }
-            Event::AudioSettled => {
-                self.observers.settle_audio();
                 self.refresh_rules();
             }
             Event::DisplayAsleep(asleep) => self.on_display_asleep(asleep),
@@ -685,7 +674,6 @@ impl App {
             occluded: self.engine.occluded(),
             thermal_hot: self.thermal_hot,
             low_power: self.low_power,
-            other_app_audio: self.observers.audio_active(),
         };
         return detect::snapshot(frame, signals);
     }

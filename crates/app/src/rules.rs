@@ -60,8 +60,6 @@ pub struct Snapshot {
     #[serde(default)]
     pub coverage: f64,
     #[serde(default)]
-    pub other_app_audio: bool,
-    #[serde(default)]
     pub frontmost: Option<String>,
     #[serde(default)]
     pub running_apps: Vec<String>,
@@ -88,7 +86,6 @@ pub enum Cause {
     Occluded,
     Thermal,
     LowPower,
-    OtherAppAudio,
     Fullscreen,
     Coverage,
     Focus,
@@ -104,7 +101,6 @@ impl Cause {
             Self::Occluded => "occluded".to_string(),
             Self::Thermal => "thermal".to_string(),
             Self::LowPower => "low-power".to_string(),
-            Self::OtherAppAudio => "other-app-audio".to_string(),
             Self::Fullscreen => "fullscreen".to_string(),
             Self::Coverage => "coverage".to_string(),
             Self::Focus => "focus".to_string(),
@@ -121,7 +117,6 @@ pub struct Config {
     pub occlusion: Action,
     pub thermal: Action,
     pub low_power: Action,
-    pub other_app_audio: Action,
     pub fullscreen: Action,
     pub coverage: Action,
     pub coverage_threshold: f64,
@@ -139,7 +134,6 @@ impl Config {
             occlusion: Action::Pause,
             thermal: toggle(settings.pause_when_hot),
             low_power: Action::Pause,
-            other_app_audio: Action::Pause,
             fullscreen: toggle(settings.pause_when_fullscreen),
             coverage: toggle(settings.pause_when_maximized),
             coverage_threshold: COVERAGE_THRESHOLD,
@@ -183,9 +177,6 @@ pub fn evaluate(snapshot: &Snapshot, config: &Config) -> Verdict {
     }
     if snapshot.low_power {
         consider(&mut action, &mut cause, config.low_power, Cause::LowPower);
-    }
-    if snapshot.other_app_audio {
-        consider(&mut action, &mut cause, config.other_app_audio, Cause::OtherAppAudio);
     }
     if snapshot.fullscreen {
         consider(&mut action, &mut cause, config.fullscreen, Cause::Fullscreen);
@@ -327,14 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn other_app_audio_pauses() {
-        let snapshot = Snapshot { other_app_audio: true, ..make(false, 0.0) };
-        let verdict = one(&snapshot, &base());
-        assert_eq!(verdict.action, Action::Pause);
-        assert_eq!(verdict.cause, Some(Cause::OtherAppAudio));
-    }
-
-    #[test]
     fn fullscreen_pauses_when_enabled() {
         let verdict = one(&make(true, 1.0), &base());
         assert_eq!(verdict.action, Action::Pause);
@@ -414,10 +397,10 @@ mod tests {
 
     #[test]
     fn most_restrictive_wins() {
-        let snapshot = Snapshot { low_power: true, other_app_audio: true, ..make(true, 1.0) };
+        let snapshot = Snapshot { low_power: true, thermal_hot: true, ..make(true, 1.0) };
         let verdict = one(&snapshot, &base());
         assert_eq!(verdict.action, Action::Pause);
-        assert_eq!(verdict.cause, Some(Cause::LowPower));
+        assert_eq!(verdict.cause, Some(Cause::Thermal));
 
         let stopped = Snapshot { screen_locked: true, ..snapshot };
         assert_eq!(one(&stopped, &base()).action, Action::Stop);
@@ -453,12 +436,12 @@ mod tests {
             };
         };
         let paused = Verdict { action: Action::Pause, cause: Some(Cause::Coverage) };
-        let audio = Verdict { action: Action::Pause, cause: Some(Cause::OtherAppAudio) };
+        let thermal = Verdict { action: Action::Pause, cause: Some(Cause::Thermal) };
         let streaming = Verdict { action: Action::KeepRunning, cause: None };
         assert!(geometry_poll_needed(true, &streaming, &settings(true, false)));
         assert!(geometry_poll_needed(true, &streaming, &settings(false, true)));
         assert!(geometry_poll_needed(false, &paused, &settings(false, true)));
-        assert!(!geometry_poll_needed(false, &audio, &settings(true, true)));
+        assert!(!geometry_poll_needed(false, &thermal, &settings(true, true)));
         assert!(!geometry_poll_needed(false, &streaming, &settings(true, true)));
         assert!(!geometry_poll_needed(true, &paused, &settings(false, false)));
     }
@@ -466,7 +449,7 @@ mod tests {
     #[test]
     fn rotation_requires_enabled_running_playback_and_two_items() {
         let running = Verdict::default();
-        let paused = Verdict { action: Action::Pause, cause: Some(Cause::OtherAppAudio) };
+        let paused = Verdict { action: Action::Pause, cause: Some(Cause::LowPower) };
         let stopped = Verdict { action: Action::Stop, cause: Some(Cause::ScreenLocked) };
         assert!(should_rotate(true, false, &running, 2));
         assert!(should_rotate(true, false, &running, 10));

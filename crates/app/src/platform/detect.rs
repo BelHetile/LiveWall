@@ -1,47 +1,14 @@
-use std::mem::size_of;
-use std::ptr::{self, NonNull};
-
-use block2::RcBlock;
-use objc2::rc::Retained;
 use objc2_app_kit::NSWorkspace;
-use objc2_core_audio::{
-    AudioObjectAddPropertyListenerBlock, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertySelector, AudioObjectRemovePropertyListenerBlock,
-    kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal,
-    kAudioObjectSystemObject, kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
-};
 use objc2_core_foundation::{CFDictionary, CFString, CFType};
 use objc2_core_graphics::{
     CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
     kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
 };
-use objc2_foundation::NSTimer;
 
-use crate::app::{Event, post};
 use crate::cf::{cf_f64, cf_i64, downcast_dict};
-use crate::platform::{cancel_timer, schedule_timer};
 use crate::rules;
 
 const FULLSCREEN_TOLERANCE: f64 = 2.0;
-const AUDIO_ACTIVE_DELAY: f64 = 0.5;
-const AUDIO_SILENCE_DELAY: f64 = 2.0;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum AudioStep {
-    Cancel,
-    Hold,
-    Arm(f64),
-}
-
-fn audio_step(active: bool, raw: bool, settling: bool) -> AudioStep {
-    if raw == active {
-        return AudioStep::Cancel;
-    }
-    if settling {
-        return AudioStep::Hold;
-    }
-    return AudioStep::Arm(if raw { AUDIO_ACTIVE_DELAY } else { AUDIO_SILENCE_DELAY });
-}
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
@@ -52,7 +19,6 @@ pub struct Signals {
     pub occluded: bool,
     pub thermal_hot: bool,
     pub low_power: bool,
-    pub other_app_audio: bool,
 }
 
 pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
@@ -66,7 +32,6 @@ pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
         frame,
         fullscreen,
         coverage,
-        other_app_audio: signals.other_app_audio,
         frontmost: frontmost_bundle(),
         running_apps: running_bundles(),
         display_asleep: signals.display_asleep,
@@ -194,103 +159,6 @@ fn approximately_covers(window: rules::Rect, screen: rules::Rect, tolerance: f64
         && (window.h - screen.h).abs() <= tolerance;
 }
 
-fn global_address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-    return AudioObjectPropertyAddress {
-        mSelector: selector,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain,
-    };
-}
-
-fn system_object() -> AudioObjectID {
-    return kAudioObjectSystemObject as AudioObjectID;
-}
-
-fn byte_size<T>() -> u32 {
-    return u32::try_from(size_of::<T>()).unwrap_or(4);
-}
-
-fn property_size(object: AudioObjectID, address: AudioObjectPropertyAddress) -> Option<u32> {
-    let mut size = 0u32;
-    let status = unsafe {
-        AudioObjectGetPropertyDataSize(object, NonNull::from(&address), 0, ptr::null(), NonNull::from(&mut size))
-    };
-    return (status == 0).then_some(size);
-}
-
-fn property_u32(object: AudioObjectID, address: AudioObjectPropertyAddress) -> Option<u32> {
-    let mut value = 0u32;
-    let mut size = byte_size::<u32>();
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            object,
-            NonNull::from(&address),
-            0,
-            ptr::null(),
-            NonNull::from(&mut size),
-            NonNull::from(&mut value).cast(),
-        )
-    };
-    return (status == 0).then_some(value);
-}
-
-fn property_i32(object: AudioObjectID, address: AudioObjectPropertyAddress) -> Option<i32> {
-    let mut value = 0i32;
-    let mut size = byte_size::<i32>();
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            object,
-            NonNull::from(&address),
-            0,
-            ptr::null(),
-            NonNull::from(&mut size),
-            NonNull::from(&mut value).cast(),
-        )
-    };
-    return (status == 0).then_some(value);
-}
-
-fn process_object_list() -> Vec<AudioObjectID> {
-    let object = system_object();
-    let address = global_address(kAudioHardwarePropertyProcessObjectList);
-    let Some(size) = property_size(object, address) else { return Vec::new() };
-    let count = usize::try_from(size).unwrap_or(0) / size_of::<AudioObjectID>();
-    if count == 0 {
-        return Vec::new();
-    }
-    let mut list = vec![0u32; count];
-    let mut size = size;
-    let status = unsafe {
-        AudioObjectGetPropertyData(
-            object,
-            NonNull::from(&address),
-            0,
-            ptr::null(),
-            NonNull::from(&mut size),
-            NonNull::from(&mut list[0]).cast(),
-        )
-    };
-    if status != 0 {
-        return Vec::new();
-    }
-    return list;
-}
-
-fn process_pid(object: AudioObjectID) -> Option<i32> {
-    return property_i32(object, global_address(kAudioProcessPropertyPID));
-}
-
-fn process_running_output(object: AudioObjectID) -> bool {
-    return property_u32(object, global_address(kAudioProcessPropertyIsRunningOutput)).unwrap_or(0) != 0;
-}
-
-fn external_audio_playing() -> bool {
-    let own = own_pid();
-    return process_object_list().into_iter().any(|object| {
-        return process_pid(object).is_some_and(|pid| pid != own) && process_running_output(object);
-    });
-}
-
 fn frontmost_bundle() -> Option<String> {
     return NSWorkspace::sharedWorkspace()
         .frontmostApplication()
@@ -309,147 +177,6 @@ fn running_bundles() -> Vec<String> {
     bundles.sort();
     bundles.dedup();
     return bundles;
-}
-
-type ListenerBlock = RcBlock<dyn Fn(u32, NonNull<AudioObjectPropertyAddress>)>;
-
-struct AudioListener {
-    object: AudioObjectID,
-    address: AudioObjectPropertyAddress,
-    block: ListenerBlock,
-}
-
-impl AudioListener {
-    fn add(object: AudioObjectID, selector: AudioObjectPropertySelector) -> Option<Self> {
-        let address = global_address(selector);
-        let block: ListenerBlock = RcBlock::new(|_count: u32, _addresses: NonNull<AudioObjectPropertyAddress>| {
-            post(Event::AudioChanged);
-        });
-        let status = unsafe {
-            AudioObjectAddPropertyListenerBlock(
-                object,
-                NonNull::from(&address),
-                Some(dispatch2::DispatchQueue::main()),
-                RcBlock::as_ptr(&block),
-            )
-        };
-        if status != 0 {
-            return None;
-        }
-        return Some(Self { object, address, block });
-    }
-
-    fn remove(&self) {
-        unsafe {
-            AudioObjectRemovePropertyListenerBlock(
-                self.object,
-                NonNull::from(&self.address),
-                Some(dispatch2::DispatchQueue::main()),
-                RcBlock::as_ptr(&self.block),
-            );
-        }
-    }
-}
-
-struct AudioGate {
-    active: bool,
-    timer: Option<Retained<NSTimer>>,
-}
-
-impl AudioGate {
-    fn new() -> Self {
-        return Self { active: false, timer: None };
-    }
-
-    fn active(&self) -> bool {
-        return self.active;
-    }
-
-    fn observe(&mut self, raw: bool) {
-        match audio_step(self.active, raw, self.timer.is_some()) {
-            AudioStep::Cancel => self.cancel(),
-            AudioStep::Hold => {}
-            AudioStep::Arm(delay) => self.arm(delay),
-        }
-    }
-
-    fn arm(&mut self, delay: f64) {
-        self.timer = Some(schedule_timer(delay, false, || Event::AudioSettled));
-    }
-
-    fn settle(&mut self) {
-        self.timer = None;
-        let raw = external_audio_playing();
-        if raw != self.active {
-            self.active = raw;
-            tracing::info!(active = raw, "other-app audio rule settled");
-        }
-    }
-
-    fn cancel(&mut self) {
-        cancel_timer(self.timer.take());
-    }
-}
-
-pub struct AudioMonitor {
-    processes: Vec<(AudioObjectID, AudioListener)>,
-    process_list: Option<AudioListener>,
-    gate: AudioGate,
-}
-
-impl AudioMonitor {
-    pub fn install() -> Self {
-        let mut monitor = Self {
-            processes: Vec::new(),
-            process_list: AudioListener::add(system_object(), kAudioHardwarePropertyProcessObjectList),
-            gate: AudioGate::new(),
-        };
-        monitor.rebind();
-        monitor.refresh();
-        return monitor;
-    }
-
-    pub fn refresh(&mut self) {
-        self.gate.observe(external_audio_playing());
-    }
-
-    pub fn settle(&mut self) {
-        self.gate.settle();
-    }
-
-    pub fn active(&self) -> bool {
-        return self.gate.active();
-    }
-
-    pub fn rebind(&mut self) {
-        let objects = process_object_list();
-        for (object, listener) in &self.processes {
-            if !objects.contains(object) {
-                listener.remove();
-            }
-        }
-        self.processes.retain(|(object, _)| objects.contains(object));
-        let existing: Vec<AudioObjectID> = self.processes.iter().map(|(object, _)| *object).collect();
-        for object in objects {
-            if existing.contains(&object) {
-                continue;
-            }
-            if let Some(listener) = AudioListener::add(object, kAudioProcessPropertyIsRunningOutput) {
-                self.processes.push((object, listener));
-            }
-        }
-    }
-}
-
-impl Drop for AudioMonitor {
-    fn drop(&mut self) {
-        for (_, listener) in &self.processes {
-            listener.remove();
-        }
-        if let Some(listener) = &self.process_list {
-            listener.remove();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -533,24 +260,5 @@ mod tests {
     fn degenerate_rects_are_never_fullscreen() {
         let screen = rect(0.0, 0.0, 1920.0, 1080.0);
         assert!(!approximately_covers(rect(0.0, 0.0, 0.0, 0.0), screen, FULLSCREEN_TOLERANCE));
-    }
-
-    #[test]
-    fn audio_activation_waits_before_pausing() {
-        assert_eq!(audio_step(false, true, false), AudioStep::Arm(AUDIO_ACTIVE_DELAY));
-        assert_eq!(audio_step(false, true, true), AudioStep::Hold);
-    }
-
-    #[test]
-    fn audio_silence_waits_longer_before_resuming() {
-        assert_eq!(audio_step(true, false, false), AudioStep::Arm(AUDIO_SILENCE_DELAY));
-        assert_eq!(audio_step(true, false, true), AudioStep::Hold);
-    }
-
-    #[test]
-    fn audio_matching_the_settled_state_cancels() {
-        assert_eq!(audio_step(false, false, false), AudioStep::Cancel);
-        assert_eq!(audio_step(true, true, false), AudioStep::Cancel);
-        assert_eq!(audio_step(true, true, true), AudioStep::Cancel);
     }
 }
