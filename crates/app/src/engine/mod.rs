@@ -36,7 +36,7 @@ use crate::engine::wake::Wake;
 use crate::engine::window::WallpaperWindow;
 use crate::geometry::{self, Size};
 use crate::model::{ItemId, ItemKind, Library};
-use crate::paths::Paths;
+use crate::paths::{DirKind, Paths, Visibility};
 use crate::platform::spaces::{self, SurfaceKey};
 use crate::rules;
 
@@ -80,7 +80,11 @@ impl Engine {
         let topology = cgs.topology(&display.uuid);
         let api = crate::platform::desktop::DesktopApi::load();
         let mode = if topology.fallback || !api.per_space() { Mode::Screen } else { Mode::PerSpace };
-        let mut desktop = Desktop::new(paths.swap_state_file(), mode);
+        let owned = vec![
+            paths.dir_for(DirKind::Stills, Visibility::Public),
+            paths.dir_for(DirKind::Stills, Visibility::Private),
+        ];
+        let mut desktop = Desktop::new(paths.swap_state_file(), mode, owned);
         desktop.recover(mtm);
         return Self {
             mtm,
@@ -386,7 +390,7 @@ impl Engine {
             .unloaded
             .iter()
             .filter(|(item, _)| self.nodes.get(item).is_some_and(|node| node.layers().keys().any(&should)))
-            .map(|(item, time)| (*item, *time))
+            .map(|(item, unloaded)| (*item, unloaded.time))
             .collect();
         playing_count += reloading.len();
         for (item, was, now) in transitions {

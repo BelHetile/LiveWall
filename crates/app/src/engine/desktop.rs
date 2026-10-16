@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use objc2::MainThreadMarker;
@@ -77,6 +77,26 @@ pub fn apply_targets(
     return plan;
 }
 
+pub fn is_owned(original: &Original, owned: &[PathBuf]) -> bool {
+    return original.url.as_deref().is_some_and(|url| owned.iter().any(|dir| Path::new(url).starts_with(dir)));
+}
+
+pub fn adopt_foreign(original: Original, recorded: &BTreeMap<String, Original>, owned: &[PathBuf]) -> Original {
+    if !is_owned(&original, owned) {
+        return original;
+    }
+    let donor = recorded
+        .values()
+        .filter(|candidate| !is_owned(candidate, owned))
+        .min_by_key(|candidate| candidate.display_id != original.display_id);
+    let Some(donor) = donor else {
+        tracing::warn!(space = %original.space, "desktop picture is a LiveWall still and no other original is known");
+        return original;
+    };
+    tracing::info!(space = %original.space, "desktop picture was a leftover LiveWall still; adopting another original");
+    return Original { config: donor.config.clone(), url: donor.url.clone(), ..original };
+}
+
 pub fn restore_list(recorded: &BTreeMap<String, Original>) -> Vec<Original> {
     return recorded.values().cloned().collect();
 }
@@ -92,6 +112,7 @@ pub struct Desktop {
     api: ffi::DesktopApi,
     mode: Mode,
     swap_path: PathBuf,
+    owned: Vec<PathBuf>,
     recorded: BTreeMap<String, Original>,
     applied: BTreeMap<String, String>,
     pending: BTreeMap<String, Pending>,
@@ -103,11 +124,12 @@ pub struct Desktop {
 }
 
 impl Desktop {
-    pub fn new(swap_path: PathBuf, mode: Mode) -> Self {
+    pub fn new(swap_path: PathBuf, mode: Mode, owned: Vec<PathBuf>) -> Self {
         return Self {
             api: ffi::DesktopApi::load(),
             mode,
             swap_path,
+            owned,
             recorded: BTreeMap::new(),
             applied: BTreeMap::new(),
             pending: BTreeMap::new(),
@@ -153,6 +175,20 @@ impl Desktop {
         self.locked = true;
     }
 
+    pub fn settled(&self) -> bool {
+        return self.pending.is_empty();
+    }
+
+    pub fn stills_in_use(&self) -> impl Iterator<Item = &str> {
+        return self
+            .applied
+            .values()
+            .chain(self.pending.values().map(|pending| &pending.still))
+            .chain(self.deferred.values().map(|(_, still)| still))
+            .map(String::as_str)
+            .chain(self.recorded.values().filter_map(|original| original.url.as_deref()));
+    }
+
     pub fn on_unlock(&mut self, mtm: MainThreadMarker, targets: &[Target], stills: &BTreeMap<String, String>) {
         self.locked = false;
         self.update(mtm, targets, stills, true);
@@ -163,6 +199,7 @@ impl Desktop {
         if needed.is_empty() {
             return;
         }
+        let mut leftovers = Vec::new();
         for target in needed {
             let surface = target.space.clone();
             let original = match self.mode {
@@ -177,7 +214,7 @@ impl Desktop {
                     None => continue,
                 },
                 Mode::Screen => {
-                    let url = ffi::screen_url(mtm, target.display_id);
+                    let url = ffi::screen_path(mtm, target.display_id);
                     Original {
                         space: target.space.clone(),
                         display_id: target.display_id,
@@ -187,7 +224,15 @@ impl Desktop {
                     }
                 }
             };
+            if is_owned(&original, &self.owned) {
+                leftovers.push(original);
+                continue;
+            }
             self.recorded.insert(surface, original);
+        }
+        for original in leftovers {
+            let adopted = adopt_foreign(original, &self.recorded, &self.owned);
+            self.recorded.insert(adopted.space.clone(), adopted);
         }
         self.persist();
     }
@@ -268,7 +313,7 @@ impl Desktop {
             Mode::PerSpace => {
                 self.api.copy(pending.display_id, &pending.space).and_then(|config| ffi::image_path(&config))
             }
-            Mode::Screen => ffi::screen_url(mtm, pending.display_id),
+            Mode::Screen => ffi::screen_path(mtm, pending.display_id),
         };
     }
 
@@ -344,7 +389,7 @@ impl Desktop {
                 .and_then(|config| ffi::image_path(&config))
                 .is_some_and(|value| value.as_str() == url.as_str()),
             Mode::Screen => {
-                ffi::screen_url(mtm, original.display_id).is_some_and(|value| value.as_str() == url.as_str())
+                ffi::screen_path(mtm, original.display_id).is_some_and(|value| value.as_str() == url.as_str())
             }
         };
     }
@@ -365,7 +410,7 @@ impl Desktop {
                 Mode::PerSpace => {
                     self.api.copy(target.display_id, &target.space).and_then(|config| ffi::image_path(&config))
                 }
-                Mode::Screen => ffi::screen_url(mtm, target.display_id),
+                Mode::Screen => ffi::screen_path(mtm, target.display_id),
             };
             let owned = self.applied.contains_key(&surface);
             surfaces.push(SurfaceStatus {
@@ -429,6 +474,33 @@ mod tests {
             url: Some("/a.jpg".into()),
             taken_at: jiff::Timestamp::UNIX_EPOCH,
         };
+    }
+
+    #[test]
+    fn leftover_still_adopts_a_foreign_original() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        let recorded = BTreeMap::from([("S1".to_string(), original("S1"))]);
+        let leftover =
+            Original { url: Some("/data/Stills/abc.png".into()), config: Some("y".into()), ..original("S2") };
+        let adopted = adopt_foreign(leftover, &recorded, &owned);
+        assert_eq!(adopted.space, "S2");
+        assert_eq!(adopted.url.as_deref(), Some("/a.jpg"));
+        assert_eq!(adopted.config.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn foreign_original_is_kept() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        let adopted = adopt_foreign(original("S2"), &BTreeMap::new(), &owned);
+        assert_eq!(adopted, original("S2"));
+    }
+
+    #[test]
+    fn leftover_without_donor_is_kept() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        let leftover = Original { url: Some("/data/Stills/abc.png".into()), ..original("S2") };
+        let adopted = adopt_foreign(leftover.clone(), &BTreeMap::new(), &owned);
+        assert_eq!(adopted, leftover);
     }
 
     #[test]

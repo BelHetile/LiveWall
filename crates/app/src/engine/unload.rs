@@ -18,9 +18,14 @@ struct Waiting {
     time: f64,
 }
 
+pub struct Unloaded {
+    pub time: f64,
+    still: String,
+}
+
 #[derive(Default)]
 pub struct Unload {
-    pub unloaded: HashMap<ItemId, f64>,
+    pub unloaded: HashMap<ItemId, Unloaded>,
     waiting: HashMap<ItemId, Waiting>,
     timers: HashMap<ItemId, Retained<NSTimer>>,
 }
@@ -42,6 +47,14 @@ impl Unload {
         self.cancel(item);
         self.waiting.remove(&item);
         self.unloaded.remove(&item);
+    }
+
+    pub fn stills(&self) -> impl Iterator<Item = &str> {
+        return self
+            .waiting
+            .values()
+            .map(|waiting| waiting.path.as_str())
+            .chain(self.unloaded.values().map(|unloaded| unloaded.still.as_str()));
     }
 }
 
@@ -119,7 +132,7 @@ impl Engine {
         for key in &keys {
             self.attach(item, key);
         }
-        self.unload.unloaded.insert(item, time);
+        self.unload.unloaded.insert(item, Unloaded { time, still: still_path.to_string() });
         tracing::info!(%item, "unloaded paused video to a still frame");
     }
 }

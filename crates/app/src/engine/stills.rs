@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::engine::desktop::{self, Target};
 use crate::engine::{Engine, still};
 use crate::model::{Item, ItemId, ItemKind, Library};
 use crate::paths::{DirKind, Paths, Visibility};
+
+const STILL_EXTENSION: &str = "png";
 
 pub enum Still {
     Ready(String),
@@ -49,17 +53,42 @@ impl Stills {
     pub fn settle(&mut self, path: &str) {
         self.pending.remove(path);
     }
+
+    pub fn sweep<'a>(&'a self, in_use: impl Iterator<Item = &'a str>) {
+        let keep: HashSet<OsString> = in_use
+            .chain(self.pending.iter().map(String::as_str))
+            .filter_map(|path| Path::new(path).file_name().map(OsString::from))
+            .collect();
+        for dir in [&self.public_dir, &self.private_dir] {
+            sweep_dir(dir, &keep);
+        }
+    }
+}
+
+fn sweep_dir(dir: &Path, keep: &HashSet<OsString>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep.contains(&entry.file_name()) || path.extension().is_none_or(|extension| extension != STILL_EXTENSION) {
+            continue;
+        }
+        if let Err(error) = fs::remove_file(&path) {
+            tracing::warn!(%error, path = %path.display(), "cannot remove unused still");
+        }
+    }
 }
 
 impl Engine {
     pub fn refresh_desktop(&mut self, library: &Library, force: bool) {
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.update(self.mtm, &targets, &stills, force);
+        self.sweep_stills();
     }
 
     pub fn on_unlock(&mut self, library: &Library) {
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.on_unlock(self.mtm, &targets, &stills);
+        self.sweep_stills();
     }
 
     pub fn on_lock(&mut self) {
@@ -68,6 +97,9 @@ impl Engine {
 
     pub fn on_desktop_verify(&mut self) {
         self.desktop.verify_tick(self.mtm);
+        if self.desktop.settled() {
+            self.sweep_stills();
+        }
     }
 
     pub fn desktop_report(&self) -> desktop::DesktopReport {
@@ -97,6 +129,10 @@ impl Engine {
 
     pub fn on_still_failed(&mut self, path: &str) {
         self.stills.settle(path);
+    }
+
+    fn sweep_stills(&self) {
+        self.stills.sweep(self.desktop.stills_in_use().chain(self.unload.stills()));
     }
 
     fn desktop_stills(&mut self, library: &Library) -> (Vec<Target>, BTreeMap<String, String>) {
@@ -132,5 +168,35 @@ impl Engine {
             }
         }
         return (stills, blanked);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn still(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, b"png").expect("write still");
+        return path;
+    }
+
+    #[test]
+    fn sweep_removes_only_unused_stills() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unused = still(dir.path(), "unused.png");
+        let shown = still(dir.path(), "shown.png");
+        let foreign = still(dir.path(), "notes.txt");
+        let keep = HashSet::from([OsString::from("shown.png")]);
+        sweep_dir(dir.path(), &keep);
+        assert!(!unused.exists());
+        assert!(shown.exists());
+        assert!(foreign.exists());
+    }
+
+    #[test]
+    fn sweep_ignores_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        sweep_dir(&dir.path().join("absent"), &HashSet::new());
     }
 }

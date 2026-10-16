@@ -60,10 +60,10 @@ impl DesktopApi {
     }
 }
 
-pub fn screen_url(mtm: MainThreadMarker, display: u32) -> Option<String> {
+pub fn screen_path(mtm: MainThreadMarker, display: u32) -> Option<String> {
     let screen = screen_for(mtm, display)?;
     let url = NSWorkspace::sharedWorkspace().desktopImageURLForScreen(&screen)?;
-    return url.absoluteString().map(|value| value.to_string());
+    return url.path().map(|value| value.to_string());
 }
 
 pub fn screen_set(mtm: MainThreadMarker, display: u32, path: &str) -> Result<(), String> {
