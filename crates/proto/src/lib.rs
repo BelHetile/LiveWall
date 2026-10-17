@@ -540,6 +540,34 @@ pub enum Request {
     IconRemove {
         icon: String,
     },
+    StyleList,
+    StyleKeys,
+    StyleApply {
+        name: String,
+    },
+    StyleExport {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    StyleImport {
+        text: String,
+    },
+    StyleDelete {
+        name: String,
+    },
+    StyleRename {
+        name: String,
+        to: String,
+    },
+    StyleSet {
+        key: String,
+        light: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dark: Option<String>,
+    },
+    StyleReset {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -709,6 +737,17 @@ mod tests {
             Request::IconImport { path: "/tmp/a.png".into() },
             Request::IconList,
             Request::IconRemove { icon: "image:a.png".into() },
+            Request::StyleList,
+            Request::StyleKeys,
+            Request::StyleApply { name: "Dusk".into() },
+            Request::StyleExport { name: None },
+            Request::StyleExport { name: Some("Mine".into()) },
+            Request::StyleImport { text: "{\"livewall_style\":1}".into() },
+            Request::StyleDelete { name: "Mine".into() },
+            Request::StyleRename { name: "Mine".into(), to: "Ours".into() },
+            Request::StyleSet { key: "grid.ring".into(), light: "#FF0000".into(), dark: None },
+            Request::StyleSet { key: "accent".into(), light: "#112233".into(), dark: Some("#445566".into()) },
+            Request::StyleReset { key: "tint".into() },
         ];
     }
 

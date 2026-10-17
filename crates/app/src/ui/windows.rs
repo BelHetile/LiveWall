@@ -3,9 +3,9 @@ use std::path::Path;
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameAqua, NSApplication, NSBackingStoreType, NSImage, NSSplitViewController,
-    NSSplitViewItem, NSTitlebarSeparatorStyle, NSView, NSViewController, NSWindow, NSWindowStyleMask,
-    NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSBackingStoreType, NSImage,
+    NSSplitViewController, NSSplitViewItem, NSTitlebarSeparatorStyle, NSView, NSViewController, NSWindow,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSBundle, NSData};
@@ -13,7 +13,7 @@ use objc2_foundation::{NSBundle, NSData};
 use crate::ui::inspector::Inspector;
 use crate::ui::sidebar::{self, Sidebar};
 use crate::ui::wall::WallView;
-use crate::ui::widgets::{self, ns};
+use crate::ui::widgets::ns;
 
 const ICON: &[u8] = include_bytes!("../../../../resources/AppIcon.iconset/icon_512x512@2x.png");
 const WINDOW_SIZE: CGSize = CGSize::new(1500.0, 860.0);
@@ -39,7 +39,7 @@ pub fn application_icon(mtm: MainThreadMarker) {
 pub fn set_appearance(mtm: MainThreadMarker, mode: usize) {
     let appearance = match mode {
         1 => NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }),
-        2 => widgets::dark(),
+        2 => NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }),
         _ => None,
     };
     NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());

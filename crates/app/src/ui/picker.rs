@@ -17,16 +17,18 @@ use uuid::Uuid;
 use crate::app;
 use crate::i18n::tr;
 use crate::model::{self, Icon};
-use crate::ui::palette::{Rgb, Theme};
-use crate::ui::widgets::{self, Weight, ns};
+use crate::style::{self, Key, Tag};
+use crate::ui::metrics::{self, Text};
+use crate::ui::theme::{self, Theme, folder_color};
+use crate::ui::widgets::{self, ns};
 use crate::ui::{folders, report};
 
-const COLUMNS: usize = 8;
+const COLUMNS: usize = 9;
 const CELL: f64 = 30.0;
-const GAP: f64 = 4.0;
-const PREVIEW: f64 = 34.0;
+const GAP: f64 = metrics::SPACE_4;
+const PREVIEW: f64 = metrics::ICON_HERO;
 const SWATCH: f64 = 18.0;
-const PADDING: f64 = 14.0;
+const PADDING: f64 = metrics::SPACE_16;
 const IMAGE_TYPES: [&str; 8] = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "gif", "webp"];
 
 pub struct PickerIvars {
@@ -35,8 +37,9 @@ pub struct PickerIvars {
     icons_dir: PathBuf,
     icon: RefCell<Option<String>>,
     color: RefCell<Option<String>>,
-    accent: Retained<NSColor>,
+    glyph: Retained<NSColor>,
     soft: Retained<NSColor>,
+    empty: Retained<NSColor>,
     preview: Retained<NSImageView>,
     field: Retained<NSTextField>,
     well: Retained<NSView>,
@@ -264,17 +267,15 @@ impl StylePicker {
 
     fn paint(&self) {
         let ivars = self.ivars();
-        let mtm = self.mtm();
         let icon = ivars.icon.borrow().clone();
         let color = ivars.color.borrow().clone();
         let image = folders::preview(icon.as_deref(), color.as_deref(), &ivars.icons_dir, ivars.fallback, PREVIEW);
         ivars.preview.setImage(image.as_deref());
-        ivars.preview.setContentTintColor(Some(&ivars.accent));
+        ivars.preview.setContentTintColor(Some(&ivars.glyph));
         let typed = model::parse_color(&ivars.field.stringValue().to_string());
-        let fill =
-            typed.as_deref().and_then(Rgb::parse).map_or_else(NSColor::quaternaryLabelColor, |rgb| rgb.color(1.0));
+        let fill = typed.as_deref().and_then(folder_color).unwrap_or_else(|| ivars.empty.clone());
         if let Some(layer) = ivars.well.layer() {
-            layer.setBackgroundColor(Some(&widgets::cg(mtm, &fill)));
+            layer.setBackgroundColor(Some(&widgets::cg(&ivars.well, &fill)));
         }
         for (value, button) in &ivars.colors {
             mark(button, *value == color, &ivars.soft);
@@ -291,7 +292,7 @@ fn mark(button: &NSButton, on: bool, soft: &NSColor) {
         return;
     };
     let fill = if on { soft.retain() } else { NSColor::clearColor() };
-    layer.setBackgroundColor(Some(&widgets::cg(button.mtm(), &fill)));
+    layer.setBackgroundColor(Some(&widgets::cg(button, &fill)));
 }
 
 fn cell(
@@ -307,7 +308,7 @@ fn cell(
     button.setToolTip(Some(&ns(tip)));
     button.setWantsLayer(true);
     if let Some(layer) = button.layer() {
-        layer.setCornerRadius(7.0);
+        layer.setCornerRadius(metrics::RADIUS_SMALL);
     }
     button.widthAnchor().constraintEqualToConstant(CELL).setActive(true);
     button.heightAnchor().constraintEqualToConstant(CELL).setActive(true);
@@ -326,10 +327,6 @@ fn grid(mtm: MainThreadMarker, buttons: &[Retained<NSButton>]) -> Retained<NSVie
     let grid = widgets::stack(mtm, &views, true, GAP);
     grid.setAlignment(NSLayoutAttribute::Leading);
     return widgets::view(&grid);
-}
-
-fn heading(mtm: MainThreadMarker, title: &str) -> Retained<NSTextField> {
-    return widgets::label(mtm, title, 11.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
 }
 
 fn dropped_image(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf> {
@@ -353,12 +350,12 @@ fn color_buttons(mtm: MainThreadMarker) -> Vec<(Option<String>, Retained<NSButto
     if let Some(image) = folders::painted("circle.dashed", None, SWATCH) {
         colors.push((None, cell(mtm, &image, 0, sel!(pickColor:), &tr("Default"))));
     }
-    for (title, hex) in folders::PRESETS {
-        let Some(image) = Rgb::parse(hex).and_then(|rgb| folders::swatch(&rgb.color(1.0), SWATCH)) else {
+    for tag in Tag::ALL {
+        let Some(image) = folders::swatch(&theme::system(tag.system()), SWATCH) else {
             continue;
         };
-        let tag = colors.len();
-        colors.push((Some(hex.to_string()), cell(mtm, &image, tag, sel!(pickColor:), &tr(title))));
+        let index = colors.len();
+        colors.push((Some(tag.id().to_string()), cell(mtm, &image, index, sel!(pickColor:), &tr(tag.title()))));
     }
     return colors;
 }
@@ -370,18 +367,19 @@ fn hex_row(
 ) -> (Retained<NSTextField>, Retained<NSView>, Retained<objc2_app_kit::NSStackView>) {
     let field = widgets::input(mtm, "#RRGGBB", 92.0);
     field.setStringValue(&ns(color.unwrap_or("")));
-    field.setFont(Some(&widgets::digits()));
+    field.setFont(Some(&metrics::digits(Text::Subheadline)));
     let well = NSView::new(mtm);
     well.setWantsLayer(true);
+    let size = SWATCH + metrics::SPACE_4;
     if let Some(layer) = well.layer() {
-        layer.setCornerRadius(SWATCH / 2.0);
-        layer.setBorderWidth(1.0);
-        layer.setBorderColor(Some(&widgets::cg(mtm, &theme.hairline)));
+        layer.setCornerRadius(metrics::capsule(size));
+        layer.setBorderWidth(metrics::BORDER_HAIRLINE);
+        layer.setBorderColor(Some(&widgets::cg(&well, &theme.color(Key::PickerDivider))));
     }
-    well.widthAnchor().constraintEqualToConstant(SWATCH + 4.0).setActive(true);
-    well.heightAnchor().constraintEqualToConstant(SWATCH + 4.0).setActive(true);
-    let custom_label = widgets::label(mtm, &tr("Custom"), 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    let hex_row = widgets::stack(mtm, &[&custom_label, &field, &well], false, 8.0);
+    well.widthAnchor().constraintEqualToConstant(size).setActive(true);
+    well.heightAnchor().constraintEqualToConstant(size).setActive(true);
+    let custom_label = widgets::label(mtm, &tr(style::CUSTOM), Text::Callout, &theme.color(Key::TextSecondary));
+    let hex_row = widgets::stack(mtm, &[&custom_label, &field, &well], false, metrics::SPACE_8);
     return (field, well, hex_row);
 }
 
@@ -389,15 +387,17 @@ fn icon_buttons(
     mtm: MainThreadMarker,
     icons_dir: &Path,
     custom: Vec<String>,
+    theme: &Theme,
 ) -> (Vec<(String, Retained<NSButton>)>, usize) {
     let mut icons: Vec<(String, Retained<NSButton>)> = Vec::new();
+    let quiet = theme.color(Key::TextSecondary);
     for symbol in folders::SYMBOLS {
-        let Some(image) = folders::painted(symbol, None, 18.0) else {
+        let Some(image) = folders::painted(symbol, None, SWATCH) else {
             continue;
         };
         let tag = icons.len();
         let button = cell(mtm, &image, tag, sel!(pickIcon:), symbol);
-        button.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        button.setContentTintColor(Some(&quiet));
         icons.push((folders::symbol_value(symbol), button));
     }
     let symbol_count = icons.len();
@@ -405,7 +405,7 @@ fn icon_buttons(
         let Some(Icon::Image(file)) = Icon::parse(&value) else {
             continue;
         };
-        let Some(image) = folders::picture(&icons_dir.join(file), 20.0) else {
+        let Some(image) = folders::picture(&icons_dir.join(file), metrics::ICON_LARGE) else {
             continue;
         };
         let tag = icons.len();
@@ -444,16 +444,15 @@ fn wire(picker: &StylePicker, symbol_count: usize) {
     picker.ivars().popover.setDelegate(Some(ProtocolObject::from_ref(picker)));
 }
 
-fn images_view(mtm: MainThreadMarker, buttons: &[Retained<NSButton>]) -> Retained<NSView> {
+fn images_view(mtm: MainThreadMarker, buttons: &[Retained<NSButton>], theme: &Theme) -> Retained<NSView> {
     if !buttons.is_empty() {
         return grid(mtm, buttons);
     }
     let hint = widgets::label(
         mtm,
         &tr("Drop a PNG, JPEG or HEIC here, or choose one."),
-        11.0,
-        &Weight::Regular,
-        &NSColor::tertiaryLabelColor(),
+        Text::Subheadline,
+        &theme.color(Key::TextTertiary),
     );
     return widgets::view(&hint);
 }
@@ -484,7 +483,7 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
     let Some((view, rect)) = ui.sidebar.anchor(folder) else {
         return;
     };
-    let theme: &Theme = &ui.look.colors;
+    let theme: &Theme = &ui.look.theme;
     let icon = library.icons.get(folder).cloned().flatten().filter(|value| Icon::parse(value).is_some());
     let color = library.colors.get(folder).cloned().flatten();
     let fallback = folders::default_glyph(library, folder);
@@ -493,8 +492,8 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
     let preview = NSImageView::new(mtm);
     preview.widthAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
     preview.heightAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
-    let name = widgets::label(mtm, &library.folders[folder], 15.0, &Weight::Semibold, &NSColor::labelColor());
-    let header = widgets::stack(mtm, &[&preview, &name], false, 10.0);
+    let name = widgets::label(mtm, &library.folders[folder], Text::Title3, &theme.color(Key::Text));
+    let header = widgets::stack(mtm, &[&preview, &name], false, metrics::SPACE_8);
 
     let colors = color_buttons(mtm);
     let color_buttons: Vec<Retained<NSButton>> = colors.iter().map(|(_, button)| button.clone()).collect();
@@ -502,24 +501,25 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
 
     let (field, well, hex_row) = hex_row(mtm, color.as_deref(), theme);
 
-    let (icons, symbol_count) = icon_buttons(mtm, &library.icons_dir, custom);
+    let (icons, symbol_count) = icon_buttons(mtm, &library.icons_dir, custom, theme);
     let symbol_buttons: Vec<Retained<NSButton>> =
         icons[..symbol_count].iter().map(|(_, button)| button.clone()).collect();
     let symbols = grid(mtm, &symbol_buttons);
     let image_buttons: Vec<Retained<NSButton>> =
         icons[symbol_count..].iter().map(|(_, button)| button.clone()).collect();
-    let images = images_view(mtm, &image_buttons);
+    let images = images_view(mtm, &image_buttons, theme);
 
     let reset_button = widgets::compact(mtm, &tr("Reset"), Some(sel!(reset:)), None);
     let add_button = widgets::compact(mtm, &tr("Choose Image…"), Some(sel!(addImage:)), None);
     let done_button = widgets::compact(mtm, &tr("Done"), Some(sel!(done:)), None);
     done_button.setKeyEquivalent(&ns("\r"));
     let gap = widgets::spacer(mtm);
-    let footer = widgets::stack(mtm, &[&reset_button, &add_button, &gap, &done_button], false, 8.0);
+    let footer = widgets::stack(mtm, &[&reset_button, &add_button, &gap, &done_button], false, metrics::SPACE_8);
 
-    let color_heading = heading(mtm, &tr("Color"));
-    let icon_heading = heading(mtm, &tr("Icon"));
-    let image_heading = heading(mtm, &tr("Your Images"));
+    let color_heading = widgets::header(mtm, &tr("Color"), theme);
+    let icon_heading = widgets::header(mtm, &tr("Icon"), theme);
+    let image_heading = widgets::header(mtm, &tr("Your Images"), theme);
+    let divider = widgets::divider(mtm, &theme.color(Key::PickerDivider));
     let views: [&NSView; 10] = [
         &header,
         &color_heading,
@@ -529,16 +529,18 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
         &symbols,
         &image_heading,
         &images,
-        &widgets::divider(mtm, theme),
+        &divider,
         &footer,
     ];
-    let body = widgets::stack(mtm, &views, true, 8.0);
+    let body = widgets::stack(mtm, &views, true, metrics::SPACE_8);
     body.setAlignment(NSLayoutAttribute::Leading);
     body.setEdgeInsets(widgets::insets(PADDING, PADDING, PADDING, PADDING));
-    body.setCustomSpacing_afterView(14.0, &header);
-    body.setCustomSpacing_afterView(12.0, &hex_row);
-    body.setCustomSpacing_afterView(12.0, &symbols);
-    body.setCustomSpacing_afterView(12.0, &images);
+    body.setCustomSpacing_afterView(metrics::SPACE_16, &header);
+    body.setCustomSpacing_afterView(metrics::SPACE_12, &hex_row);
+    body.setCustomSpacing_afterView(metrics::SPACE_12, &symbols);
+    body.setCustomSpacing_afterView(metrics::SPACE_12, &images);
+    divider.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
+    divider.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -PADDING).setActive(true);
     footer.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
     footer.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -PADDING).setActive(true);
 
@@ -550,8 +552,9 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
         icons_dir: library.icons_dir.clone(),
         icon: RefCell::new(icon),
         color: RefCell::new(color),
-        accent: theme.accent.clone(),
-        soft: theme.accent_soft.clone(),
+        glyph: theme.color(Key::SidebarIcon),
+        soft: theme.color(Key::PickerSelected),
+        empty: theme.color(Key::FieldFill),
         preview,
         field,
         well,

@@ -6,25 +6,10 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSColor, NSCompositingOperation, NSImage, NSRectFillUsingOperation};
 use objc2_foundation::{NSCopying, NSPoint, NSRect, NSSize};
 
-use crate::i18n::key;
 use crate::model::{Icon, SYMBOL_PREFIX};
-use crate::ui::palette::Rgb;
+use crate::ui::theme::folder_color;
 use crate::ui::view::{Library, icon_file};
 use crate::ui::widgets;
-
-pub const MENU: f64 = 16.0;
-pub const ROW: f64 = 18.0;
-
-pub const PRESETS: [(&str, &str); 8] = [
-    (key("Terracotta"), "#D9785A"),
-    (key("Honey"), "#D9A441"),
-    (key("Sage"), "#7FA77F"),
-    (key("Moss"), "#5E8C6A"),
-    (key("Dusty Blue"), "#6A8CC4"),
-    (key("Lavender"), "#9C88C9"),
-    (key("Rose"), "#C97C8C"),
-    (key("Cocoa"), "#9C7055"),
-];
 
 pub const SYMBOLS: [&str; 48] = [
     "folder.fill",
@@ -101,7 +86,7 @@ pub fn glyph(library: &Library, folder: usize) -> Glyph<'_> {
 }
 
 pub fn tint(library: &Library, folder: usize) -> Option<Retained<NSColor>> {
-    return library.colors.get(folder)?.as_deref().and_then(Rgb::parse).map(|rgb| rgb.color(1.0));
+    return library.colors.get(folder)?.as_deref().and_then(folder_color);
 }
 
 pub fn image(library: &Library, folder: usize, size: f64) -> Option<Retained<NSImage>> {
@@ -120,7 +105,7 @@ pub fn preview(
     fallback: &str,
     size: f64,
 ) -> Option<Retained<NSImage>> {
-    let tint = color.and_then(Rgb::parse).map(|rgb| rgb.color(1.0));
+    let tint = color.and_then(folder_color);
     return match icon.and_then(Icon::parse) {
         Some(Icon::Image(file)) => picture(&icons_dir.join(file), size),
         Some(Icon::Symbol(name)) => painted(name, tint.as_deref(), size),

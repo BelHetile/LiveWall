@@ -16,6 +16,7 @@ mod platform;
 mod process;
 mod rules;
 mod store;
+mod style;
 mod tools;
 pub mod ui;
 

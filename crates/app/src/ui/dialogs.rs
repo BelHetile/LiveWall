@@ -6,7 +6,7 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlStateValueOn, NSLayoutAttribute,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSTextField,
+    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSSavePanel, NSTextField, NSWindow,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSString};
@@ -15,6 +15,8 @@ use uuid::Uuid;
 
 use crate::app;
 use crate::i18n::{self, Arg, tr, trf, trp};
+use crate::style;
+use crate::ui::metrics;
 use crate::ui::widgets::{self, ns};
 use crate::ui::{UI, later, submit};
 
@@ -23,6 +25,7 @@ pub const PRIVATE_HIDE_TAG: isize = 1;
 const LINK_WIDTH: f64 = 340.0;
 const QUALITIES: [&str; 5] = [i18n::key("Best Available"), "4K", "1440p", "1080p", "720p"];
 const DEFAULT_QUALITY: isize = 3;
+const STYLE_EXTENSION: &str = "livewallstyle";
 
 fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
     alert.window().setPreventsApplicationTerminationWhenModal(false);
@@ -144,8 +147,8 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
         private.setEnabled(false);
         private.setToolTip(Some(&ns(&tr("Unlock private folders to move a wallpaper into a private folder"))));
     }
-    let flags = widgets::stack(mtm, &[&private, &hidden], false, 16.0);
-    let accessory = widgets::stack(mtm, &[&field, &flags], true, 10.0);
+    let flags = widgets::stack(mtm, &[&private, &hidden], false, metrics::SPACE_16);
+    let accessory = widgets::stack(mtm, &[&field, &flags], true, metrics::SPACE_12);
     accessory.setAlignment(NSLayoutAttribute::Leading);
     accessory.setFrameSize(accessory.fittingSize());
     alert.setAccessoryView(Some(&accessory));
@@ -237,8 +240,8 @@ pub fn download_sheet(mtm: MainThreadMarker) {
     quality.selectItemAtIndex(DEFAULT_QUALITY);
     quality.setEnabled(false);
     let label = NSTextField::labelWithString(&ns(&tr("Quality")), mtm);
-    let options = widgets::stack(mtm, &[&label, &quality], false, 8.0);
-    let accessory = widgets::stack(mtm, &[&field, &options], true, 10.0);
+    let options = widgets::stack(mtm, &[&label, &quality], false, metrics::SPACE_8);
+    let accessory = widgets::stack(mtm, &[&field, &options], true, metrics::SPACE_12);
     accessory.setAlignment(NSLayoutAttribute::Leading);
     accessory.setFrameSize(accessory.fittingSize());
     alert.setAccessoryView(Some(&accessory));
@@ -254,5 +257,95 @@ pub fn download_sheet(mtm: MainThreadMarker) {
             app.submit(Request::Download { url, consent: false });
             return None;
         });
+    });
+}
+
+fn display_name(name: &str) -> String {
+    return if style::built_in(name) { tr(name) } else { name.to_string() };
+}
+
+pub fn rename_style(mtm: MainThreadMarker, window: &NSWindow, name: &str) {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns(&tr("Rename Style")));
+    let field = widgets::input(mtm, &tr("Style name"), NAME_WIDTH);
+    field.setStringValue(&ns(name));
+    field.setFrameSize(field.fittingSize());
+    alert.setAccessoryView(Some(&field));
+    alert.addButtonWithTitle(&ns(&tr("Rename")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    alert.window().setInitialFirstResponder(Some(&field));
+    let name = name.to_string();
+    let block = RcBlock::new(move |response: NSModalResponse| {
+        let to = field.stringValue().to_string();
+        if response != NSAlertFirstButtonReturn || to.trim() == name {
+            return;
+        }
+        let name = name.clone();
+        crate::ui::style(move |app| app.style_rename(&name, &to));
+    });
+    alert.beginSheetModalForWindow_completionHandler(window, Some(&block));
+}
+
+pub fn delete_style(mtm: MainThreadMarker, window: &NSWindow, name: &str) {
+    let alert = NSAlert::new(mtm);
+    alert.setAlertStyle(NSAlertStyle::Warning);
+    alert.setMessageText(&ns(&trf("Delete the style “%@”?", &[Arg::Text(display_name(name))])));
+    alert.setInformativeText(&ns(&tr("LiveWall switches to the System style.")));
+    let delete = alert.addButtonWithTitle(&ns(&tr("Delete")));
+    delete.setHasDestructiveAction(true);
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    let name = name.to_string();
+    let block = RcBlock::new(move |response: NSModalResponse| {
+        if response == NSAlertFirstButtonReturn {
+            let name = name.clone();
+            crate::ui::style(move |app| app.style_delete(&name));
+        }
+    });
+    alert.beginSheetModalForWindow_completionHandler(window, Some(&block));
+}
+
+pub fn export_style(mtm: MainThreadMarker, name: &str) {
+    let Some(Ok((name, document))) = app::with(|app| app.style_export(Some(name))) else {
+        return;
+    };
+    let panel = NSSavePanel::savePanel(mtm);
+    panel.setPrompt(Some(&ns(&tr("Export"))));
+    panel.setNameFieldStringValue(&ns(&format!("{}.{STYLE_EXTENSION}", display_name(&name))));
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&[ns(STYLE_EXTENSION)])));
+    if panel.runModal() != NSModalResponseOK {
+        return;
+    }
+    let Some(path) = panel.URL().and_then(|url| url.path()) else {
+        return;
+    };
+    if let Err(error) = std::fs::write(path.to_string(), document) {
+        notice(&trf("Couldn’t export the style: %@", &[Arg::Text(error.to_string())]));
+    }
+}
+
+pub fn import_style(mtm: MainThreadMarker) {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setPrompt(Some(&ns(&tr("Import"))));
+    panel.setMessage(Some(&ns(&tr("Choose a LiveWall style file."))));
+    let types = [ns(STYLE_EXTENSION), ns("json")];
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
+    if panel.runModal() != NSModalResponseOK {
+        return;
+    }
+    let Some(path) = panel.URL().and_then(|url| url.path()) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(path.to_string()) else {
+        notice(&tr("Couldn’t read the style file."));
+        return;
+    };
+    crate::ui::style(move |app| {
+        let name = app.style_import(&text)?;
+        return app.style_apply(&name);
     });
 }

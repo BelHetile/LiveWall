@@ -16,54 +16,35 @@ use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSArray, NSCopying, NSNumber, NSObjectProtocol};
 use objc2_quartz_core::{
-    CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CATransaction, CATransform3D,
-    CATransform3DIdentity, CATransition, kCAGravityResizeAspectFill, kCAMediaTimingFunctionEaseIn,
-    kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut, kCATransitionFade,
+    CAGradientLayer, CALayer, CAMediaTiming, CATransaction, CATransform3D, CATransform3DIdentity, CATransition,
+    kCAGravityResizeAspectFill, kCATransitionFade,
 };
 
 use crate::i18n::{Arg, tr, trf};
 use crate::model::{ItemId, ItemKind};
-use crate::ui::palette::{Theme, is_dark};
+use crate::style::Key;
+use crate::ui::metrics::{self, Surface, Text, ease_in, ease_in_out, ease_out};
 use crate::ui::state::{Marker, Scope, markers};
+use crate::ui::theme::Theme;
 use crate::ui::view::{Download, Item, Library, Stage};
-use crate::ui::widgets::{self, Weight};
+use crate::ui::widgets::{self, Paint, Slot};
 use crate::ui::{actions, menus, sidebar};
 
 pub const TILE_ASPECT: CGFloat = 10.0 / 16.0;
-const PADDING: CGFloat = 16.0;
 const MIN_TILE: CGFloat = 240.0;
-const COLUMN_GAP: CGFloat = 16.0;
-const ROW_GAP: CGFloat = 22.0;
-const LABEL_HEIGHT: CGFloat = 42.0;
-const RADIUS: CGFloat = 16.0;
-const RING_GAP: CGFloat = 5.0;
+const COLUMN_GAP: CGFloat = metrics::SPACE_16;
+const ROW_GAP: CGFloat = metrics::SPACE_24;
+const NAME_HEIGHT: CGFloat = 18.0;
+const META_HEIGHT: CGFloat = 15.0;
+const LABEL_HEIGHT: CGFloat = metrics::SPACE_8 + NAME_HEIGHT + META_HEIGHT + 1.0;
 const ROW_HEIGHT: CGFloat = 78.0;
 const ROW_ART: CGFloat = 96.0;
-const MORPH: f64 = 0.3;
 const STATUS_WIDTH: CGFloat = 280.0;
-const STATUS_BAR: CGFloat = 4.0;
-const FADE_IN: f64 = 0.24;
-const FADE_OUT: f64 = 0.18;
-const SELECT: f64 = 0.22;
-const CHIPS: f64 = 0.22;
-const SCROLL_MIN: f64 = 0.16;
-const SCROLL_MAX: f64 = 0.35;
+const STATUS_BAR: CGFloat = metrics::SPACE_4;
 const DRAG_WIDTH: CGFloat = 160.0;
 
 thread_local! {
     static DRAGGED: RefCell<Option<Retained<TileView>>> = const { RefCell::new(None) };
-}
-
-fn ease_out() -> Retained<CAMediaTimingFunction> {
-    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
-}
-
-fn ease_in() -> Retained<CAMediaTimingFunction> {
-    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseIn });
-}
-
-fn ease_in_out() -> Retained<CAMediaTimingFunction> {
-    return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseInEaseOut });
 }
 
 fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
@@ -121,7 +102,7 @@ pub struct TileIvars {
     chip_views: RefCell<Vec<Retained<NSView>>>,
     name: Retained<NSTextField>,
     meta: Retained<NSTextField>,
-    accent: RefCell<Retained<NSColor>>,
+    titles: RefCell<(Retained<NSColor>, Retained<NSColor>)>,
     chips_key: RefCell<Vec<(&'static str, String, bool)>>,
     selected: Cell<bool>,
     painted: Cell<bool>,
@@ -216,19 +197,14 @@ impl TileView {
 
     fn new(mtm: MainThreadMarker, index: usize, library: &Library, scope: Scope, theme: &Theme) -> Retained<Self> {
         let item = &library.items[index];
-        let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(mtm).effectiveAppearance());
 
         let plate = CALayer::new();
-        plate.setShadowColor(Some(&widgets::cg(mtm, &NSColor::blackColor())));
-        plate.setShadowOpacity(if dark { 0.4 } else { 0.14 });
-        plate.setShadowRadius(8.0);
-        plate.setShadowOffset(CGSize::new(0.0, 3.0));
-        plate.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::windowBackgroundColor())));
+        plate.setShadowOpacity(1.0);
+        plate.setShadowRadius(metrics::SPACE_8);
+        plate.setShadowOffset(CGSize::new(0.0, metrics::SPACE_4));
         let clip = CALayer::new();
         clip.setMasksToBounds(true);
-        clip.setBorderWidth(0.5);
-        clip.setBorderColor(Some(&widgets::cg(mtm, &theme.hairline)));
-        clip.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
+        clip.setBorderWidth(metrics::BORDER_HAIRLINE);
         let image = CALayer::new();
         image.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
         if let Some(thumb) = &item.image {
@@ -236,28 +212,25 @@ impl TileView {
         }
         clip.addSublayer(&image);
         let bar = CALayer::new();
-        bar.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent)));
         bar.setHidden(true);
         clip.addSublayer(&bar);
         plate.addSublayer(&clip);
 
         let ring = CALayer::new();
-        ring.setBorderColor(Some(&widgets::cg(mtm, &theme.accent)));
         ring.setOpacity(0.0);
         let highlight = CALayer::new();
-        highlight.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent_soft)));
-        highlight.setCornerRadius(12.0);
+        highlight.setCornerRadius(metrics::RADIUS_CARD);
         highlight.setOpacity(0.0);
 
         let marker_list = markers(library, index, scope);
         let chip_views: Vec<Retained<NSView>> =
             marker_list.iter().map(|marker| widgets::chip(mtm, marker, theme)).collect();
         let chip_refs: Vec<&NSView> = chip_views.iter().map(|view| &**view).collect();
-        let chips = widgets::stack(mtm, &chip_refs, false, 5.0);
+        let chips = widgets::stack(mtm, &chip_refs, false, metrics::SPACE_4);
         chips.setWantsLayer(true);
 
-        let name = widgets::label(mtm, &item.title, 13.0, &Weight::Medium, &NSColor::labelColor());
-        let meta = widgets::label(mtm, &meta_line(item), 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
+        let name = widgets::label(mtm, &item.title, Text::BodyMedium, &theme.color(Key::GridTitle));
+        let meta = widgets::label(mtm, &meta_line(item), Text::Subheadline, &theme.color(Key::GridMeta));
 
         let this = Self::alloc(mtm).set_ivars(TileIvars {
             index: Cell::new(index),
@@ -273,7 +246,7 @@ impl TileView {
             chip_views: RefCell::new(chip_views),
             name,
             meta,
-            accent: RefCell::new(theme.accent.clone()),
+            titles: RefCell::new((theme.color(Key::GridTitle), theme.color(Key::GridTitleSelected))),
             chips_key: RefCell::new(chip_key(&marker_list)),
             selected: Cell::new(false),
             painted: Cell::new(false),
@@ -309,40 +282,69 @@ impl TileView {
         this.addTrackingArea(&area);
         let types = [unsafe { NSPasteboardTypeFileURL }.copy()];
         this.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
+        this.paint(theme);
+        ivars.stale.set(false);
         return this;
+    }
+
+    fn paint(&self, theme: &Theme) {
+        let ivars = self.ivars();
+        let color = |key: Key| widgets::cg(self, &theme.color(key));
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        ivars.plate.setShadowColor(Some(&color(Key::GridShadow)));
+        ivars.plate.setBackgroundColor(Some(&color(Key::GridTile)));
+        ivars.clip.setBorderColor(Some(&color(Key::GridTileBorder)));
+        ivars.clip.setBackgroundColor(Some(&color(Key::GridTile)));
+        ivars.bar.setBackgroundColor(Some(&color(Key::GridProgress)));
+        ivars.ring.setBorderColor(Some(&color(Key::GridRing)));
+        ivars.highlight.setBackgroundColor(Some(&color(Key::GridHighlight)));
+        CATransaction::commit();
+        *ivars.titles.borrow_mut() = (theme.color(Key::GridTitle), theme.color(Key::GridTitleSelected));
+        ivars.meta.setTextColor(Some(&theme.color(Key::GridMeta)));
+        ivars.stale.set(true);
+        self.paint_selection();
     }
 
     fn place(&self, frame: CGRect, list: bool, animate: bool) {
         let ivars = self.ivars();
         ivars.list.set(list);
-        let animate = animate && !ivars.fresh.replace(false);
+        let animate = animate && !ivars.fresh.replace(false) && !metrics::reduce_motion();
         let width = frame.size.width;
         let chips = ivars.chips.fittingSize();
+        let art_height = ROW_ART * TILE_ASPECT;
         let (art, radius) = if list {
-            (CGRect::new(CGPoint::new(10.0, 9.0), CGSize::new(ROW_ART, ROW_ART * TILE_ASPECT)), 8.0)
+            let origin = CGPoint::new(metrics::SPACE_12, (ROW_HEIGHT - art_height) / 2.0);
+            (CGRect::new(origin, CGSize::new(ROW_ART, art_height)), metrics::RADIUS_SMALL)
         } else {
-            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * TILE_ASPECT)), RADIUS)
+            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * TILE_ASPECT)), metrics::RADIUS_CARD)
         };
+        let gap = metrics::RING_GAP;
         let ring = CGRect::new(
-            CGPoint::new(art.origin.x - RING_GAP, art.origin.y - RING_GAP),
-            CGSize::new(art.size.width + RING_GAP * 2.0, art.size.height + RING_GAP * 2.0),
+            CGPoint::new(art.origin.x - gap, art.origin.y - gap),
+            CGSize::new(art.size.width + gap * 2.0, art.size.height + gap * 2.0),
         );
-        let border = if list { 0.0 } else { 3.0 };
+        let border = if list { 0.0 } else { metrics::BORDER_RING };
         let highlight = CGRect::new(CGPoint::ZERO, frame.size);
         let (name, meta, chip_frame) = if list {
-            let text = ROW_ART + 24.0;
-            let room = (width - text - chips.width - 28.0).max(80.0);
+            let text = art.origin.x + ROW_ART + metrics::SPACE_12;
+            let room = (width - text - chips.width - metrics::SPACE_12 * 2.0).max(80.0);
+            let top = ((ROW_HEIGHT - NAME_HEIGHT - META_HEIGHT - metrics::SPACE_2) / 2.0).floor();
             (
-                CGRect::new(CGPoint::new(text, 21.0), CGSize::new(room, 18.0)),
-                CGRect::new(CGPoint::new(text, 41.0), CGSize::new(room, 15.0)),
-                CGRect::new(CGPoint::new(width - chips.width - 14.0, (ROW_HEIGHT - chips.height) / 2.0), chips),
+                CGRect::new(CGPoint::new(text, top), CGSize::new(room, NAME_HEIGHT)),
+                CGRect::new(CGPoint::new(text, top + NAME_HEIGHT + metrics::SPACE_2), CGSize::new(room, META_HEIGHT)),
+                CGRect::new(
+                    CGPoint::new(width - chips.width - metrics::SPACE_12, (ROW_HEIGHT - chips.height) / 2.0),
+                    chips,
+                ),
             )
         } else {
-            let top = art.size.height + 9.0;
+            let top = art.size.height + metrics::SPACE_8;
+            let inset = metrics::SPACE_4;
             (
-                CGRect::new(CGPoint::new(4.0, top), CGSize::new(width - 8.0, 18.0)),
-                CGRect::new(CGPoint::new(4.0, top + 18.0), CGSize::new(width - 8.0, 15.0)),
-                CGRect::new(CGPoint::new(10.0, 10.0), chips),
+                CGRect::new(CGPoint::new(inset, top), CGSize::new(width - inset * 2.0, NAME_HEIGHT)),
+                CGRect::new(CGPoint::new(inset, top + NAME_HEIGHT), CGSize::new(width - inset * 2.0, META_HEIGHT)),
+                CGRect::new(CGPoint::new(metrics::SPACE_8, metrics::SPACE_8), chips),
             )
         };
         let layers = {
@@ -358,7 +360,7 @@ impl TileView {
                 clip.setCornerRadius(radius);
                 put(&image, CGRect::new(CGPoint::ZERO, art.size));
                 put(&ring_layer, ring);
-                ring_layer.setCornerRadius(radius + RING_GAP);
+                ring_layer.setCornerRadius(metrics::ring_radius(radius));
                 ring_layer.setBorderWidth(border);
                 highlight_layer.setFrame(highlight);
             }
@@ -370,7 +372,7 @@ impl TileView {
             let meta_view = ivars.meta.clone();
             let group = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
                 let context = unsafe { context.as_ref() };
-                context.setDuration(MORPH);
+                context.setDuration(metrics::MOTION_EMPHASIZED);
                 context.setTimingFunction(Some(&ease_in_out()));
                 context.setAllowsImplicitAnimation(true);
                 this.animator().setFrame(frame);
@@ -378,7 +380,7 @@ impl TileView {
                 name_view.setFrame(name);
                 meta_view.setFrame(meta);
                 CATransaction::begin();
-                CATransaction::setAnimationDuration(MORPH);
+                CATransaction::setAnimationDuration(metrics::MOTION_EMPHASIZED);
                 CATransaction::setAnimationTimingFunction(Some(&ease_in_out()));
                 layers();
                 CATransaction::commit();
@@ -408,19 +410,17 @@ impl TileView {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         ivars.bar.setHidden(false);
-        ivars.bar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, 3.0)));
+        ivars.bar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
         CATransaction::commit();
     }
 
     fn hover(&self, on: bool) {
         let ivars = self.ivars();
         ivars.hovered.set(on);
-        let scale = if on && !ivars.list.get() { 1.03 } else { 1.0 };
+        let scale = if on && !ivars.list.get() { metrics::scale(metrics::HOVER_SCALE) } else { 1.0 };
         CATransaction::begin();
-        CATransaction::setAnimationDuration(0.22);
-        CATransaction::setAnimationTimingFunction(Some(&CAMediaTimingFunction::functionWithName(unsafe {
-            kCAMediaTimingFunctionEaseOut
-        })));
+        CATransaction::setAnimationDuration(metrics::transform(metrics::MOTION_QUICK));
+        CATransaction::setAnimationTimingFunction(Some(&ease_out()));
         ivars.image.setTransform(CATransform3D {
             m11: scale,
             m22: scale,
@@ -428,8 +428,8 @@ impl TileView {
             m44: 1.0,
             ..unsafe { CATransform3DIdentity }
         });
-        ivars.plate.setShadowRadius(if on { 16.0 } else { 8.0 });
-        ivars.plate.setShadowOffset(CGSize::new(0.0, if on { 8.0 } else { 3.0 }));
+        ivars.plate.setShadowRadius(if on { metrics::SPACE_16 } else { metrics::SPACE_8 });
+        ivars.plate.setShadowOffset(CGSize::new(0.0, if on { metrics::SPACE_8 } else { metrics::SPACE_4 }));
         CATransaction::commit();
         self.paint_selection();
     }
@@ -437,10 +437,6 @@ impl TileView {
     fn set_selected(&self, selected: bool) {
         self.ivars().selected.set(selected);
         self.paint_selection();
-    }
-
-    fn invalidate(&self) {
-        self.ivars().stale.set(true);
     }
 
     fn content(&self, library: &Library, index: usize, scope: Scope, theme: &Theme) {
@@ -460,15 +456,10 @@ impl TileView {
             return;
         }
         *ivars.chips_key.borrow_mut() = key;
-        *ivars.accent.borrow_mut() = theme.accent.clone();
-        ivars.bar.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
-        ivars.clip.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.hairline)));
-        ivars.ring.setBorderColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
-        ivars.highlight.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent_soft)));
         if let Some(layer) = ivars.chips.layer() {
             let fade = CATransition::animation();
             fade.setType(unsafe { kCATransitionFade });
-            fade.setDuration(CHIPS);
+            fade.setDuration(metrics::MOTION_STANDARD);
             fade.setTimingFunction(Some(&ease_in_out()));
             layer.addAnimation_forKey(&fade, Some(&widgets::ns("chips")));
         }
@@ -486,7 +477,7 @@ impl TileView {
 
     fn fade(&self, entering: bool) {
         let context = if entering { ease_out() } else { ease_in() };
-        let duration = if entering { FADE_IN } else { FADE_OUT };
+        let duration = metrics::MOTION_STANDARD;
         let target = if entering { 1.0 } else { 0.0 };
         let this = self.retain();
         let next = this.clone();
@@ -508,9 +499,9 @@ impl TileView {
         let ivars = self.ivars();
         let selected = ivars.selected.get();
         let list = ivars.list.get();
-        let scale = if selected { 1.0 } else { 0.94 };
+        let scale = if selected { 1.0 } else { metrics::scale(metrics::SELECT_SCALE) };
         CATransaction::begin();
-        CATransaction::setAnimationDuration(SELECT);
+        CATransaction::setAnimationDuration(metrics::MOTION_STANDARD);
         CATransaction::setAnimationTimingFunction(Some(&ease_out()));
         ivars.ring.setOpacity(if selected && !list { 1.0 } else { 0.0 });
         ivars.ring.setTransform(CATransform3D {
@@ -532,12 +523,12 @@ impl TileView {
         {
             let fade = CATransition::animation();
             fade.setType(unsafe { kCATransitionFade });
-            fade.setDuration(SELECT);
+            fade.setDuration(metrics::MOTION_STANDARD);
             fade.setTimingFunction(Some(&ease_out()));
             layer.addAnimation_forKey(&fade, Some(&widgets::ns("tint")));
         }
-        let color = if selected { ivars.accent.borrow().clone() } else { NSColor::labelColor() };
-        ivars.name.setTextColor(Some(&color));
+        let titles = ivars.titles.borrow();
+        ivars.name.setTextColor(Some(if selected { &titles.1 } else { &titles.0 }));
     }
 }
 
@@ -620,9 +611,11 @@ pub struct WallIvars {
     scroll: Retained<NSScrollView>,
     document: Retained<DocumentView>,
     empty: Retained<NSView>,
-    status: Retained<NSView>,
+    status: Surface,
     status_text: Retained<NSTextField>,
+    status_track: Retained<NSView>,
     status_fill: Retained<CALayer>,
+    paint: Paint,
     tiles: RefCell<Vec<Retained<TileView>>>,
     shown: RefCell<(Vec<ItemId>, bool)>,
     unlocked: Cell<bool>,
@@ -649,6 +642,12 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn appearance_changed(&self) {
+            let () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
+            crate::ui::appearance_changed();
         }
 
         #[unsafe(method(keyDown:))]
@@ -697,34 +696,40 @@ mod keys {
     pub const DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
 }
 
-fn download_pill(mtm: MainThreadMarker, theme: &Theme) -> (Retained<NSView>, Retained<NSTextField>, Retained<CALayer>) {
-    let status_icon = widgets::symbol_view(mtm, "arrow.down.circle", 13.0, &NSColor::secondaryLabelColor());
-    let status_text = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
-    let status_row = widgets::stack(mtm, &[&status_icon, &status_text], false, 6.0);
-    let status_track = NSView::new(mtm);
-    status_track.setWantsLayer(true);
-    status_track.widthAnchor().constraintEqualToConstant(STATUS_WIDTH).setActive(true);
-    status_track.heightAnchor().constraintEqualToConstant(STATUS_BAR).setActive(true);
-    let status_fill = CALayer::new();
-    status_fill.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent)));
-    status_fill.setCornerRadius(STATUS_BAR / 2.0);
-    if let Some(layer) = status_track.layer() {
-        layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
-        layer.setCornerRadius(STATUS_BAR / 2.0);
+struct Pill {
+    surface: Surface,
+    text: Retained<NSTextField>,
+    track: Retained<NSView>,
+    fill: Retained<CALayer>,
+}
+
+fn download_pill(mtm: MainThreadMarker, theme: &Theme, paint: &mut Paint) -> Pill {
+    let icon = widgets::symbol_view(mtm, "arrow.down.circle", metrics::ICON_REGULAR, &theme.color(Key::TextSecondary));
+    paint.add(&icon, Key::TextSecondary, Slot::Tint);
+    let text = paint.label(mtm, "", Text::CalloutMedium, Key::Text, theme);
+    let row = widgets::stack(mtm, &[&icon, &text], false, metrics::SPACE_8);
+    let track = NSView::new(mtm);
+    track.setWantsLayer(true);
+    track.widthAnchor().constraintEqualToConstant(STATUS_WIDTH).setActive(true);
+    track.heightAnchor().constraintEqualToConstant(STATUS_BAR).setActive(true);
+    let fill = CALayer::new();
+    fill.setCornerRadius(metrics::capsule(STATUS_BAR));
+    if let Some(layer) = track.layer() {
+        layer.setCornerRadius(metrics::capsule(STATUS_BAR));
         layer.setMasksToBounds(true);
-        layer.addSublayer(&status_fill);
+        layer.addSublayer(&fill);
     }
-    let status_body = widgets::stack(mtm, &[&status_row, &status_track], true, 7.0);
-    status_body.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
-    status_body.setEdgeInsets(widgets::insets(8.0, 14.0, 10.0, 14.0));
-    let status = widgets::glass(mtm, &status_body, 16.0, None);
-    status.setHidden(true);
-    return (status, status_text, status_fill);
+    let body = widgets::stack(mtm, &[&row, &track], true, metrics::SPACE_8);
+    body.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
+    body.setEdgeInsets(widgets::insets(metrics::SPACE_8, metrics::SPACE_12, metrics::SPACE_12, metrics::SPACE_12));
+    let surface = Surface::mount(mtm, &body, metrics::RADIUS_CARD, None, &theme.color(Key::PillFill));
+    surface.view().setHidden(true);
+    return Pill { surface, text, track, fill };
 }
 
 impl WallView {
     pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
-        let canvas = widgets::card(mtm, &theme.canvas, 0.0);
+        let canvas = widgets::card(mtm, &theme.color(Key::WindowCanvas), 0.0);
         let scroll = NSScrollView::new(mtm);
         scroll.setDrawsBackground(false);
         scroll.setHasVerticalScroller(true);
@@ -733,20 +738,24 @@ impl WallView {
         let document: Retained<DocumentView> = unsafe { msg_send![DocumentView::alloc(mtm), init] };
         document.setWantsLayer(true);
         scroll.setDocumentView(Some(&document));
-        let icon = widgets::symbol_view(mtm, "photo.on.rectangle.angled", 34.0, &NSColor::tertiaryLabelColor());
-        let title = widgets::label(mtm, &tr("No Wallpapers"), 17.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
-        let hint = widgets::label(
+        let mut paint = Paint::new();
+        let icon =
+            widgets::symbol_view(mtm, "photo.on.rectangle.angled", metrics::ICON_HERO, &theme.color(Key::GridEmpty));
+        paint.add(&icon, Key::GridEmpty, Slot::Tint);
+        let title = paint.label(mtm, &tr("No Wallpapers"), Text::Title2, Key::TextSecondary, theme);
+        let hint = paint.label(
             mtm,
             &tr("Add wallpapers, or try a different search, filter or folder."),
-            12.0,
-            &Weight::Regular,
-            &NSColor::tertiaryLabelColor(),
+            Text::Callout,
+            Key::GridEmpty,
+            theme,
         );
         hint.setAlignment(NSTextAlignment::Center);
-        let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, 8.0);
+        let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, metrics::SPACE_8);
         empty.setHidden(true);
         empty.setAlphaValue(0.0);
-        let (status, status_text, status_fill) = download_pill(mtm, theme);
+        let Pill { surface: status, text: status_text, track: status_track, fill: status_fill } =
+            download_pill(mtm, theme, &mut paint);
         let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
         let fade = CAGradientLayer::new();
         fade.setStartPoint(CGPoint::new(0.5, 1.0));
@@ -762,7 +771,9 @@ impl WallView {
             empty: widgets::view(&empty),
             status,
             status_text,
+            status_track,
             status_fill,
+            paint,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
             unlocked: Cell::new(false),
@@ -777,11 +788,15 @@ impl WallView {
         this.addSubview(&ivars.scroll);
         this.addSubview(&ivars.empty);
         this.addSubview(&ivars.shade);
-        this.addSubview(&ivars.status);
+        let status = ivars.status.view();
+        this.addSubview(status);
         this.paint(theme);
-        ivars.status.setTranslatesAutoresizingMaskIntoConstraints(false);
-        ivars.status.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
-        ivars.status.bottomAnchor().constraintEqualToAnchor_constant(&this.bottomAnchor(), -18.0).setActive(true);
+        status.setTranslatesAutoresizingMaskIntoConstraints(false);
+        status.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
+        status
+            .bottomAnchor()
+            .constraintEqualToAnchor_constant(&this.bottomAnchor(), -metrics::SPACE_20)
+            .setActive(true);
         widgets::pin(&canvas, &this, 0.0);
         widgets::pin(&ivars.scroll, &this, 0.0);
         ivars.empty.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -863,14 +878,18 @@ impl WallView {
 
     pub fn paint(&self, theme: &Theme) {
         let ivars = self.ivars();
-        ivars.canvas.setFillColor(&theme.canvas);
-        ivars.status_fill.setBackgroundColor(Some(&widgets::cg(self.mtm(), &theme.accent)));
-        let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(self.mtm()).effectiveAppearance());
-        let (base, alpha) = if dark { (NSColor::blackColor(), 0.4) } else { (theme.canvas.clone(), 0.4) };
-        let colors: Vec<Retained<CGColor>> = [alpha, alpha * 0.85, 0.0]
-            .iter()
-            .map(|alpha| widgets::cg(self.mtm(), &base.colorWithAlphaComponent(*alpha)))
-            .collect();
+        ivars.canvas.setFillColor(&theme.color(Key::WindowCanvas));
+        ivars.paint.apply(theme);
+        let hidden = ivars.status.view().isHidden();
+        ivars.status.paint(None, &theme.color(Key::PillFill));
+        ivars.status.view().setHidden(hidden);
+        ivars.status_fill.setBackgroundColor(Some(&widgets::cg(self, &theme.color(Key::PillBar))));
+        if let Some(layer) = ivars.status_track.layer() {
+            layer.setBackgroundColor(Some(&widgets::cg(self, &theme.color(Key::PillTrack))));
+        }
+        let shade = theme.color(Key::GridShade);
+        let colors: Vec<Retained<CGColor>> =
+            [0.4, 0.34, 0.0].iter().map(|alpha| widgets::cg(self, &shade.colorWithAlphaComponent(*alpha))).collect();
         let locations: Vec<Retained<NSNumber>> =
             [0.0, 0.7, 1.0].iter().map(|location| NSNumber::new_f64(*location)).collect();
         let objects: Vec<&AnyObject> =
@@ -880,14 +899,14 @@ impl WallView {
             ivars.fade.setLocations(Some(&NSArray::from_retained_slice(&locations)));
         }
         for tile in ivars.tiles.borrow().iter() {
-            tile.invalidate();
+            tile.paint(theme);
         }
     }
 
     fn place_shade(&self) {
         let ivars = self.ivars();
         let bounds = self.bounds();
-        let height = self.safeAreaInsets().top + 22.0;
+        let height = self.safeAreaInsets().top + metrics::SPACE_24;
         ivars.shade.setFrame(CGRect::new(
             CGPoint::new(0.0, bounds.size.height - height),
             CGSize::new(bounds.size.width, height),
@@ -967,8 +986,8 @@ impl WallView {
             ivars.status_fill.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
         }
         let hidden = text.is_none();
-        if ivars.status.isHidden() != hidden {
-            widgets::reveal(&ivars.status, !hidden);
+        if ivars.status.view().isHidden() != hidden {
+            widgets::reveal(ivars.status.view(), !hidden);
         }
     }
 
@@ -981,7 +1000,7 @@ impl WallView {
             empty.setHidden(false);
             let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
                 let animation = unsafe { animation.as_ref() };
-                animation.setDuration(FADE_IN);
+                animation.setDuration(metrics::MOTION_STANDARD);
                 animation.setTimingFunction(Some(&ease_out()));
                 empty.animator().setAlphaValue(1.0);
             });
@@ -999,7 +1018,7 @@ impl WallView {
         });
         let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
             let animation = unsafe { animation.as_ref() };
-            animation.setDuration(FADE_OUT);
+            animation.setDuration(metrics::MOTION_STANDARD);
             animation.setTimingFunction(Some(&ease_in()));
             empty.animator().setAlphaValue(0.0);
         });
@@ -1035,9 +1054,10 @@ impl WallView {
         if let Some(frame) = frame {
             let clip = ivars.scroll.contentView();
             let visible = clip.bounds();
+            let padding = metrics::WALL_PADDING;
             let rect = CGRect::new(
-                CGPoint::new(frame.origin.x, frame.origin.y - PADDING),
-                CGSize::new(frame.size.width, frame.size.height + PADDING * 2.0),
+                CGPoint::new(frame.origin.x, frame.origin.y - padding),
+                CGSize::new(frame.size.width, frame.size.height + padding * 2.0),
             );
             if rect.origin.y < visible.origin.y
                 || rect.origin.y + rect.size.height > visible.origin.y + visible.size.height
@@ -1050,8 +1070,8 @@ impl WallView {
                 }
                 .clamp(0.0, limit);
                 let span = visible.size.height.max(1.0);
-                let duration =
-                    SCROLL_MIN + ((origin - visible.origin.y).abs() / span).min(1.0) * (SCROLL_MAX - SCROLL_MIN);
+                let range = metrics::SCROLL_MAX - metrics::SCROLL_MIN;
+                let duration = metrics::SCROLL_MIN + ((origin - visible.origin.y).abs() / span).min(1.0) * range;
                 let scroll = ivars.scroll.clone();
                 let target = CGPoint::new(visible.origin.x, origin);
                 let wall = self.retain();
@@ -1078,23 +1098,24 @@ impl WallView {
         }
         ivars.last_width.set(width);
         let tiles = ivars.tiles.borrow();
-        let usable = (width - PADDING * 2.0).max(MIN_TILE);
+        let padding = metrics::WALL_PADDING;
+        let usable = (width - padding * 2.0).max(MIN_TILE);
         let list = ivars.list.get();
         let (columns, tile, height, gap) = if list {
-            (1, usable, ROW_HEIGHT, 2.0)
+            (1, usable, ROW_HEIGHT, metrics::SPACE_2)
         } else {
             let columns = ((usable + COLUMN_GAP) / (MIN_TILE + COLUMN_GAP)).floor().max(1.0);
             let tile = (usable - COLUMN_GAP * (columns - 1.0)) / columns;
             (columns as usize, tile, tile * TILE_ASPECT + LABEL_HEIGHT, ROW_GAP)
         };
         ivars.columns.set(columns);
-        let top = 14.0;
+        let top = metrics::SPACE_12;
         for (position, view) in tiles.iter().enumerate() {
             let column = (position % columns) as CGFloat;
             let row = (position / columns) as CGFloat;
             view.place(
                 CGRect::new(
-                    CGPoint::new(PADDING + column * (tile + COLUMN_GAP), top + row * (height + gap)),
+                    CGPoint::new(padding + column * (tile + COLUMN_GAP), top + row * (height + gap)),
                     CGSize::new(tile, if list { ROW_HEIGHT } else { height }),
                 ),
                 list,
@@ -1102,7 +1123,7 @@ impl WallView {
             );
         }
         let rows = tiles.len().div_ceil(columns) as CGFloat;
-        let total = top + rows * (height + gap) + PADDING;
+        let total = top + rows * (height + gap) + padding;
         let visible = ivars.scroll.contentSize().height;
         ivars.document.setFrameSize(CGSize::new(width, total.max(visible)));
     }

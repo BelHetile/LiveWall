@@ -18,21 +18,22 @@ use proto::Request;
 use uuid::Uuid;
 
 use crate::i18n::{key, tr};
-use crate::ui::palette::Theme;
+use crate::style::Key;
+use crate::ui::metrics::{self, Text};
 use crate::ui::state::{
     Filter, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_STYLE_FOLDER,
     privacy_title,
 };
+use crate::ui::theme::Theme;
 use crate::ui::view::Library;
-use crate::ui::widgets::{self, Weight, ns};
+use crate::ui::widgets::{self, ns};
 use crate::ui::{UI, folders, submit};
 
 pub const ITEM_TYPE: &str = "app.livewall.item";
 pub const WIDTH: f64 = 220.0;
 const MIN_WIDTH: f64 = 180.0;
 const MAX_WIDTH: f64 = 320.0;
-const ROW_HEIGHT: f64 = 28.0;
-const BAR_HEIGHT: f64 = 34.0;
+const BAR_HEIGHT: f64 = metrics::CONTROL_HEIGHT + metrics::SPACE_8;
 const RETURN: u16 = 36;
 const ENTER: u16 = 76;
 const DELETE: u16 = 51;
@@ -57,10 +58,27 @@ struct Entry {
     unlocked: bool,
 }
 
+#[derive(Clone)]
+struct Ink {
+    icon: Retained<NSColor>,
+    count: Retained<NSColor>,
+    header: Retained<NSColor>,
+}
+
+impl Ink {
+    fn new(theme: &Theme) -> Self {
+        return Self {
+            icon: theme.color(Key::SidebarIcon),
+            count: theme.color(Key::SidebarCount),
+            header: theme.color(Key::TextSecondary),
+        };
+    }
+}
+
 pub struct SourceIvars {
     entries: RefCell<Vec<Entry>>,
     images: RefCell<Vec<Option<Retained<NSImage>>>>,
-    accent: RefCell<Option<Retained<NSColor>>>,
+    ink: RefCell<Ink>,
     table: RefCell<Option<Retained<SidebarTable>>>,
     syncing: Cell<bool>,
     stale: Cell<bool>,
@@ -362,19 +380,23 @@ impl SidebarSource {
         let mtm = self.mtm();
         if entry.row == Row::Header {
             let cell = NSTableCellView::new(mtm);
-            let title = widgets::label(mtm, &entry.title, 11.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+            let title = widgets::label(mtm, &entry.title, Text::Section, &self.ivars().ink.borrow().header);
             cell.addSubview(&title);
             title.setTranslatesAutoresizingMaskIntoConstraints(false);
-            title.leadingAnchor().constraintEqualToAnchor_constant(&cell.leadingAnchor(), 2.0).setActive(true);
+            title
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&cell.leadingAnchor(), metrics::SPACE_2)
+                .setActive(true);
             title.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()).setActive(true);
             unsafe { cell.setTextField(Some(&title)) };
             return Retained::into_super(cell);
         }
-        let cell = FolderCell::new(mtm, self.ivars().accent.borrow().clone());
+        let ink = self.ivars().ink.borrow().clone();
+        let cell = FolderCell::new(mtm, Some(ink.icon.clone()));
         let icon = NSImageView::new(mtm);
         icon.setImage(image);
         let title = NSTextField::labelWithString(&ns(&entry.title), mtm);
-        title.setFont(Some(&widgets::font(13.0, &Weight::Regular)));
+        title.setFont(Some(&metrics::font(Text::Body)));
         title.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
         title.setMaximumNumberOfLines(1);
         title.setContentCompressionResistancePriority_forOrientation(
@@ -387,8 +409,8 @@ impl SidebarSource {
             unsafe { title.setDelegate(Some(ProtocolObject::from_ref(self))) };
         }
         let shown = if entry.count > 0 && !entry.sealed { entry.count.to_string() } else { String::new() };
-        let count = widgets::label(mtm, &shown, 11.0, &Weight::Regular, &NSColor::tertiaryLabelColor());
-        count.setFont(Some(&widgets::digits()));
+        let count = widgets::label(mtm, &shown, Text::Subheadline, &ink.count);
+        count.setFont(Some(&metrics::digits(Text::Subheadline)));
         count.setContentCompressionResistancePriority_forOrientation(
             750.0,
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
@@ -398,12 +420,21 @@ impl SidebarSource {
             view.setTranslatesAutoresizingMaskIntoConstraints(false);
             view.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()).setActive(true);
         }
-        icon.leadingAnchor().constraintEqualToAnchor_constant(&cell.leadingAnchor(), 4.0).setActive(true);
-        icon.widthAnchor().constraintEqualToConstant(folders::ROW).setActive(true);
-        icon.heightAnchor().constraintEqualToConstant(folders::ROW).setActive(true);
-        title.leadingAnchor().constraintEqualToAnchor_constant(&icon.trailingAnchor(), 7.0).setActive(true);
-        count.trailingAnchor().constraintEqualToAnchor_constant(&cell.trailingAnchor(), -6.0).setActive(true);
-        title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&count.leadingAnchor(), -6.0).setActive(true);
+        icon.leadingAnchor().constraintEqualToAnchor_constant(&cell.leadingAnchor(), metrics::SPACE_4).setActive(true);
+        icon.widthAnchor().constraintEqualToConstant(metrics::ICON_ROW).setActive(true);
+        icon.heightAnchor().constraintEqualToConstant(metrics::ICON_ROW).setActive(true);
+        title
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&icon.trailingAnchor(), metrics::SPACE_8)
+            .setActive(true);
+        count
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -metrics::SPACE_8)
+            .setActive(true);
+        title
+            .trailingAnchor()
+            .constraintLessThanOrEqualToAnchor_constant(&count.leadingAnchor(), -metrics::SPACE_8)
+            .setActive(true);
         unsafe {
             cell.setImageView(Some(&icon));
             cell.setTextField(Some(&title));
@@ -421,6 +452,7 @@ pub struct Sidebar {
     table: Retained<SidebarTable>,
     source: Retained<SidebarSource>,
     privacy: Retained<objc2_app_kit::NSButton>,
+    add: Retained<objc2_app_kit::NSButton>,
 }
 
 impl Sidebar {
@@ -428,7 +460,7 @@ impl Sidebar {
         let source = SidebarSource::alloc(mtm).set_ivars(SourceIvars {
             entries: RefCell::new(Vec::new()),
             images: RefCell::new(Vec::new()),
-            accent: RefCell::new(Some(theme.accent.clone())),
+            ink: RefCell::new(Ink::new(theme)),
             table: RefCell::new(None),
             syncing: Cell::new(false),
             stale: Cell::new(false),
@@ -442,7 +474,7 @@ impl Sidebar {
         table.setHeaderView(None);
         table.setStyle(NSTableViewStyle::SourceList);
         table.setRowSizeStyle(NSTableViewRowSizeStyle::Custom);
-        table.setRowHeight(ROW_HEIGHT);
+        table.setRowHeight(metrics::ROW_LIST);
         table.setColumnAutoresizingStyle(NSTableViewColumnAutoresizingStyle::FirstColumnOnlyAutoresizingStyle);
         table.setFloatsGroupRows(false);
         table.setAllowsEmptySelection(false);
@@ -462,13 +494,14 @@ impl Sidebar {
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
 
-        let add = widgets::icon_button(mtm, "plus", sel!(folder:), target);
+        let quiet = theme.color(Key::TextSecondary);
+        let add = widgets::icon_button(mtm, "plus", sel!(folder:), target, &quiet);
         add.setTag(TAG_NEW_FOLDER);
         add.setToolTip(Some(&ns(&tr("New Folder…"))));
-        let privacy = widgets::icon_button(mtm, "lock.fill", sel!(togglePrivacy:), target);
+        let privacy = widgets::icon_button(mtm, "lock.fill", sel!(togglePrivacy:), target, &quiet);
         let gap = widgets::spacer(mtm);
-        let bar = widgets::stack(mtm, &[&add, &gap, &privacy], false, 6.0);
-        bar.setEdgeInsets(widgets::insets(0.0, 10.0, 0.0, 10.0));
+        let bar = widgets::stack(mtm, &[&add, &gap, &privacy], false, metrics::SPACE_8);
+        bar.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_8, 0.0, metrics::SPACE_8));
 
         let view = NSView::new(mtm);
         view.addSubview(&scroll);
@@ -482,7 +515,7 @@ impl Sidebar {
         scroll.bottomAnchor().constraintEqualToAnchor(&bar.topAnchor()).setActive(true);
         bar.bottomAnchor().constraintEqualToAnchor(&view.bottomAnchor()).setActive(true);
         bar.heightAnchor().constraintEqualToConstant(BAR_HEIGHT).setActive(true);
-        return Self { view, table, source, privacy };
+        return Self { view, table, source, privacy, add };
     }
 
     pub fn min_width() -> f64 {
@@ -494,7 +527,10 @@ impl Sidebar {
     }
 
     pub fn restyle(&self, theme: &Theme) {
-        *self.source.ivars().accent.borrow_mut() = Some(theme.accent.clone());
+        *self.source.ivars().ink.borrow_mut() = Ink::new(theme);
+        let quiet = theme.color(Key::TextSecondary);
+        self.add.setContentTintColor(Some(&quiet));
+        self.privacy.setContentTintColor(Some(&quiet));
         self.source.ivars().entries.borrow_mut().clear();
     }
 
@@ -508,9 +544,9 @@ impl Sidebar {
                 let images = entries
                     .iter()
                     .map(|entry| match entry.row {
-                        Row::All => folders::painted("photo.on.rectangle.angled", None, folders::ROW),
+                        Row::All => folders::painted("photo.on.rectangle.angled", None, metrics::ICON_ROW),
                         Row::Header => None,
-                        Row::Folder(folder) => folders::image(library, folder, folders::ROW),
+                        Row::Folder(folder) => folders::image(library, folder, metrics::ICON_ROW),
                     })
                     .collect();
                 *ivars.images.borrow_mut() = images;

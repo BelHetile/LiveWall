@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::style::{Rgba, Tag};
+
 pub const LIBRARY_VERSION: u32 = 1;
 
 pub type ItemId = Uuid;
@@ -120,10 +122,15 @@ impl<'a> Icon<'a> {
 }
 
 pub fn parse_color(value: &str) -> Option<String> {
+    if let Some(tag) = Tag::parse(value) {
+        return Some(tag.id().to_string());
+    }
     let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
     let valid = hex.len() == 6 && hex.chars().all(|character| character.is_ascii_hexdigit());
     return valid.then(|| format!("#{}", hex.to_ascii_uppercase()));
 }
+
+const OLD_PRESETS: [&str; 8] = ["#D9785A", "#D9A441", "#7FA77F", "#5E8C6A", "#6A8CC4", "#9C88C9", "#C97C8C", "#9C7055"];
 
 impl Library {
     pub fn style_folder(&mut self, id: FolderId, icon: Option<String>, color: Option<String>) -> bool {
@@ -133,6 +140,20 @@ impl Library {
         folder.icon = icon;
         folder.color = color;
         return true;
+    }
+
+    pub fn migrate_colors(&mut self) -> bool {
+        let mut changed = false;
+        for folder in &mut self.folders {
+            let Some(color) = folder.color.as_deref().filter(|color| OLD_PRESETS.contains(color)) else {
+                continue;
+            };
+            if let Some(rgba) = Rgba::parse(color) {
+                folder.color = Some(Tag::nearest(rgba).id().to_string());
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     pub fn drop_icon(&mut self, icon: &str) -> usize {
@@ -311,26 +332,18 @@ pub enum AppearanceMode {
     Dark,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Appearance {
     pub mode: AppearanceMode,
-    pub theme: String,
-    pub accent: String,
-    pub canvas: String,
+    pub style: String,
     pub list: bool,
-}
-
-impl Default for Appearance {
-    fn default() -> Self {
-        return Self {
-            mode: AppearanceMode::System,
-            theme: "Violet".to_string(),
-            accent: "#866A8C".to_string(),
-            canvas: "#947C8E".to_string(),
-            list: false,
-        };
-    }
+    #[serde(skip_serializing)]
+    pub theme: Option<String>,
+    #[serde(skip_serializing)]
+    pub accent: Option<String>,
+    #[serde(skip_serializing)]
+    pub canvas: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -714,9 +727,39 @@ mod tests {
     fn colors_are_normalized() {
         assert_eq!(parse_color("#e07a5f").as_deref(), Some("#E07A5F"));
         assert_eq!(parse_color(" 81B29A ").as_deref(), Some("#81B29A"));
+        assert_eq!(parse_color("Purple").as_deref(), Some("purple"));
+        assert_eq!(parse_color(" gray ").as_deref(), Some("gray"));
+        assert!(parse_color("grey").is_none());
         assert!(parse_color("#E07A5").is_none());
         assert!(parse_color("#GGGGGG").is_none());
         assert!(parse_color("").is_none());
+    }
+
+    #[test]
+    fn old_folder_presets_become_tags_and_custom_colors_stay() {
+        let mut library = Library::default();
+        for color in ["#D9785A", "#6A8CC4", "#123456", "green"] {
+            let id = library.create_folder(color.into());
+            library.style_folder(id, None, Some(color.into()));
+        }
+        library.create_folder("plain".into());
+        assert!(library.migrate_colors());
+        let colors: Vec<Option<&str>> = library.folders.iter().map(|folder| folder.color.as_deref()).collect();
+        assert_eq!(colors, [Some("red"), Some("blue"), Some("#123456"), Some("green"), None]);
+        assert!(!library.migrate_colors());
+    }
+
+    #[test]
+    fn legacy_appearance_fields_are_read_but_never_written() {
+        let settings: Settings = serde_json::from_str(
+            r##"{"appearance":{"mode":"dark","theme":"Ocean","accent":"#112233","canvas":"#445566"}}"##,
+        )
+        .expect("legacy appearance");
+        assert_eq!(settings.appearance.theme.as_deref(), Some("Ocean"));
+        assert_eq!(settings.appearance.accent.as_deref(), Some("#112233"));
+        assert!(settings.appearance.style.is_empty());
+        let written = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(written["appearance"], serde_json::json!({ "mode": "dark", "style": "", "list": false }));
     }
 
     #[test]

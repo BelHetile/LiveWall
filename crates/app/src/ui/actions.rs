@@ -1,22 +1,27 @@
+use std::cell::RefCell;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBeep, NSButton, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
+    NSApplication, NSBeep, NSButton, NSColorWell, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
     NSPopUpButton, NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol};
+use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol, NSTimer};
 use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
 use serde_json::json;
 
 use crate::app::{self, Event, post};
 use crate::i18n::{key, tr};
 use crate::model::ItemId;
+use crate::platform::{cancel_timer, schedule_block};
+use crate::style::{ACCENT, Accent, Key, Pair, Rgba, TINT, Variant};
 use crate::ui::settings::{self, Change, Input};
 use crate::ui::state::{
     KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER,
     TAG_RESET, TAG_STYLE_FOLDER, privacy_title,
 };
+use crate::ui::theme;
 use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
     UI, Ui, busy, commit, dialogs, inspector, later, patch, report, reveal, selected_id, selected_index, send, submit,
@@ -24,6 +29,14 @@ use crate::ui::{
 };
 
 const VOLUME_ON: f64 = 0.6;
+const WELL_DELAY: f64 = 0.12;
+
+type ColorEdit = (&'static str, String, Option<String>);
+
+thread_local! {
+    static EDIT: RefCell<Option<ColorEdit>> = const { RefCell::new(None) };
+    static EDIT_TIMER: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
+}
 const MODE_NAMES: [&str; 3] = ["system", "light", "dark"];
 pub const PRIVACY_KEY: &str = "x";
 
@@ -248,14 +261,74 @@ define_class!(
             configure(sender.tag(), &Input::Index(index));
         }
 
-        #[unsafe(method(customColor:))]
-        fn custom_color(&self, _sender: Option<&AnyObject>) {
-            later(|ui, _| {
-                let Some((accent, canvas)) = ui.settings.as_ref().and_then(settings::Settings::custom_colors) else {
+        #[unsafe(method(styleColor:))]
+        fn style_color(&self, sender: &NSColorWell) {
+            let tag = sender.tag();
+            if let Some(value) = theme::rgba(&sender.color()) {
+                later(move |ui, _| edit_color(ui, tag, value));
+            }
+        }
+
+        #[unsafe(method(styleReset:))]
+        fn style_reset(&self, sender: &NSButton) {
+            if let Some((field, _)) = settings::style_field(sender.tag()) {
+                crate::ui::style(move |app| app.style_reset(field));
+            }
+        }
+
+        #[unsafe(method(accentMode:))]
+        fn accent_mode(&self, sender: &NSSegmentedControl) {
+            let custom = sender.selectedSegment() == 1;
+            later(move |ui, _| {
+                if matches!(ui.look.style().accent, Accent::Fixed(_)) == custom {
                     return;
-                };
-                patch(json!({ "appearance": { "theme": "Custom", "accent": accent.to_hex(), "canvas": canvas.to_hex() } }));
+                }
+                let light = ui.look.theme.accent_value(Variant::Light).to_hex();
+                let dark = ui.look.theme.accent_value(Variant::Dark).to_hex();
+                crate::ui::style(move |app| {
+                    if custom {
+                        return app.style_set(ACCENT, &light, Some(&dark));
+                    }
+                    return app.style_set(ACCENT, "system", None);
+                });
             });
+        }
+
+        #[unsafe(method(toggleAdvanced:))]
+        fn toggle_advanced(&self, _sender: Option<&AnyObject>) {
+            later(|ui, _| {
+                if let Some(settings) = &ui.settings {
+                    settings.toggle_advanced();
+                }
+            });
+        }
+
+        #[unsafe(method(renameStyle:))]
+        fn rename_style(&self, _sender: Option<&AnyObject>) {
+            later(|ui, mtm| {
+                if let Some(settings) = &ui.settings {
+                    dialogs::rename_style(mtm, &settings.window, &ui.look.style().name);
+                }
+            });
+        }
+
+        #[unsafe(method(deleteStyle:))]
+        fn delete_style(&self, _sender: Option<&AnyObject>) {
+            later(|ui, mtm| {
+                if let Some(settings) = &ui.settings {
+                    dialogs::delete_style(mtm, &settings.window, &ui.look.style().name);
+                }
+            });
+        }
+
+        #[unsafe(method(exportStyle:))]
+        fn export_style(&self, _sender: Option<&AnyObject>) {
+            later(|ui, mtm| dialogs::export_style(mtm, &ui.look.style().name));
+        }
+
+        #[unsafe(method(importStyle:))]
+        fn import_style(&self, _sender: Option<&AnyObject>) {
+            later(|_, mtm| dialogs::import_style(mtm));
         }
     }
 
@@ -578,6 +651,10 @@ fn configure(tag: isize, input: &Input) {
     let request = match settings::change(tag, input) {
         Some(Change::Patch(patch)) => Request::SettingsSet { patch },
         Some(Change::Login(enabled)) => Request::LoginItemSet { enabled },
+        Some(Change::Style(field, value)) => {
+            crate::ui::style(move |app| app.style_set(&field, &value, None));
+            return;
+        }
         None => return,
     };
     submit(move |app| Some(app.dispatch(&request)));
@@ -708,4 +785,46 @@ pub fn place(item: Option<usize>, scope: Scope) {
 
 pub fn apply(index: usize) {
     update(|ui, _| assign(ui, ui.filter.scope, index));
+}
+
+fn edit_color(ui: &Ui, tag: isize, value: Rgba) {
+    let Some((field, dark)) = settings::style_field(tag) else {
+        return;
+    };
+    let style = ui.look.style();
+    let theme = &ui.look.theme;
+    let key = Key::from_id(field);
+    let current = match field {
+        ACCENT => match style.accent {
+            Accent::Fixed(pair) => Some(pair),
+            Accent::System => None,
+        },
+        TINT => style.tint,
+        _ => key.and_then(|key| style.pair(key)),
+    };
+    let shown = match (field, key) {
+        (ACCENT, _) => theme.accent_value(Variant::Light),
+        (_, Some(key)) => theme.value(key, Variant::Light),
+        _ => theme.value(Key::Chrome, Variant::Light),
+    };
+    let light = current.map_or(shown, |pair| pair.light);
+    let next = if dark {
+        Pair { light, dark: Some(value) }
+    } else {
+        Pair { light: value, dark: current.and_then(|pair| pair.dark) }
+    };
+    if current == Some(next) {
+        return;
+    }
+    EDIT.with_borrow_mut(|slot| *slot = Some((field, next.light.to_hex(), next.dark.map(Rgba::to_hex))));
+    if EDIT_TIMER.with_borrow(Option::is_some) {
+        return;
+    }
+    let timer = schedule_block(WELL_DELAY, false, || {
+        cancel_timer(EDIT_TIMER.take());
+        if let Some((field, light, dark)) = EDIT.take() {
+            crate::ui::style(move |app| app.style_set(field, &light, dark.as_deref()));
+        }
+    });
+    EDIT_TIMER.with_borrow_mut(|slot| *slot = Some(timer));
 }

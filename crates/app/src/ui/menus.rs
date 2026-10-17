@@ -6,6 +6,7 @@ use proto::HotkeyAction;
 
 use crate::i18n::tr;
 use crate::ui::actions::{Actions, PRIVACY_KEY};
+use crate::ui::metrics;
 use crate::ui::state::{
     TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_STYLE_FOLDER,
     privacy_title,
@@ -218,7 +219,7 @@ pub fn context_menu(mtm: MainThreadMarker, index: usize) -> Option<Retained<NSMe
         for (position, name) in ui.library.folders.iter().enumerate() {
             let entry = item(name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL));
             entry.setState(isize::from(current == Some(position)));
-            entry.setImage(folders::image(&ui.library, position, folders::MENU).as_deref());
+            entry.setImage(folders::image(&ui.library, position, metrics::ICON_ROW).as_deref());
             folders.addItem(&entry);
         }
         folders.addItem(&NSMenuItem::separatorItem(mtm));

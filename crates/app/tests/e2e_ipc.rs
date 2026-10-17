@@ -235,6 +235,7 @@ fn every_verb() {
     let moved = ok_json(&socket, &["library", "list"]);
     assert_eq!(moved["data"]["items"][0]["folder"], serde_json::json!(folder_id), "move into folder: {moved}");
     folder_styles(&socket, &folder_id, &png);
+    style_round_trip(&socket, sandbox.path());
     ok_json(&socket, &["folder", "delete", &folder_id]);
     let after = ok_json(&socket, &["library", "list"]);
     assert_eq!(after["data"]["items"].as_array().map(Vec::len), Some(1), "folder delete dropped an item: {after}");
@@ -273,6 +274,8 @@ fn folder_styles(socket: &Path, folder_id: &str, png: &str) {
     let styled = ok_json(socket, &["folder", "style", folder_id, "--icon", "symbol:star.fill", "--color", "#e07a5f"]);
     assert_eq!(styled["data"]["icon"], serde_json::json!("symbol:star.fill"), "set folder icon: {styled}");
     assert_eq!(styled["data"]["color"], serde_json::json!("#E07A5F"), "color is normalized: {styled}");
+    let tagged = ok_json(socket, &["folder", "style", folder_id, "--color", "Purple"]);
+    assert_eq!(tagged["data"]["color"], serde_json::json!("purple"), "tag colors are normalized: {tagged}");
     let recolored = ok_json(socket, &["folder", "style", folder_id, "--color", "none"]);
     assert_eq!(recolored["data"]["icon"], serde_json::json!("symbol:star.fill"), "icon kept: {recolored}");
     assert!(recolored["data"]["color"].is_null(), "color cleared: {recolored}");
@@ -291,6 +294,58 @@ fn folder_styles(socket: &Path, folder_id: &str, png: &str) {
     assert!(folders["data"]["folders"][0]["icon"].is_null(), "icon cleared from folder: {folders}");
     err(socket, &["icon", "remove", &image]);
     err(socket, &["icon", "import", "/nonexistent.png"]);
+}
+
+fn style_round_trip(socket: &Path, dir: &Path) {
+    let listed = ok_json(socket, &["style", "list"]);
+    assert_eq!(listed["data"]["active"], serde_json::json!("System"), "default style: {listed}");
+    assert_eq!(listed["data"]["styles"].as_array().map(Vec::len), Some(9), "built-in styles: {listed}");
+    let keys = ok_json(socket, &["style", "keys"]);
+    assert_eq!(keys["data"]["keys"].as_array().map(Vec::len), Some(54), "color keys: {keys}");
+    ok_json(socket, &["style", "apply", "dusk"]);
+    let edited = ok_json(socket, &["style", "set", "grid.ring", "#ff0000"]);
+    let name = edited["data"]["active"].as_str().expect("forked style").to_string();
+    assert_ne!(name, "Dusk", "editing a built-in style forks it: {edited}");
+    ok_json(socket, &["style", "set", "tint_strength", "30"]);
+    err(socket, &["style", "set", "nope", "#FFFFFF"]);
+    err(socket, &["style", "set", "canvas", "pink"]);
+    err(socket, &["style", "set", "tint_strength", "101"]);
+    err(socket, &["style", "delete", "Dusk"]);
+    err(socket, &["style", "apply", "Missing Style"]);
+    let exported = ok_json(socket, &["style", "export"]);
+    let text = exported["data"]["document"].as_str().expect("document").to_string();
+    let document: serde_json::Value = serde_json::from_str(&text).expect("document is JSON");
+    assert_eq!(document["livewall_style"], serde_json::json!(1), "format version: {document}");
+    assert_eq!(document["colors"]["grid.ring"], serde_json::json!("#FF0000"), "edited color: {document}");
+    assert_eq!(document["tint_strength"], serde_json::json!(30.0), "tint strength: {document}");
+    let file = dir.join("mine.livewallstyle");
+    std::fs::write(&file, &text).expect("write style");
+    let file = file.to_string_lossy().into_owned();
+    ok_json(socket, &["style", "delete", &name]);
+    let after = ok_json(socket, &["style", "list"]);
+    assert_eq!(after["data"]["active"], serde_json::json!("System"), "deleting the active style: {after}");
+    let imported = ok_json(socket, &["style", "import", &file]);
+    assert_eq!(imported["data"]["name"], serde_json::json!(name), "import keeps the name: {imported}");
+    let again = ok_json(socket, &["style", "import", &file]);
+    let copy = format!("{name} 2");
+    assert_eq!(again["data"]["name"], serde_json::json!(copy), "import never overwrites: {again}");
+    ok_json(socket, &["style", "rename", &copy, "Mine"]);
+    ok_json(socket, &["style", "apply", "Mine"]);
+    ok_json(socket, &["style", "reset", "grid.ring"]);
+    let reset = ok_json(socket, &["style", "export", "Mine"]);
+    let reset: serde_json::Value =
+        serde_json::from_str(reset["data"]["document"].as_str().expect("document")).expect("document is JSON");
+    assert!(reset["colors"].get("grid.ring").is_none(), "reset removes the override: {reset}");
+    let newer = dir.join("future.livewallstyle");
+    std::fs::write(&newer, r#"{ "livewall_style": 2, "name": "Future" }"#).expect("write newer style");
+    err(socket, &["style", "import", &newer.to_string_lossy()]);
+    let unknown = dir.join("unknown.livewallstyle");
+    std::fs::write(&unknown, r#"{ "livewall_style": 1, "font": "Comic" }"#).expect("write unknown style");
+    err(socket, &["style", "import", &unknown.to_string_lossy()]);
+    ok_json(socket, &["style", "apply", "System"]);
+    for style in [name.as_str(), "Mine"] {
+        ok_json(socket, &["style", "delete", style]);
+    }
 }
 
 fn second_instance_exits() {

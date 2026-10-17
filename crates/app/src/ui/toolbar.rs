@@ -17,13 +17,15 @@ use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
 use crate::app::{PlayState, Sound};
 use crate::i18n::{Arg, key, tr, trf};
-use crate::ui::palette::Look;
+use crate::style::Key;
+use crate::ui::metrics::{self, Text};
 use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, TAG_ALL, desktop_name, lock_tip, showing};
+use crate::ui::theme::{Look, Theme};
 use crate::ui::view::{Library, Status};
-use crate::ui::widgets::{self, Weight};
+use crate::ui::widgets::{self, Paint, Slot};
 
 const PILL_WIDTH: CGFloat = 148.0;
-const PILL_HEIGHT: CGFloat = 26.0;
+const PILL_HEIGHT: CGFloat = metrics::CONTROL_HEIGHT;
 const SCOPE_WIDTH: CGFloat = 128.0;
 const SEARCH_WIDTH: CGFloat = 120.0;
 const ADD_WIDTH: CGFloat = 76.0;
@@ -32,6 +34,7 @@ const STATUS_TEXT_WIDTH: CGFloat = 150.0;
 pub struct PillIvars {
     index: Cell<Option<usize>>,
     menu: RefCell<Option<Retained<NSMenu>>>,
+    hover: RefCell<Retained<NSColor>>,
 }
 
 define_class!(
@@ -46,7 +49,7 @@ define_class!(
             let ivars = self.ivars();
             let menu = ivars.menu.borrow().clone();
             if let Some(menu) = menu {
-                menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(0.0, -6.0), Some(self));
+                menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(0.0, -metrics::SPACE_4), Some(self));
             } else if let Some(index) = ivars.index.get() {
                 crate::ui::reveal(index);
             }
@@ -71,13 +74,10 @@ impl PillView {
         };
         let ivars = self.ivars();
         let active = ivars.index.get().is_some() || ivars.menu.borrow().is_some();
-        let fill = if on && active {
-            widgets::cg(self.mtm(), &NSColor::quaternaryLabelColor())
-        } else {
-            widgets::cg(self.mtm(), &NSColor::clearColor())
-        };
+        let fill = if on && active { ivars.hover.borrow().clone() } else { NSColor::clearColor() };
+        let fill = widgets::cg(self, &fill);
         CATransaction::begin();
-        CATransaction::setAnimationDuration(0.15);
+        CATransaction::setAnimationDuration(metrics::MOTION_QUICK);
         layer.setBackgroundColor(Some(&fill));
         CATransaction::commit();
     }
@@ -131,6 +131,7 @@ pub struct Toolbar {
     screen: Pill,
     status: StatusBadge,
     scope_title: RefCell<String>,
+    paint: Paint,
     _delegate: Retained<ToolbarDelegate>,
 }
 
@@ -141,41 +142,28 @@ struct Pill {
     badge: Retained<NSTextField>,
     chevron: Retained<NSView>,
     width: Retained<NSLayoutConstraint>,
+    titles: RefCell<(Retained<NSColor>, Retained<NSColor>)>,
 }
 
 impl Toolbar {
-    pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
+    pub fn new(mtm: MainThreadMarker, target: &AnyObject, theme: &Theme) -> Self {
+        let mut paint = Paint::new();
         let scope = popup(mtm, SCOPE_WIDTH);
         let sort = NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &widgets::ns("sort"));
         sort.setShowsIndicator(false);
-        if let Some(image) = widgets::symbol("arrow.up.arrow.down", 13.0) {
+        if let Some(image) = widgets::symbol("arrow.up.arrow.down", metrics::ICON_REGULAR) {
             sort.setImage(Some(&image));
         }
         sort.setLabel(&widgets::ns(&tr("Sort & Filter")));
         sort.setToolTip(Some(&widgets::ns(&tr("Sort & Filter"))));
         let layout = layout_group(mtm, target);
-        let search = NSSearchField::new(mtm);
-        search.setControlSize(objc2_app_kit::NSControlSize::Large);
-        search.setPlaceholderString(Some(&widgets::ns(&tr("Search"))));
-        search.setSendsSearchStringImmediately(true);
-        unsafe {
-            search.setTarget(Some(target));
-            search.setAction(Some(sel!(search:)));
-        }
-        let search_box = NSView::new(mtm);
-        search_box.addSubview(&search);
-        search.setTranslatesAutoresizingMaskIntoConstraints(false);
-        search.leadingAnchor().constraintEqualToAnchor_constant(&search_box.leadingAnchor(), 4.0).setActive(true);
-        search.trailingAnchor().constraintEqualToAnchor_constant(&search_box.trailingAnchor(), -4.0).setActive(true);
-        search.centerYAnchor().constraintEqualToAnchor(&search_box.centerYAnchor()).setActive(true);
-        search_box.widthAnchor().constraintEqualToConstant(SEARCH_WIDTH).setActive(true);
-        search_box.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
+        let (search, search_box) = search_field(mtm, target);
         let add = widgets::button(mtm, &tr("Add"), Some("plus"), sel!(showAdd:), target);
-        add.setFont(Some(&widgets::font(13.0, &Weight::Semibold)));
+        add.setFont(Some(&metrics::font(Text::Headline)));
         add.setToolTip(Some(&widgets::ns(&tr("Add wallpapers from files, a folder or a video link"))));
         add.widthAnchor().constraintEqualToConstant(ADD_WIDTH).setActive(true);
         let settings = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &widgets::ns("settings"));
-        if let Some(image) = widgets::symbol("gearshape", 13.0) {
+        if let Some(image) = widgets::symbol("gearshape", metrics::ICON_REGULAR) {
             settings.setImage(Some(&image));
         }
         settings.setLabel(&widgets::ns(&tr("Settings")));
@@ -184,15 +172,15 @@ impl Toolbar {
             settings.setTarget(Some(target));
             settings.setAction(Some(sel!(showSettings:)));
         }
-        let desktop = Pill::new(mtm, &tr("Desktop"), "display");
-        let screen = Pill::new(mtm, &tr("Lock Screen"), "lock.fill");
-        let line = widgets::card(mtm, &NSColor::separatorColor(), 0.0);
+        let desktop = Pill::new(mtm, &tr("Desktop"), "display", theme, &mut paint);
+        let screen = Pill::new(mtm, &tr("Lock Screen"), "lock.fill", theme, &mut paint);
+        let line = paint.fill(mtm, Key::ToolbarSeparator, 0.0, theme);
         line.widthAnchor().constraintEqualToConstant(1.0).setActive(true);
-        line.heightAnchor().constraintEqualToConstant(16.0).setActive(true);
-        let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, 4.0);
-        row.setEdgeInsets(widgets::insets(0.0, 4.0, 0.0, 4.0));
+        line.heightAnchor().constraintEqualToConstant(metrics::ICON_ROW).setActive(true);
+        let row = widgets::stack(mtm, &[&desktop.view, &line, &screen.view], false, metrics::SPACE_4);
+        row.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_4, 0.0, metrics::SPACE_4));
         let showing = view_item(mtm, "showing", &tr("Now Showing"), &row);
-        let status = StatusBadge::new(mtm);
+        let status = StatusBadge::new(mtm, theme, &mut paint);
 
         let items: Vec<Retained<NSToolbarItem>> = vec![
             view_item(mtm, "scope", &tr("Desktop"), &scope),
@@ -241,8 +229,16 @@ impl Toolbar {
             screen,
             status,
             scope_title: RefCell::new(String::new()),
+            paint,
             _delegate: delegate,
         };
+    }
+
+    pub fn restyle(&self, theme: &Theme) {
+        self.paint.apply(theme);
+        for pill in [&self.desktop, &self.screen] {
+            pill.restyle(theme);
+        }
     }
 
     pub fn sync(&self, mtm: MainThreadMarker, library: &Library, filter: &Filter, look: &Look, target: &AnyObject) {
@@ -254,7 +250,7 @@ impl Toolbar {
         self.scope.setMenu(Some(&scope_menu(mtm, library, filter.scope, &title, sel!(scope:), target)));
         self.sort.setMenu(&sort_menu(mtm, filter, target));
         self.layout.setSelectedIndex(isize::from(filter.list));
-        widgets::prominent(&self.add, &look.colors);
+        widgets::prominent(&self.add, &look.theme);
         let summary = showing(library, filter.scope);
         let menu = (summary.others > 0).then(|| desktops_menu(mtm, library, &summary, target));
         let item =
@@ -276,7 +272,7 @@ impl Toolbar {
         });
         self.screen.update(lock_index, screen, &tr("Lock Screen"), 0, None);
         self.screen.view.setToolTip(Some(&widgets::ns(&lock_tip(library))));
-        self.status.update(library.status.as_ref());
+        self.status.update(library.status.as_ref(), &look.theme);
     }
 }
 
@@ -288,17 +284,16 @@ struct StatusBadge {
 }
 
 impl StatusBadge {
-    fn new(mtm: MainThreadMarker) -> Self {
+    fn new(mtm: MainThreadMarker, theme: &Theme, paint: &mut Paint) -> Self {
         let icon = NSImageView::new(mtm);
-        icon.setImage(widgets::symbol("circle.fill", 7.0).as_deref());
-        let text = widgets::label(mtm, "", 11.0, &Weight::Medium, &NSColor::secondaryLabelColor());
+        icon.setImage(widgets::symbol("circle.fill", metrics::ICON_BADGE).as_deref());
+        let text = paint.label(mtm, "", Text::SubheadlineMedium, Key::TextSecondary, theme);
         text.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         text.widthAnchor().constraintLessThanOrEqualToConstant(STATUS_TEXT_WIDTH).setActive(true);
         let sound = NSImageView::new(mtm);
-        sound.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
-        let view = widgets::stack(mtm, &[&icon, &text, &sound], false, 6.0);
-        view.setCustomSpacing_afterView(8.0, &text);
-        view.setEdgeInsets(widgets::insets(0.0, 6.0, 0.0, 6.0));
+        let view = widgets::stack(mtm, &[&icon, &text, &sound], false, metrics::SPACE_4);
+        view.setCustomSpacing_afterView(metrics::SPACE_8, &text);
+        view.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_4, 0.0, metrics::SPACE_4));
         view.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
         return Self { view, icon, text, sound };
     }
@@ -309,12 +304,12 @@ impl StatusBadge {
         return item;
     }
 
-    fn update(&self, status: Option<&Status>) {
+    fn update(&self, status: Option<&Status>, theme: &Theme) {
         let (light, text, tip) = match status {
             None => (Light::Off, tr("Nothing playing"), tr("No wallpaper on this desktop")),
             Some(status) => describe(status),
         };
-        self.icon.setContentTintColor(Some(&light.color()));
+        self.icon.setContentTintColor(Some(&light.color(theme)));
         if self.text.stringValue().to_string() != text {
             widgets::fade(&self.text);
             self.text.setStringValue(&widgets::ns(&text));
@@ -340,8 +335,8 @@ impl StatusBadge {
                     ("headphones", Light::Accent, tr("Listening to a preview of another wallpaper in the inspector"))
                 }
             };
-            self.sound.setImage(widgets::symbol(symbol, 11.0).as_deref());
-            self.sound.setContentTintColor(Some(&light.color()));
+            self.sound.setImage(widgets::symbol(symbol, metrics::ICON_SMALL).as_deref());
+            self.sound.setContentTintColor(Some(&light.color(theme)));
             self.sound.setToolTip(Some(&widgets::ns(&tip)));
         }
     }
@@ -357,14 +352,14 @@ enum Light {
 }
 
 impl Light {
-    fn color(self) -> Retained<NSColor> {
-        return match self {
-            Self::Off => NSColor::tertiaryLabelColor(),
-            Self::Green => NSColor::systemGreenColor(),
-            Self::Yellow => NSColor::systemYellowColor(),
-            Self::Red => NSColor::systemRedColor(),
-            Self::Accent => NSColor::controlAccentColor(),
-        };
+    fn color(self, theme: &Theme) -> Retained<NSColor> {
+        return theme.color(match self {
+            Self::Off => Key::StatusOff,
+            Self::Green => Key::StatusOk,
+            Self::Yellow => Key::StatusWarn,
+            Self::Red => Key::StatusError,
+            Self::Accent => Key::Selection,
+        });
     }
 }
 
@@ -402,7 +397,7 @@ pub fn drop_down(button: &NSButton, menu: &NSMenu) {
     let height = button.bounds().size.height;
     menu.popUpMenuPositioningItem_atLocation_inView(
         None,
-        objc2_core_foundation::CGPoint::new(0.0, height + 6.0),
+        objc2_core_foundation::CGPoint::new(0.0, height + metrics::SPACE_4),
         Some(button),
     );
 }
@@ -416,6 +411,32 @@ fn popup(mtm: MainThreadMarker, width: CGFloat) -> Retained<NSPopUpButton> {
     return popup;
 }
 
+fn search_field(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSSearchField>, Retained<NSView>) {
+    let search = NSSearchField::new(mtm);
+    search.setControlSize(objc2_app_kit::NSControlSize::Large);
+    search.setPlaceholderString(Some(&widgets::ns(&tr("Search"))));
+    search.setSendsSearchStringImmediately(true);
+    unsafe {
+        search.setTarget(Some(target));
+        search.setAction(Some(sel!(search:)));
+    }
+    let search_box = NSView::new(mtm);
+    search_box.addSubview(&search);
+    search.setTranslatesAutoresizingMaskIntoConstraints(false);
+    search
+        .leadingAnchor()
+        .constraintEqualToAnchor_constant(&search_box.leadingAnchor(), metrics::SPACE_4)
+        .setActive(true);
+    search
+        .trailingAnchor()
+        .constraintEqualToAnchor_constant(&search_box.trailingAnchor(), -metrics::SPACE_4)
+        .setActive(true);
+    search.centerYAnchor().constraintEqualToAnchor(&search_box.centerYAnchor()).setActive(true);
+    search_box.widthAnchor().constraintEqualToConstant(SEARCH_WIDTH).setActive(true);
+    search_box.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
+    return (search, search_box);
+}
+
 fn view_item(mtm: MainThreadMarker, id: &str, title: &str, view: &NSView) -> Retained<NSToolbarItem> {
     let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &widgets::ns(id));
     item.setView(Some(view));
@@ -424,8 +445,10 @@ fn view_item(mtm: MainThreadMarker, id: &str, title: &str, view: &NSView) -> Ret
 }
 
 fn layout_group(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSToolbarItemGroup> {
-    let images: Vec<Retained<NSImage>> =
-        ["square.grid.2x2", "list.bullet"].iter().filter_map(|name| widgets::symbol(name, 13.0)).collect();
+    let images: Vec<Retained<NSImage>> = ["square.grid.2x2", "list.bullet"]
+        .iter()
+        .filter_map(|name| widgets::symbol(name, metrics::ICON_REGULAR))
+        .collect();
     let labels = [widgets::ns(&tr("Grid")), widgets::ns(&tr("List"))];
     let group = unsafe {
         NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
@@ -452,7 +475,7 @@ fn desktops_menu(mtm: MainThreadMarker, library: &Library, summary: &Showing, ta
         entry.setEnabled(item.is_some());
         if let Some(image) = wallpaper.and_then(|entry| entry.image.as_ref()) {
             let thumb: Retained<NSImage> = image.copy();
-            thumb.setSize(objc2_foundation::NSSize::new(32.0, 20.0));
+            thumb.setSize(objc2_foundation::NSSize::new(metrics::ICON_HERO, metrics::ICON_LARGE));
             entry.setImage(Some(&thumb));
         }
         items.push(entry);
@@ -461,40 +484,43 @@ fn desktops_menu(mtm: MainThreadMarker, library: &Library, summary: &Showing, ta
 }
 
 impl Pill {
-    fn new(mtm: MainThreadMarker, caption: &str, icon: &str) -> Self {
-        let glyph = widgets::symbol_view(mtm, icon, 11.0, &NSColor::secondaryLabelColor());
+    fn new(mtm: MainThreadMarker, caption: &str, icon: &str, theme: &Theme, paint: &mut Paint) -> Self {
+        let glyph = widgets::symbol_view(mtm, icon, metrics::ICON_SMALL, &theme.color(Key::TextSecondary));
+        paint.add(&glyph, Key::TextSecondary, Slot::Tint);
         let thumb = NSView::new(mtm);
         thumb.setWantsLayer(true);
         if let Some(layer) = thumb.layer() {
-            layer.setCornerRadius(4.0);
+            layer.setCornerRadius(metrics::RADIUS_CONTROL);
             layer.setMasksToBounds(true);
-            layer.setBorderWidth(0.5);
-            layer.setBorderColor(Some(&widgets::cg(mtm, &NSColor::separatorColor())));
+            layer.setBorderWidth(metrics::BORDER_HAIRLINE);
             layer.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
-            layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternaryLabelColor())));
         }
         thumb.widthAnchor().constraintEqualToConstant(29.0).setActive(true);
         thumb.heightAnchor().constraintEqualToConstant(18.0).setActive(true);
-        let title = widgets::label(mtm, caption, 12.0, &Weight::Medium, &NSColor::tertiaryLabelColor());
+        let title = widgets::label(mtm, caption, Text::CalloutMedium, &theme.color(Key::TextTertiary));
         title.setWantsLayer(true);
-        let badge = widgets::label(mtm, "", 10.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+        let badge = paint.label(mtm, "", Text::CaptionBold, Key::TextSecondary, theme);
         badge.setContentCompressionResistancePriority_forOrientation(
             1000.0,
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
         );
         badge.setHidden(true);
-        let chevron = widgets::symbol_view(mtm, "chevron.down", 8.0, &NSColor::tertiaryLabelColor());
+        let chevron = widgets::symbol_view(mtm, "chevron.down", metrics::ICON_BADGE, &theme.color(Key::TextTertiary));
+        paint.add(&chevron, Key::TextTertiary, Slot::Tint);
         chevron.setHidden(true);
-        let row = widgets::stack(mtm, &[&glyph, &thumb, &title, &badge, &chevron], false, 6.0);
-        row.setEdgeInsets(widgets::insets(0.0, 10.0, 0.0, 10.0));
-        row.setCustomSpacing_afterView(5.0, &glyph);
-        row.setCustomSpacing_afterView(7.0, &thumb);
-        row.setCustomSpacing_afterView(3.0, &badge);
-        let view = PillView::alloc(mtm).set_ivars(PillIvars { index: Cell::new(None), menu: RefCell::new(None) });
+        let row = widgets::stack(mtm, &[&glyph, &thumb, &title, &badge, &chevron], false, metrics::SPACE_4);
+        row.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_8, 0.0, metrics::SPACE_8));
+        row.setCustomSpacing_afterView(metrics::SPACE_8, &thumb);
+        row.setCustomSpacing_afterView(metrics::SPACE_2, &badge);
+        let view = PillView::alloc(mtm).set_ivars(PillIvars {
+            index: Cell::new(None),
+            menu: RefCell::new(None),
+            hover: RefCell::new(theme.color(Key::ToolbarPillHover)),
+        });
         let view: Retained<PillView> = unsafe { msg_send![super(view), init] };
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
-            layer.setCornerRadius(PILL_HEIGHT / 2.0);
+            layer.setCornerRadius(metrics::capsule(PILL_HEIGHT));
         }
         view.addSubview(&row);
         widgets::pin(&row, &view, 0.0);
@@ -514,7 +540,19 @@ impl Pill {
             )
         };
         view.addTrackingArea(&area);
-        return Self { view, thumb, title, badge, chevron, width };
+        let titles = RefCell::new((theme.color(Key::Text), theme.color(Key::TextTertiary)));
+        let pill = Self { view, thumb, title, badge, chevron, width, titles };
+        pill.restyle(theme);
+        return pill;
+    }
+
+    fn restyle(&self, theme: &Theme) {
+        *self.view.ivars().hover.borrow_mut() = theme.color(Key::ToolbarPillHover);
+        *self.titles.borrow_mut() = (theme.color(Key::Text), theme.color(Key::TextTertiary));
+        if let Some(layer) = self.thumb.layer() {
+            layer.setBorderColor(Some(&widgets::cg(&self.thumb, &theme.color(Key::ToolbarSeparator))));
+            layer.setBackgroundColor(Some(&widgets::cg(&self.thumb, &theme.color(Key::ToolbarPill))));
+        }
     }
 
     fn update(
@@ -536,16 +574,16 @@ impl Pill {
             }
         }
         widgets::fade(&self.title);
-        let color = if name.is_some() { NSColor::labelColor() } else { NSColor::tertiaryLabelColor() };
+        let titles = self.titles.borrow();
         self.title.setStringValue(&widgets::ns(name.as_deref().unwrap_or(caption)));
-        self.title.setTextColor(Some(&color));
+        self.title.setTextColor(Some(if name.is_some() { &titles.0 } else { &titles.1 }));
         let expanded = others > 0;
         self.badge.setStringValue(&widgets::ns(&format!("+{others}")));
         if self.badge.isHidden() == expanded {
-            widgets::animate(0.2, || {
+            widgets::animate(metrics::MOTION_STANDARD, || {
                 self.badge.animator().setHidden(!expanded);
                 self.chevron.animator().setHidden(!expanded);
-                self.width.setConstant(PILL_WIDTH + if expanded { 26.0 } else { 0.0 });
+                self.width.setConstant(PILL_WIDTH + if expanded { metrics::SPACE_24 } else { 0.0 });
                 if let Some(container) = unsafe { self.view.superview() } {
                     container.layoutSubtreeIfNeeded();
                 }
@@ -573,7 +611,7 @@ fn entry(
 fn title_entry(mtm: MainThreadMarker, title: &str, icon: &str) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
     item.setTitle(&widgets::ns(title));
-    if let Some(image) = widgets::symbol(icon, 12.0) {
+    if let Some(image) = widgets::symbol(icon, metrics::ICON_REGULAR) {
         item.setImage(Some(&image));
     }
     return item;
@@ -638,7 +676,7 @@ fn add_menu(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSMenu> {
         entry(mtm, &tr("From Video Link…"), sel!(download:), 0, false, target),
     ];
     for (item, icon) in items.iter().zip(["doc.badge.plus", "folder.badge.plus", "link.badge.plus"]) {
-        if let Some(image) = widgets::symbol(icon, 13.0) {
+        if let Some(image) = widgets::symbol(icon, metrics::ICON_REGULAR) {
             item.setImage(Some(&image));
         }
     }

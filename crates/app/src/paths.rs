@@ -63,6 +63,10 @@ impl Paths {
         return self.join("settings.json");
     }
 
+    pub fn styles_file(&self) -> PathBuf {
+        return self.join("styles.json");
+    }
+
     pub fn swap_state_file(&self) -> PathBuf {
         return self.join("swap-state.json");
     }

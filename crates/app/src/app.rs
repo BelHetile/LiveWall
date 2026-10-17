@@ -33,8 +33,10 @@ use crate::platform::{auth, cancel_timer, detect, schedule_timer};
 use crate::process;
 use crate::rules;
 use crate::store;
+use crate::style::{self, UserStyles};
 use crate::tools;
 
+mod appearance;
 mod privacy;
 
 pub use privacy::{visible_folders, visible_items};
@@ -52,7 +54,7 @@ const NO_SUCH_FOLDER: &str = i18n::key("no such folder");
 const NO_OPTIMIZE_JOB: &str = i18n::key("no optimize job for this item");
 const SERIALIZATION_FAILED: &str = i18n::key("serialization failed");
 const INVALID_ICON: &str = i18n::key("icon must be symbol:<name> or image:<file>.png");
-const INVALID_COLOR: &str = i18n::key("color must be a #RRGGBB hex value");
+const INVALID_COLOR: &str = i18n::key("color must be a tag name or a #RRGGBB hex value");
 const NO_SUCH_ICON: &str = i18n::key("no such icon image");
 
 pub enum Event {
@@ -99,6 +101,7 @@ pub struct App {
     paths: Paths,
     library: Library,
     settings: Settings,
+    styles: UserStyles,
     paused: bool,
     display_asleep: bool,
     screen_locked: bool,
@@ -236,7 +239,10 @@ impl App {
         let (mut settings, settings_warning) = store::load::<Settings>(&paths.settings_file());
         settings.normalize();
         settings.launch_at_login = matches!(system::login_item_status(), LoginItemStatus::Enabled);
-        let warnings = library_warning.into_iter().chain(settings_warning).collect();
+        let (mut styles, styles_warning) = store::load::<UserStyles>(&paths.styles_file());
+        let legacy = settings.appearance.theme.is_some();
+        let migrated = style::migrate(&mut settings.appearance, &mut styles);
+        let warnings = library_warning.into_iter().chain(settings_warning).chain(styles_warning).collect();
 
         let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
         let unlocked = test_unlocked();
@@ -272,6 +278,7 @@ impl App {
             rotate_timer: None,
             library,
             settings,
+            styles,
             engine: Engine::new(mtm, paths),
             nap: system::AppNap::new(),
             _observers: Observers::install(mtm),
@@ -286,6 +293,7 @@ impl App {
             previewing: None,
             paths: paths.clone(),
         };
+        app.load_styles(legacy, migrated);
         app.sync(false);
         app.refresh_rules();
         app.sync_idle_timer();
@@ -1307,6 +1315,33 @@ impl App {
             },
             Request::IconList => ok(&serde_json::json!({ "icons": self.custom_icons() })),
             Request::IconRemove { icon } => self.remove_icon(icon),
+            Request::StyleList => ok(&serde_json::json!({
+                "active": self.styles.active(&self.settings.appearance.style).name,
+                "styles": self.style_list(),
+            })),
+            Request::StyleKeys => ok(&self.style_keys()),
+            Request::StyleApply { name } => {
+                appearance::reply(self.style_apply(name).map(|name| serde_json::json!({ "active": name })))
+            }
+            Request::StyleExport { name } => appearance::reply(
+                self.style_export(name.as_deref())
+                    .map(|(name, document)| serde_json::json!({ "name": name, "document": document })),
+            ),
+            Request::StyleImport { text } => {
+                appearance::reply(self.style_import(text).map(|name| serde_json::json!({ "name": name })))
+            }
+            Request::StyleDelete { name } => {
+                appearance::reply(self.style_delete(name).map(|name| serde_json::json!({ "deleted": name })))
+            }
+            Request::StyleRename { name, to } => {
+                appearance::reply(self.style_rename(name, to).map(|name| serde_json::json!({ "name": name })))
+            }
+            Request::StyleSet { key, light, dark } => appearance::reply(
+                self.style_set(key, light, dark.as_deref()).map(|name| serde_json::json!({ "active": name })),
+            ),
+            Request::StyleReset { key } => {
+                appearance::reply(self.style_reset(key).map(|name| serde_json::json!({ "active": name })))
+            }
             Request::Lock => {
                 self.lock();
                 ok(&serde_json::json!({ "locked": true }))
