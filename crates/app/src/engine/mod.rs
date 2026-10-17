@@ -84,6 +84,8 @@ impl Engine {
         let owned = vec![
             paths.dir_for(DirKind::Stills, Visibility::Public),
             paths.dir_for(DirKind::Stills, Visibility::Private),
+            paths.dir_for(DirKind::Wallpapers, Visibility::Public),
+            paths.dir_for(DirKind::Wallpapers, Visibility::Private),
         ];
         let mut desktop = Desktop::new(paths.swap_state_file(), mode, owned);
         desktop.recover(mtm);

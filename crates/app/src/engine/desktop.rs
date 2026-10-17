@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -14,8 +14,8 @@ use crate::store;
 const SWAP_VERSION: u32 = 1;
 const VERIFY_INTERVAL: f64 = 0.1;
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(3);
-const RESTORE_TIMEOUT: Duration = Duration::from_secs(2);
-const RESTORE_POLL: Duration = Duration::from_millis(50);
+const RESTORE_ATTEMPTS: usize = 25;
+const RESTORE_WAIT: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -97,8 +97,27 @@ pub fn adopt_foreign(original: Original, recorded: &BTreeMap<String, Original>, 
     return Original { config: donor.config.clone(), url: donor.url.clone(), ..original };
 }
 
-pub fn restore_list(recorded: &BTreeMap<String, Original>) -> Vec<Original> {
-    return recorded.values().cloned().collect();
+pub fn is_user_wallpaper(original: &Original, owned: &[PathBuf]) -> bool {
+    return original.url.is_some() && !is_owned(original, owned);
+}
+
+pub fn shows_still(current: Option<&str>, owned: &[PathBuf]) -> bool {
+    return current.is_some_and(|url| owned.iter().any(|dir| Path::new(url).starts_with(dir)));
+}
+
+pub fn restore_source(
+    original: &Original,
+    recorded: &BTreeMap<String, Original>,
+    owned: &[PathBuf],
+) -> Option<Original> {
+    if is_user_wallpaper(original, owned) {
+        return Some(original.clone());
+    }
+    let donor = recorded
+        .values()
+        .filter(|candidate| is_user_wallpaper(candidate, owned))
+        .min_by_key(|candidate| candidate.display_id != original.display_id)?;
+    return Some(Original { config: donor.config.clone(), url: donor.url.clone(), ..original.clone() });
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +172,7 @@ impl Desktop {
         tracing::info!(surfaces = state.surfaces.len(), "restoring desktop pictures from a previous run");
         self.mode = state.mode;
         self.recorded = state.surfaces;
-        self.send_originals(mtm);
+        self.send_originals(mtm, &BTreeSet::new(), None);
     }
 
     pub fn update(
@@ -309,17 +328,14 @@ impl Desktop {
     }
 
     fn read_back(&self, mtm: MainThreadMarker, pending: &Pending) -> Option<String> {
-        return match self.mode {
-            Mode::PerSpace => {
-                self.api.copy(pending.display_id, &pending.space).and_then(|config| ffi::image_path(&config))
-            }
-            Mode::Screen => ffi::screen_path(mtm, pending.display_id),
-        };
+        return self.current(mtm, pending.display_id, &pending.space);
     }
 
     pub fn restore(&mut self, mtm: MainThreadMarker) {
+        let in_flight: BTreeSet<String> = self.pending.keys().cloned().collect();
+        let since = self.verify_started;
         self.stop_verify();
-        self.send_originals(mtm);
+        self.send_originals(mtm, &in_flight, since);
         if let Err(error) = std::fs::remove_file(&self.swap_path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -334,20 +350,57 @@ impl Desktop {
             if self.applied.remove(space).is_none() {
                 continue;
             }
-            self.pending.remove(space);
+            let in_flight = self.pending.remove(space).is_some();
             self.deferred.remove(space);
-            if let Some(original) = self.recorded.get(space) {
-                self.send_original(mtm, original);
+            if let Some(original) = self.recorded.get(space)
+                && let Some(source) = self.restorable(mtm, original, in_flight)
+            {
+                self.send_original(mtm, &source);
             }
         }
     }
 
-    fn send_originals(&self, mtm: MainThreadMarker) {
-        let originals = restore_list(&self.recorded);
-        for original in &originals {
-            self.send_original(mtm, original);
+    fn restorable(&self, mtm: MainThreadMarker, original: &Original, in_flight: bool) -> Option<Original> {
+        let current = self.current(mtm, original.display_id, &original.space);
+        if !in_flight && !shows_still(current.as_deref(), &self.owned) {
+            return None;
         }
-        self.await_restore(mtm, &originals);
+        let source = restore_source(original, &self.recorded, &self.owned);
+        if source.is_none() {
+            tracing::warn!(space = %original.space, "no original desktop picture is known; leaving the still on screen");
+        }
+        return source;
+    }
+
+    fn send_originals(&self, mtm: MainThreadMarker, in_flight: &BTreeSet<String>, since: Option<Instant>) {
+        let mut unconfirmed = 0;
+        for _ in 0..RESTORE_ATTEMPTS {
+            let landing = !in_flight.is_empty() && since.is_some_and(|started| started.elapsed() < VERIFY_TIMEOUT);
+            let sources: Vec<Original> = self
+                .recorded
+                .values()
+                .filter_map(|original| self.restorable(mtm, original, landing && in_flight.contains(&original.space)))
+                .collect();
+            if sources.is_empty() && !landing {
+                return;
+            }
+            for source in &sources {
+                self.send_original(mtm, source);
+            }
+            std::thread::sleep(RESTORE_WAIT);
+            unconfirmed = sources.iter().filter(|source| !self.restored(mtm, source)).count();
+            if unconfirmed == 0 && !landing {
+                return;
+            }
+        }
+        tracing::warn!(surfaces = unconfirmed, "desktop pictures were not restored");
+    }
+
+    fn current(&self, mtm: MainThreadMarker, display_id: u32, space: &str) -> Option<String> {
+        return match self.mode {
+            Mode::PerSpace => self.api.copy(display_id, space).and_then(|config| ffi::image_path(&config)),
+            Mode::Screen => ffi::screen_path(mtm, display_id),
+        };
     }
 
     fn send_original(&self, mtm: MainThreadMarker, original: &Original) {
@@ -369,29 +422,9 @@ impl Desktop {
         }
     }
 
-    fn await_restore(&self, mtm: MainThreadMarker, originals: &[Original]) {
-        let deadline = Instant::now() + RESTORE_TIMEOUT;
-        loop {
-            let confirmed = originals.iter().all(|original| self.restored(mtm, original));
-            if confirmed || Instant::now() >= deadline {
-                return;
-            }
-            std::thread::sleep(RESTORE_POLL);
-        }
-    }
-
     fn restored(&self, mtm: MainThreadMarker, original: &Original) -> bool {
         let Some(url) = &original.url else { return true };
-        return match self.mode {
-            Mode::PerSpace => self
-                .api
-                .copy(original.display_id, &original.space)
-                .and_then(|config| ffi::image_path(&config))
-                .is_some_and(|value| value.as_str() == url.as_str()),
-            Mode::Screen => {
-                ffi::screen_path(mtm, original.display_id).is_some_and(|value| value.as_str() == url.as_str())
-            }
-        };
+        return self.current(mtm, original.display_id, &original.space).is_some_and(|value| value == *url);
     }
 
     fn persist(&self) {
@@ -406,12 +439,7 @@ impl Desktop {
         for target in targets {
             let surface = target.space.clone();
             let original = self.recorded.get(&surface);
-            let current = match self.mode {
-                Mode::PerSpace => {
-                    self.api.copy(target.display_id, &target.space).and_then(|config| ffi::image_path(&config))
-                }
-                Mode::Screen => ffi::screen_path(mtm, target.display_id),
-            };
+            let current = self.current(mtm, target.display_id, &target.space);
             let owned = self.applied.contains_key(&surface);
             surfaces.push(SurfaceStatus {
                 space: target.space.clone(),
@@ -535,10 +563,41 @@ mod tests {
     }
 
     #[test]
-    fn restore_list_covers_every_recorded_surface() {
-        let recorded = BTreeMap::from([("S1".to_string(), original("S1")), ("S2".to_string(), original("S2"))]);
-        let mut restored: Vec<String> = restore_list(&recorded).into_iter().map(|value| value.space).collect();
-        restored.sort();
-        assert_eq!(restored, vec!["S1".to_string(), "S2".to_string()]);
+    fn a_user_wallpaper_is_restored_as_recorded() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        assert_eq!(restore_source(&original("S1"), &BTreeMap::new(), &owned), Some(original("S1")));
+    }
+
+    #[test]
+    fn a_leftover_still_restores_another_original_on_the_same_display_first() {
+        let owned = vec![PathBuf::from("/data/Stills"), PathBuf::from("/data/private/Stills")];
+        let leftover = Original { url: Some("/data/private/Stills/old.png".into()), ..original("S1") };
+        let other = Original { display_id: 2, url: Some("/b.jpg".into()), ..original("S2") };
+        let same = Original { url: Some("/c.jpg".into()), config: Some("c".into()), ..original("S3") };
+        let recorded =
+            BTreeMap::from([("S1".to_string(), leftover.clone()), ("S2".to_string(), other), ("S3".to_string(), same)]);
+        let source = restore_source(&leftover, &recorded, &owned).expect("donor");
+        assert_eq!(
+            (source.space.as_str(), source.url.as_deref(), source.config.as_deref()),
+            ("S1", Some("/c.jpg"), Some("c"))
+        );
+    }
+
+    #[test]
+    fn nothing_is_restored_without_a_known_user_wallpaper() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        let leftover = Original { url: Some("/data/Stills/old.png".into()), ..original("S1") };
+        let pathless = Original { url: None, ..original("S2") };
+        let recorded = BTreeMap::from([("S1".to_string(), leftover.clone()), ("S2".to_string(), pathless.clone())]);
+        assert_eq!(restore_source(&leftover, &recorded, &owned), None);
+        assert_eq!(restore_source(&pathless, &recorded, &owned), None);
+    }
+
+    #[test]
+    fn only_a_desktop_showing_a_still_is_restored() {
+        let owned = vec![PathBuf::from("/data/Stills")];
+        assert!(shows_still(Some("/data/Stills/now.png"), &owned));
+        assert!(!shows_still(Some("/Users/me/Pictures/mine.jpg"), &owned));
+        assert!(!shows_still(None, &owned));
     }
 }
