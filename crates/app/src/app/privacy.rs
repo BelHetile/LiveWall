@@ -9,7 +9,7 @@ use super::{App, LOCKED, NO_SUCH_FOLDER, ok};
 use crate::engine::still;
 use crate::i18n;
 use crate::media::{optimize, thumb};
-use crate::model::{Folder, FolderId, Item, ItemId, Library, LockAssignment};
+use crate::model::{Folder, FolderId, Item, ItemId, Library, LockAssignment, Privacy};
 use crate::paths::{DirKind, Paths, Visibility};
 
 #[derive(Serialize)]
@@ -105,6 +105,31 @@ impl Library {
         self.placement.safe_default = self.placement.safe_default.filter(|id| !removed.contains(id));
         self.placement.safe.retain(|_, id| !removed.contains(id));
     }
+}
+
+pub fn reveals_desktop(unlocked: bool, privacy: &Privacy) -> bool {
+    return unlocked || !privacy.hide_desktop;
+}
+
+pub fn holds_private(library: &Library, unlocked: bool, privacy: &Privacy) -> bool {
+    return !unlocked
+        && reveals_desktop(unlocked, privacy)
+        && library.resolve(None, true).is_some_and(|id| library.is_private_id(id));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Title {
+    Name(String),
+    Private,
+}
+
+pub fn menu_title(library: &Library, unlocked: bool, privacy: &Privacy) -> Option<Title> {
+    let reveal = reveals_desktop(unlocked, privacy);
+    let id = library.resolve(None, reveal)?;
+    if !unlocked && library.is_private_id(id) {
+        return Some(Title::Private);
+    }
+    return library.items.iter().find(|item| item.id == id).map(|item| Title::Name(item.title.clone()));
 }
 
 pub fn visible_items(library: &Library, unlocked: bool) -> Vec<&Item> {
@@ -500,6 +525,10 @@ mod tests {
         }
     }
 
+    fn hiding(hide_desktop: bool) -> Privacy {
+        return Privacy { hide_desktop, ..Privacy::default() };
+    }
+
     fn private_library() -> (Library, ItemId, ItemId, ItemId) {
         let mut library = Library::default();
         let vault = library.create_folder("Vault".into());
@@ -584,6 +613,60 @@ mod tests {
         assert_eq!(library.placement.safe.get("S"), Some(&open));
         library.forget_safe(&[open]);
         assert!(library.placement.safe.is_empty());
+    }
+
+    #[test]
+    fn locking_replaces_private_wallpapers_on_the_desktop_by_default() {
+        assert!(Privacy::default().hide_desktop);
+        assert!(reveals_desktop(true, &hiding(true)));
+        assert!(!reveals_desktop(false, &hiding(true)));
+        assert!(reveals_desktop(false, &hiding(false)));
+        let (mut library, open, hidden, _) = private_library();
+        library.placement.default.item = Some(hidden);
+        library.placement.safe_default = Some(open);
+        let shown = |privacy: &Privacy| library.resolve(Some("S"), reveals_desktop(false, privacy));
+        assert_eq!(shown(&hiding(true)), Some(open));
+        assert_eq!(shown(&hiding(false)), Some(hidden));
+    }
+
+    #[test]
+    fn menu_title_never_names_a_private_wallpaper_while_locked() {
+        let (mut library, open, hidden, _) = private_library();
+        library.items.iter_mut().for_each(|item| item.title = item.path.clone());
+        library.placement.default.item = Some(hidden);
+        library.placement.safe_default = Some(open);
+        assert_eq!(menu_title(&library, false, &hiding(false)), Some(Title::Private));
+        assert_eq!(menu_title(&library, false, &hiding(true)), Some(Title::Name("/open.png".into())));
+        assert_eq!(menu_title(&library, true, &hiding(false)), Some(Title::Name("/hidden.png".into())));
+        library.placement.default.item = Some(open);
+        assert_eq!(menu_title(&library, false, &hiding(false)), Some(Title::Name("/open.png".into())));
+        library.placement.default.item = None;
+        assert_eq!(menu_title(&library, false, &hiding(false)), None);
+    }
+
+    #[test]
+    fn automatic_change_holds_while_a_private_wallpaper_is_shown() {
+        let (mut library, _, hidden, _) = private_library();
+        library.placement.default.item = Some(hidden);
+        assert!(holds_private(&library, false, &hiding(false)));
+        assert!(!holds_private(&library, true, &hiding(false)));
+        assert!(!holds_private(&library, false, &hiding(true)));
+        let (library, open, _, _) = private_library();
+        let mut library = library;
+        library.placement.default.item = Some(open);
+        assert!(!holds_private(&library, false, &hiding(false)));
+    }
+
+    #[test]
+    fn hide_desktop_defaults_to_true_for_older_settings() {
+        let settings: crate::model::Settings =
+            serde_json::from_str(r#"{"privacy":{"lock_on_idle":true}}"#).expect("older settings");
+        assert!(settings.privacy.hide_desktop);
+        let mut settings = settings;
+        crate::model::apply_patch(&mut settings, &serde_json::json!({ "privacy": { "hide_desktop": false } }))
+            .expect("patch");
+        assert!(!settings.privacy.hide_desktop);
+        assert!(settings.privacy.lock_on_idle);
     }
 
     #[test]

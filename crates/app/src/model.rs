@@ -225,11 +225,18 @@ pub struct Privacy {
     pub lock_on_display: bool,
     pub lock_on_idle: bool,
     pub idle_minutes: u32,
+    pub hide_desktop: bool,
 }
 
 impl Default for Privacy {
     fn default() -> Self {
-        return Self { lock_on_screen_lock: true, lock_on_display: true, lock_on_idle: false, idle_minutes: 15 };
+        return Self {
+            lock_on_screen_lock: true,
+            lock_on_display: true,
+            lock_on_idle: false,
+            idle_minutes: 15,
+            hide_desktop: true,
+        };
     }
 }
 

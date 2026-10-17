@@ -254,6 +254,12 @@ fn every_verb() {
     let patched = ok_json(&socket, &["settings", "get"]);
     assert_eq!(patched["data"]["tools"]["install_consent"], serde_json::json!(true), "nested merge: {patched}");
     assert_eq!(patched["data"]["rotate_minutes"], serde_json::json!(30), "unrelated field clobbered: {patched}");
+    ok_json(&socket, &["settings", "set", r#"{"privacy":{"hide_desktop":false}}"#]);
+    let patched = ok_json(&socket, &["settings", "get"]);
+    assert_eq!(patched["data"]["privacy"]["hide_desktop"], serde_json::json!(false), "privacy patch: {patched}");
+    ok_json(&socket, &["settings", "set", r#"{"privacy":{"hide_desktop":true}}"#]);
+    let patched = ok_json(&socket, &["settings", "get"]);
+    assert_eq!(patched["data"]["privacy"]["hide_desktop"], serde_json::json!(true), "privacy restore: {patched}");
 
     let login = lwctl_run(&socket, &["login-item", "set", "false"]);
     assert!(matches!(login.status.code(), Some(0 | 1)), "login-item set exit: {:?}", login.status.code());

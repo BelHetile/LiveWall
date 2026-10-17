@@ -6,9 +6,16 @@ All notable changes to LiveWall are listed here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Settings → Privacy → *Take Private Wallpapers off the Desktop*. It is on: locking the folders replaces a private
+  wallpaper on the desktop with a safe one. Turn it off to keep a private wallpaper on the desktop and the lock
+  screen while locked; the library and the menu bar still hide it.
+
 ### Changed
 - The whole app is in English and Russian and follows the macOS language; pick a language for LiveWall alone in
   System Settings → General → Language & Region → Applications. The language setting inside LiveWall is gone.
+- After a crash, LiveWall no longer puts an old still of its own back as your desktop picture; quitting keeps the
+  current wallpaper on screen instead, and a desktop picture you set yourself is never overwritten.
 
 ## [2.0.0] - 2026-10-16
 

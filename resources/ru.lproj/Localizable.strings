@@ -354,6 +354,8 @@
 	<string>ОК</string>
 	<key>Ocean</key>
 	<string>Океан</string>
+	<key>Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them</key>
+	<string>Выкл.: рабочий стол и экран блокировки показывают их; библиотека и меню скрывают</string>
 	<key>On %@</key>
 	<string>На: %@</string>
 	<key>On Login</key>
@@ -408,6 +410,8 @@
 	<string>Приватность</string>
 	<key>Private</key>
 	<string>Приватная</string>
+	<key>Private wallpaper</key>
+	<string>Скрытые обои</string>
 	<key>Quality</key>
 	<string>Качество</string>
 	<key>Quit LiveWall</key>
@@ -518,6 +522,8 @@ change how it plays.</key>
 	<string>переключение окон</string>
 	<key>System</key>
 	<string>Система</string>
+	<key>Take Private Wallpapers off the Desktop</key>
+	<string>Убирать приватные обои с рабочего стола</string>
 	<key>The folder is empty.</key>
 	<string>Папка пуста.</string>
 	<key>The wallpaper inside moves to Unfiled.</key>
@@ -592,6 +598,8 @@ change how it plays.</key>
 	<string>Когда рабочий стол закрыт окнами</string>
 	<key>When the Mac Gets Hot</key>
 	<string>Когда Mac перегревается</string>
+	<key>While Locked</key>
+	<string>Пока заблокировано</string>
 	<key>Window</key>
 	<string>Окно</string>
 	<key>Wipe</key>

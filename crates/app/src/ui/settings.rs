@@ -44,6 +44,7 @@ const LOCK_SCREEN: isize = 18;
 const LOCK_DISPLAY: isize = 19;
 const LOCK_IDLE: isize = 22;
 const IDLE_AFTER: isize = 23;
+const HIDE_DESKTOP: isize = 24;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
 pub const ACCENT: isize = 1;
@@ -106,6 +107,7 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
         (LOCK_SCREEN, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
         (LOCK_DISPLAY, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_display": on } })),
         (LOCK_IDLE, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_idle": on } })),
+        (HIDE_DESKTOP, Input::Flag(on)) => patch(json!({ "privacy": { "hide_desktop": on } })),
         (ROTATE, Input::Flag(on)) => patch(json!({ "auto_rotate": on })),
         (PAUSE, Input::Flag(on)) => {
             let mut map = serde_json::Map::new();
@@ -469,6 +471,7 @@ impl Settings {
                 LOCK_SCREEN => locks("lock_on_screen_lock"),
                 LOCK_DISPLAY => locks("lock_on_display"),
                 LOCK_IDLE => locks("lock_on_idle"),
+                HIDE_DESKTOP => locks("hide_desktop"),
                 _ => continue,
             };
             switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
@@ -893,6 +896,17 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
             line(mtm, &tr("Inactive For"), None, &after),
         ],
     );
+    let hide = switch(mtm, HIDE_DESKTOP, target);
+    let desktop = form(
+        mtm,
+        &tr("While Locked"),
+        &[line(
+            mtm,
+            &tr("Take Private Wallpapers off the Desktop"),
+            Some(&tr("Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them")),
+            &hide,
+        )],
+    );
     let hint = widgets::label(
         mtm,
         &tr("Always locked at launch and quit. Unlocking needs Touch ID or your password."),
@@ -901,9 +915,9 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
         &NSColor::secondaryLabelColor(),
     );
     return Locking {
-        page: page(mtm, &[&automatic, &hint]),
+        page: page(mtm, &[&automatic, &desktop, &hint]),
         idle: vec![widgets::view(&after)],
-        switches: vec![screen, display, idle],
+        switches: vec![screen, display, idle, hide],
         popups: vec![after],
     };
 }

@@ -237,7 +237,7 @@ impl App {
         let menu = Menu::install(
             mtm,
             &MenuState {
-                title: current_title(&library, unlocked),
+                title: current_title(&library, unlocked, &settings.privacy),
                 paused: false,
                 status: None,
                 muted: settings.muted,
@@ -777,7 +777,7 @@ impl App {
 
     fn sync_menu(&self) {
         self.menu.update(&MenuState {
-            title: current_title(&self.library, self.unlocked),
+            title: current_title(&self.library, self.unlocked, &self.settings.privacy),
             paused: self.paused,
             status: self.pause_reason().map(|reason| reason.text()),
             muted: self.settings.muted,
@@ -791,9 +791,13 @@ impl App {
             muted: self.settings.muted,
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
-            unlocked: self.unlocked,
+            reveal: self.reveals_desktop(),
             silenced: self.previewing,
         };
+    }
+
+    pub fn reveals_desktop(&self) -> bool {
+        return privacy::reveals_desktop(self.unlocked, &self.settings.privacy);
     }
 
     pub fn set_previewing(&mut self, item: Option<ItemId>) {
@@ -1073,6 +1077,9 @@ impl App {
     fn rotate_tick(&mut self) {
         let eligible = self.selectable_ids().len();
         if !rules::should_rotate(self.settings.auto_rotate, self.paused, &self.verdict, eligible) {
+            return;
+        }
+        if privacy::holds_private(&self.library, self.unlocked, &self.settings.privacy) {
             return;
         }
         let selection = if self.settings.shuffle { Selection::Random } else { Selection::Next };
@@ -1607,9 +1614,11 @@ fn validation_message(error: &hotkey::ValidationError, combo: &KeyCombo) -> Stri
     };
 }
 
-fn current_title(library: &Library, unlocked: bool) -> Option<String> {
-    let id = library.resolve(None, unlocked)?;
-    return library.items.iter().find(|item| item.id == id).map(|item| item.title.clone());
+fn current_title(library: &Library, unlocked: bool, privacy: &crate::model::Privacy) -> Option<String> {
+    return privacy::menu_title(library, unlocked, privacy).map(|title| match title {
+        crate::app::privacy::Title::Name(name) => name,
+        crate::app::privacy::Title::Private => i18n::tr("Private wallpaper"),
+    });
 }
 
 #[allow(clippy::cast_possible_truncation)]

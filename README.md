@@ -78,10 +78,12 @@ cd LiveWall
 - **Lock screen:** the macOS desktop picture follows the wallpaper as a still frame, so the lock screen and
   Mission Control match. Pick the frame in the inspector, or choose a separate lock screen wallpaper. Your own
   desktop picture comes back when LiveWall quits, even after a crash.
-- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library, the menu bar and
-  the desktop until you unlock with Touch ID (or your Mac password). They lock again when the screen locks, the
-  display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is hidden too. This keeps
-  wallpapers away from casual glances; the files are not encrypted.
+- **Locked folders:** mark a folder as locked and its wallpapers disappear from the library and the menu bar
+  until you unlock with Touch ID (or your Mac password). Locking replaces a private wallpaper on the desktop with
+  a safe one; turn off **Settings → Privacy → Take Private Wallpapers off the Desktop** to keep it on the desktop
+  and the lock screen while locked (the library and the menu bar still hide it). Folders lock again when the
+  screen locks, the display sleeps, after an idle time or with ⌃⌥⌘X. Optionally the folder itself is hidden too.
+  This keeps wallpapers away from casual glances; the files are not encrypted.
 - **Rotation:** change the wallpaper on a timer, in order or shuffled.
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
   while the library window is open.
