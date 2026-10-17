@@ -190,13 +190,6 @@ impl Library {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    En,
-    Ru,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuleScope {
@@ -291,7 +284,6 @@ pub struct Settings {
     pub stop_after_seconds: u32,
     pub launch_at_login: bool,
     pub open_library_at_launch: bool,
-    pub language: Option<Language>,
     pub hotkeys: Hotkeys,
     pub tools: Tools,
     pub transition: Transition,
@@ -318,7 +310,6 @@ impl Default for Settings {
             stop_after_seconds: 30,
             launch_at_login: false,
             open_library_at_launch: true,
-            language: None,
             hotkeys: Hotkeys::default(),
             tools: Tools::default(),
             transition: Transition::default(),
@@ -387,7 +378,6 @@ mod tests {
         assert_eq!(settings.optimize_fps_limit, 30);
         assert_eq!(settings.stop_after_seconds, 30);
         assert!(!settings.launch_at_login);
-        assert!(settings.language.is_none());
         assert_eq!(settings.hotkeys, Hotkeys::default());
     }
 

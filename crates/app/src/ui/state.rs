@@ -1,3 +1,4 @@
+use crate::i18n::{Arg, key, tr, trf};
 use crate::model::ItemKind;
 use crate::ui::view::{Library, Target};
 use crate::ui::wall::duration;
@@ -16,8 +17,12 @@ pub fn folder_glyph(library: &Library, folder: usize) -> Option<&'static str> {
     return lock.locked.then_some(if library.unlocked { "lock.open.fill" } else { "lock.fill" });
 }
 
+pub fn desktop_name(space: usize) -> String {
+    return trf("Desktop %ld", &[Arg::Int(i64::try_from(space + 1).unwrap_or(0))]);
+}
+
 pub fn privacy_title(unlocked: bool) -> &'static str {
-    return if unlocked { "Lock Private Folders" } else { "Unlock Private Folders…" };
+    return if unlocked { key("Lock Private Folders") } else { key("Unlock Private Folders…") };
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,8 +34,8 @@ pub enum Scope {
 impl Scope {
     pub fn title(self) -> String {
         return match self {
-            Scope::All => "All Desktops".to_string(),
-            Scope::Space(space) => format!("Desktop {}", space + 1),
+            Scope::All => tr("All Desktops"),
+            Scope::Space(space) => desktop_name(space),
         };
     }
 
@@ -56,18 +61,18 @@ pub enum Sort {
 
 impl Sort {
     pub const ALL: [(Sort, &str); 4] = [
-        (Sort::NameAscending, "Name (A–Z)"),
-        (Sort::NameDescending, "Name (Z–A)"),
-        (Sort::Newest, "Date Added (Newest)"),
-        (Sort::Oldest, "Date Added (Oldest)"),
+        (Sort::NameAscending, key("Name (A–Z)")),
+        (Sort::NameDescending, key("Name (Z–A)")),
+        (Sort::Newest, key("Date Added (Newest)")),
+        (Sort::Oldest, key("Date Added (Oldest)")),
     ];
 }
 
 pub const KINDS: [(Option<ItemKind>, &str); 4] = [
-    (None, "All Kinds"),
-    (Some(ItemKind::Video), "Videos"),
-    (Some(ItemKind::Gif), "GIFs"),
-    (Some(ItemKind::Image), "Images"),
+    (None, key("All Kinds")),
+    (Some(ItemKind::Video), key("Videos")),
+    (Some(ItemKind::Gif), key("GIFs")),
+    (Some(ItemKind::Image), key("Images")),
 ];
 
 pub struct Filter {
@@ -147,17 +152,17 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
             })
             .collect();
         let all = mine.contains(&Target::All);
-        let short = if all { "All".to_string() } else { spaces.join(", ") };
+        let short = if all { tr("All") } else { spaces.join(", ") };
         let long = match (all, spaces.len()) {
-            (true, _) => "All Desktops".to_string(),
-            (false, 1) => format!("Desktop {short}"),
-            (false, _) => format!("Desktops {short}"),
+            (true, _) => tr("All Desktops"),
+            (false, 1) => trf("Desktop %@", &[Arg::Text(short.clone())]),
+            (false, _) => trf("Desktops %@", &[Arg::Text(short.clone())]),
         };
         let active = mine.iter().any(|target| showing.contains(target));
         out.push(Marker { icon: "display", text: short, tip: long, active });
     }
     if targets.contains(&Target::Lock) {
-        out.push(Marker { icon: "lock.fill", text: "Lock".to_string(), tip: lock_tip(library), active: false });
+        out.push(Marker { icon: "lock.fill", text: tr("Lock"), tip: lock_tip(library), active: false });
     }
     return out;
 }
@@ -167,5 +172,5 @@ pub fn lock_tip(library: &Library) -> String {
         .lock
         .as_ref()
         .filter(|lock| lock.time > 0.0)
-        .map_or_else(|| "Lock Screen".to_string(), |lock| format!("Lock Screen · Frame at {}", duration(lock.time)));
+        .map_or_else(|| tr("Lock Screen"), |lock| trf("Lock Screen · Frame at %@", &[Arg::Text(duration(lock.time))]));
 }

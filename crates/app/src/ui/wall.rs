@@ -19,6 +19,7 @@ use objc2_quartz_core::{
     kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut, kCATransitionFade,
 };
 
+use crate::i18n::{Arg, tr, trf};
 use crate::model::{ItemId, ItemKind};
 use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
@@ -72,16 +73,18 @@ fn overall(downloads: &[Download]) -> f64 {
 
 fn download_line(download: &Download) -> String {
     return match download.stage {
-        Stage::Preparing => "Getting video info…".to_string(),
-        Stage::Merging => "Merging video and audio…".to_string(),
-        Stage::Importing => "Adding to library…".to_string(),
+        Stage::Preparing => tr("Getting video info…"),
+        Stage::Merging => tr("Merging video and audio…"),
+        Stage::Importing => tr("Adding to library…"),
         Stage::Downloading => {
-            let mut parts = vec![format!("Downloading {:.0}%", download.percent * 100.0)];
+            let mut parts = vec![trf("Downloading %@", &[Arg::Text(crate::i18n::percent(download.percent))])];
             if let Some(speed) = download.speed.filter(|speed| *speed > 0.0) {
-                parts.push(format!("{:.1} MB/s", speed / 1_048_576.0));
+                #[allow(clippy::cast_possible_truncation)]
+                let rate = crate::i18n::bytes(speed as i64);
+                parts.push(trf("%@/s", &[Arg::Text(rate)]));
             }
             if let Some(eta) = download.eta.filter(|eta| eta.is_finite() && *eta >= 0.0) {
-                parts.push(format!("{} left", clock(eta)));
+                parts.push(trf("%@ left", &[Arg::Text(clock(eta))]));
             }
             parts.join(" · ")
         }
@@ -506,14 +509,14 @@ pub fn resolution(item: &Item) -> Option<String> {
 
 pub fn kind_name(kind: ItemKind) -> &'static str {
     return match kind {
-        ItemKind::Video => "Video",
-        ItemKind::Gif => "GIF",
-        ItemKind::Image => "Image",
+        ItemKind::Video => crate::i18n::key("Video"),
+        ItemKind::Gif => crate::i18n::key("GIF"),
+        ItemKind::Image => crate::i18n::key("Image"),
     };
 }
 
 pub fn meta_line(item: &Item) -> String {
-    let mut parts = vec![kind_name(item.kind).to_string()];
+    let mut parts = vec![tr(kind_name(item.kind))];
     parts.extend(resolution(item));
     if item.kind == ItemKind::Video && item.duration > 0.0 {
         parts.push(duration(item.duration));
@@ -666,10 +669,10 @@ impl WallView {
         document.setWantsLayer(true);
         scroll.setDocumentView(Some(&document));
         let icon = widgets::symbol_view(mtm, "photo.on.rectangle.angled", 34.0, &NSColor::tertiaryLabelColor());
-        let title = widgets::label(mtm, "No Wallpapers", 17.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+        let title = widgets::label(mtm, &tr("No Wallpapers"), 17.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
         let hint = widgets::label(
             mtm,
-            "Add wallpapers, or try a different search, filter or folder.",
+            &tr("Add wallpapers, or try a different search, filter or folder."),
             12.0,
             &Weight::Regular,
             &NSColor::tertiaryLabelColor(),
@@ -888,7 +891,10 @@ impl WallView {
         let text = match downloads {
             [] => None,
             [only] => Some(download_line(only)),
-            many => Some(format!("Downloading {} videos · {:.0}%", many.len(), overall(many) * 100.0)),
+            many => Some(trf(
+                "Downloading %ld videos · %@",
+                &[Arg::Int(i64::try_from(many.len()).unwrap_or(0)), Arg::Text(crate::i18n::percent(overall(many)))],
+            )),
         };
         if let Some(text) = &text {
             ivars.status_text.setStringValue(&widgets::ns(text));

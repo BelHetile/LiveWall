@@ -10,6 +10,7 @@ use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
 use serde_json::json;
 
 use crate::app::{self, Event, post};
+use crate::i18n::tr;
 use crate::model::ItemId;
 use crate::ui::settings::{self, Change, Input};
 use crate::ui::state::{
@@ -457,7 +458,7 @@ fn validate(item: &NSMenuItem) -> bool {
     if let Some((unlocked, guarded)) =
         app::with(|app| (app.is_unlocked(), app.library().folders.iter().any(|folder| folder.locked)))
     {
-        item.setTitle(&ns(privacy_title(unlocked)));
+        item.setTitle(&ns(&tr(privacy_title(unlocked))));
         item.setKeyEquivalent(&ns(if unlocked { PRIVACY_KEY } else { "" }));
         item.setHidden(!guarded);
     }

@@ -4,6 +4,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSColorSpace};
 use objc2_foundation::NSArray;
 
+use crate::i18n;
 use crate::model::{Appearance, AppearanceMode};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,12 +83,12 @@ impl Palette {
     }
 
     pub const BUILT_IN: [(&str, Self); 6] = [
-        ("Violet", Self::new(0x0086_75AC, 0x00A9_96D6, 0x007D_6F9E)),
-        ("Rose", Self::new(0x00B0_7885, 0x00DB_A2B0, 0x009E_7881)),
-        ("Ocean", Self::new(0x0068_889F, 0x0087_B0CC, 0x006F_8B9E)),
-        ("Forest", Self::new(0x0060_8875, 0x0088_BDA2, 0x0075_9E8A)),
-        ("Amber", Self::new(0x009C_8766, 0x00D1_BA97, 0x009E_8B6F)),
-        ("Graphite", Self::new(0x0075_7980, 0x00BE_C2CC, 0x0095_989E)),
+        (i18n::key("Violet"), Self::new(0x0086_75AC, 0x00A9_96D6, 0x007D_6F9E)),
+        (i18n::key("Rose"), Self::new(0x00B0_7885, 0x00DB_A2B0, 0x009E_7881)),
+        (i18n::key("Ocean"), Self::new(0x0068_889F, 0x0087_B0CC, 0x006F_8B9E)),
+        (i18n::key("Forest"), Self::new(0x0060_8875, 0x0088_BDA2, 0x0075_9E8A)),
+        (i18n::key("Amber"), Self::new(0x009C_8766, 0x00D1_BA97, 0x009E_8B6F)),
+        (i18n::key("Graphite"), Self::new(0x0075_7980, 0x00BE_C2CC, 0x0095_989E)),
     ];
 
     pub fn custom(accent: Rgb, canvas: Rgb) -> Self {
@@ -132,14 +133,14 @@ pub struct Look {
 }
 
 impl Look {
-    pub const MODES: [&str; 3] = ["System", "Light", "Dark"];
+    pub const MODES: [&str; 3] = [i18n::key("System"), i18n::key("Light"), i18n::key("Dark")];
 
     pub fn new(appearance: &Appearance) -> Self {
         let mut themes: Vec<(String, Palette)> =
             Palette::BUILT_IN.iter().map(|(name, palette)| ((*name).to_string(), *palette)).collect();
         let accent = Rgb::parse(&appearance.accent).unwrap_or(Rgb::hex(0x0086_6A8C));
         let canvas = Rgb::parse(&appearance.canvas).unwrap_or(Rgb::hex(0x0094_7C8E));
-        themes.push(("Custom".to_string(), Palette::custom(accent, canvas)));
+        themes.push((i18n::key("Custom").to_string(), Palette::custom(accent, canvas)));
         let selected = themes.iter().position(|(name, _)| name.eq_ignore_ascii_case(&appearance.theme)).unwrap_or(0);
         let mode = match appearance.mode {
             AppearanceMode::System => 0,

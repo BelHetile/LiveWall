@@ -70,6 +70,10 @@ objc2-foundation = { workspace = true, features = [
   "NSRunLoop",
   "NSError",
   "NSLocale",
+  "NSFormatter",
+  "NSDateFormatter",
+  "NSByteCountFormatter",
+  "NSNumberFormatter",
   "NSDistributedNotificationCenter",
   "NSProcessInfo",
   "block2",
@@ -256,7 +260,6 @@ objc2-local-authentication = { workspace = true, features = [
   "LAContext",
   "block2",
 ] }
-plist.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
 libc.workspace = true
@@ -264,3 +267,4 @@ proto.workspace = true
 
 [dev-dependencies]
 livewall = { path = ".", features = ["test-support"] }
+plist.workspace = true

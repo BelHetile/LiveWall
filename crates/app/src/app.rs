@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::download;
 use crate::engine::{Engine, Playback};
 use crate::hotkey;
-use crate::i18n::{self, Strings};
+use crate::i18n;
 use crate::import;
 use crate::media::probe;
 use crate::media::{optimize, plan, thumb};
@@ -40,14 +40,14 @@ pub use privacy::{visible_folders, visible_items};
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
 const VOLUME_STEP: f32 = 0.1;
 const IDLE_POLL_SECONDS: f64 = 10.0;
-const UNLOCK_REASON: &str = "Unlock private wallpaper folders";
-const LOCKED: &str = "locked";
-const INVALID_ITEM_ID: &str = "invalid item id";
-const INVALID_FOLDER_ID: &str = "invalid folder id";
-const NO_SUCH_ITEM: &str = "no such item";
-const NO_SUCH_FOLDER: &str = "no such folder";
-const NO_OPTIMIZE_JOB: &str = "no optimize job for this item";
-const SERIALIZATION_FAILED: &str = "serialization failed";
+const UNLOCK_REASON: &str = i18n::key("Unlock private wallpaper folders");
+const LOCKED: &str = i18n::key("locked");
+const INVALID_ITEM_ID: &str = i18n::key("invalid item id");
+const INVALID_FOLDER_ID: &str = i18n::key("invalid folder id");
+const NO_SUCH_ITEM: &str = i18n::key("no such item");
+const NO_SUCH_FOLDER: &str = i18n::key("no such folder");
+const NO_OPTIMIZE_JOB: &str = i18n::key("no optimize job for this item");
+const SERIALIZATION_FAILED: &str = i18n::key("serialization failed");
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -112,7 +112,6 @@ pub struct App {
     _observers: Observers,
     hotkeys: Hotkeys,
     hotkey_failures: std::collections::BTreeMap<HotkeyAction, String>,
-    strings: Strings,
     menu: Menu,
     handle: tokio::runtime::Handle,
     optimize: Arc<optimize::Queue>,
@@ -159,22 +158,22 @@ impl PauseReason {
 
     fn from_cause(cause: &rules::Cause) -> Self {
         let (key, brief) = match cause {
-            rules::Cause::DisplayAsleep => ("Display asleep", "display asleep"),
-            rules::Cause::ScreenLocked => ("Screen locked", "screen locked"),
-            rules::Cause::Screensaver => ("Screen saver is running", "screen saver"),
-            rules::Cause::Occluded => ("Desktop is hidden", "desktop hidden"),
-            rules::Cause::Thermal => ("Mac is running hot", "Mac is hot"),
-            rules::Cause::LowPower => ("Low Power Mode is on", "Low Power Mode"),
-            rules::Cause::Fullscreen => ("An app is in fullscreen", "full screen"),
-            rules::Cause::Coverage => ("Desktop covered by windows", "covered"),
-            rules::Cause::Focus => ("Another app is focused", "app focused"),
-            rules::Cause::App(bundle) => return Self::new("App rule: %@", "", Some(app_name(bundle))),
+            rules::Cause::DisplayAsleep => (i18n::key("Display asleep"), i18n::key("display asleep")),
+            rules::Cause::ScreenLocked => (i18n::key("Screen locked"), i18n::key("screen locked")),
+            rules::Cause::Screensaver => (i18n::key("Screen saver is running"), i18n::key("screen saver")),
+            rules::Cause::Occluded => (i18n::key("Desktop is hidden"), i18n::key("desktop hidden")),
+            rules::Cause::Thermal => (i18n::key("Mac is running hot"), i18n::key("Mac is hot")),
+            rules::Cause::LowPower => (i18n::key("Low Power Mode is on"), i18n::key("Low Power Mode")),
+            rules::Cause::Fullscreen => (i18n::key("An app is in fullscreen"), i18n::key("full screen")),
+            rules::Cause::Coverage => (i18n::key("Desktop covered by windows"), i18n::key("covered")),
+            rules::Cause::Focus => (i18n::key("Another app is focused"), i18n::key("app focused")),
+            rules::Cause::App(bundle) => return Self::new(i18n::key("App rule: %@"), "", Some(app_name(bundle))),
         };
         return Self::new(key, brief, None);
     }
 
     pub fn brief(&self) -> String {
-        return self.arg.clone().unwrap_or_else(|| self.brief.to_string());
+        return self.arg.clone().unwrap_or_else(|| i18n::tr(self.brief));
     }
 
     fn args(&self) -> Vec<i18n::Arg> {
@@ -182,11 +181,15 @@ impl PauseReason {
     }
 
     pub fn english(&self) -> String {
-        return i18n::substitute(self.key, &self.args());
+        return i18n::english(self.key, &self.args());
     }
 
-    pub fn text(&self, strings: &Strings) -> String {
-        return strings.format("Paused: %@", &[i18n::Arg::Text(strings.format(self.key, &self.args()))]);
+    pub fn localized(&self) -> String {
+        return i18n::trf(self.key, &self.args());
+    }
+
+    pub fn text(&self) -> String {
+        return i18n::trf("Paused: %@", &[i18n::Arg::Text(self.localized())]);
     }
 }
 
@@ -229,7 +232,6 @@ impl App {
         settings.launch_at_login = matches!(system::login_item_status(), LoginItemStatus::Enabled);
         let warnings = library_warning.into_iter().chain(settings_warning).collect();
 
-        let strings = Strings::new(i18n::select_language(settings.language, &system::preferred_languages()));
         let (hotkeys, hotkey_failures) = register_all(&settings.hotkeys);
         let unlocked = test_unlocked();
         let menu = Menu::install(
@@ -241,7 +243,6 @@ impl App {
                 muted: settings.muted,
                 launch_at_login: settings.launch_at_login,
             },
-            &strings,
         );
 
         let handle = tokio::runtime::Handle::current();
@@ -270,7 +271,6 @@ impl App {
             _observers: Observers::install(mtm),
             hotkeys,
             hotkey_failures,
-            strings,
             menu,
             handle,
             optimize,
@@ -575,7 +575,7 @@ impl App {
         let Some(kind) =
             std::path::Path::new(&path).extension().and_then(|value| value.to_str()).and_then(import::kind_for)
         else {
-            let _ = reply.send(Response::err(ErrorCode::Media, "unsupported format"));
+            let _ = reply.send(Response::err(ErrorCode::Media, i18n::key("unsupported format")));
             return;
         };
         let policy = self.probe_policy();
@@ -587,7 +587,7 @@ impl App {
             });
             return match task.await {
                 Ok((found, verdict)) => ok(&serde_json::json!({ "probe": found, "verdict": verdict })),
-                Err(_) => Response::err(ErrorCode::Internal, "probe failed"),
+                Err(_) => Response::err(ErrorCode::Internal, i18n::key("probe failed")),
             };
         });
     }
@@ -602,11 +602,12 @@ impl App {
 
     fn start_tools_install(&mut self, tool: &str, consent: bool, reply: oneshot::Sender<Response>) {
         let Some(kind) = tools::ToolKind::from_id(tool) else {
-            let _ = reply.send(Response::err(ErrorCode::Invalid, "unknown tool"));
+            let _ = reply.send(Response::err(ErrorCode::Invalid, i18n::key("unknown tool")));
             return;
         };
         if !consent && !self.settings.tools.install_consent {
-            let _ = reply.send(Response::err(ErrorCode::ConsentRequired, "tool installation requires consent"));
+            let _ =
+                reply.send(Response::err(ErrorCode::ConsentRequired, i18n::key("tool installation requires consent")));
             return;
         }
         let tools_dir = self.paths.tools_dir();
@@ -623,7 +624,7 @@ impl App {
             return Err((ErrorCode::NotFound, NO_SUCH_ITEM.to_string()));
         };
         if !entry.needs_optimize {
-            return Err((ErrorCode::Media, "item does not need optimization".to_string()));
+            return Err((ErrorCode::Media, i18n::key("item does not need optimization").to_string()));
         }
         let tools_dir = self.paths.tools_dir();
         let container =
@@ -637,7 +638,7 @@ impl App {
             plan::Route::Apple => None,
             plan::Route::Ffmpeg => match tools::locate(tools::ToolKind::Ffmpeg, &tools_dir) {
                 Some(path) => Some(path),
-                None => return Err((ErrorCode::ToolMissing, "ffmpeg is not installed".to_string())),
+                None => return Err((ErrorCode::ToolMissing, i18n::key("ffmpeg is not installed").to_string())),
             },
         };
         let fallback = plan::Source {
@@ -661,7 +662,7 @@ impl App {
             fallback,
         };
         if !self.optimize.enqueue(job) {
-            return Err((ErrorCode::Busy, "optimize is already queued for this item".to_string()));
+            return Err((ErrorCode::Busy, i18n::key("optimize is already queued for this item").to_string()));
         }
         return Ok(());
     }
@@ -688,7 +689,7 @@ impl App {
     fn download_status(&self, id: &str) -> Response {
         return match self.downloads.status(id) {
             Some(state) => ok(&state.report(id)),
-            None => Response::err(ErrorCode::NotFound, "no such download job"),
+            None => Response::err(ErrorCode::NotFound, i18n::key("no such download job")),
         };
     }
 
@@ -775,16 +776,13 @@ impl App {
     }
 
     fn sync_menu(&self) {
-        self.menu.update(
-            &MenuState {
-                title: current_title(&self.library, self.unlocked),
-                paused: self.paused,
-                status: self.pause_reason().map(|reason| reason.text(&self.strings)),
-                muted: self.settings.muted,
-                launch_at_login: self.settings.launch_at_login,
-            },
-            &self.strings,
-        );
+        self.menu.update(&MenuState {
+            title: current_title(&self.library, self.unlocked),
+            paused: self.paused,
+            status: self.pause_reason().map(|reason| reason.text()),
+            muted: self.settings.muted,
+            launch_at_login: self.settings.launch_at_login,
+        });
     }
 
     fn playback(&self) -> Playback {
@@ -987,8 +985,10 @@ impl App {
             && let Some(entry) = self.library.items.iter().find(|entry| entry.id == id)
             && !entry.playable
         {
-            let reason =
-                entry.optimize_reason.clone().unwrap_or_else(|| "media is not playable until optimized".to_string());
+            let reason = entry
+                .optimize_reason
+                .clone()
+                .unwrap_or_else(|| i18n::key("media is not playable until optimized").to_string());
             return Response::err(ErrorCode::Media, reason);
         }
         self.apply_target(item, target);
@@ -1027,7 +1027,7 @@ impl App {
             return;
         }
         self.unlock_epoch += 1;
-        let reason = self.strings.get(UNLOCK_REASON);
+        let reason = i18n::tr(UNLOCK_REASON);
         self.unlock_pending = Some(auth::evaluate(&reason, self.unlock_epoch));
     }
 
@@ -1243,16 +1243,11 @@ impl App {
             Request::Rules => ok(&self.rules_report()),
             Request::SettingsGet => ok(&self.settings),
             Request::SettingsSet { patch } => {
-                let previous = i18n::select_language(self.settings.language, &system::preferred_languages());
                 let rotation = self.rotation_settings();
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Err(Response::err(ErrorCode::Invalid, message));
                 }
                 self.persist_settings();
-                let language = i18n::select_language(self.settings.language, &system::preferred_languages());
-                if language != previous {
-                    self.strings = Strings::new(language);
-                }
                 if self.rotation_settings() != rotation {
                     self.restart_rotation();
                 }
@@ -1282,7 +1277,9 @@ impl App {
             | Request::Tools
             | Request::ToolsInstall { .. }
             | Request::Probe { .. }
-            | Request::Download { .. } => Response::err(ErrorCode::Internal, "request is handled asynchronously"),
+            | Request::Download { .. } => {
+                Response::err(ErrorCode::Internal, i18n::key("request is handled asynchronously"))
+            }
         });
     }
 
@@ -1367,7 +1364,7 @@ impl App {
             return Ok(());
         };
         if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
-            return Err(Response::err(ErrorCode::Invalid, validation_message(&self.strings, &error, &combo)));
+            return Err(Response::err(ErrorCode::Invalid, validation_message(&error, &combo)));
         }
         match self.hotkeys.register(action, &combo) {
             Ok(()) => {
@@ -1377,9 +1374,9 @@ impl App {
             }
             Err(RegisterError::TakenByOtherApp) => {
                 let display = hotkey::display(&combo);
-                let message = self.strings.format(
+                let message = i18n::trf(
                     "%@ is already used by another app. Press another combination.",
-                    &[crate::i18n::Arg::Text(display)],
+                    &[i18n::Arg::Text(display)],
                 );
                 return Err(Response::err(ErrorCode::Invalid, message));
             }
@@ -1436,7 +1433,7 @@ impl App {
             return None;
         }
         if self.paused {
-            return Some(PauseReason::new("Paused by you", "by you", None));
+            return Some(PauseReason::new(i18n::key("Paused by you"), i18n::key("by you"), None));
         }
         if self.verdict.action == rules::Action::KeepRunning {
             return None;
@@ -1548,7 +1545,7 @@ impl App {
     fn select(&mut self, selection: Selection, transition: Option<&proto::Transition>) -> Response {
         let ids = self.selectable_ids();
         if ids.is_empty() {
-            return Response::err(ErrorCode::NotFound, "library is empty");
+            return Response::err(ErrorCode::NotFound, i18n::key("library is empty"));
         }
         let current = self.current_item().and_then(|id| ids.iter().position(|existing| *existing == id));
         let index = match selection {
@@ -1595,13 +1592,18 @@ fn register_message(error: RegisterError) -> String {
     };
 }
 
-fn validation_message(strings: &Strings, error: &hotkey::ValidationError, combo: &KeyCombo) -> String {
+fn validation_message(error: &hotkey::ValidationError, combo: &KeyCombo) -> String {
     return match error {
-        hotkey::ValidationError::Reserved(owner) => strings.format(
+        hotkey::ValidationError::Reserved(owner) => i18n::trf(
             "%@ is already used by %@. Press another combination.",
-            &[crate::i18n::Arg::Text(hotkey::display(combo)), crate::i18n::Arg::Text(strings.get(owner))],
+            &[i18n::Arg::Text(hotkey::display(combo)), i18n::Arg::Text(i18n::tr(owner))],
         ),
-        _ => error.to_string(),
+        hotkey::ValidationError::Duplicate(other) => i18n::trf(
+            "%@ is already used by %@. Press another combination.",
+            &[i18n::Arg::Text(hotkey::display(combo)), i18n::Arg::Text(i18n::tr(hotkey::title(*other)))],
+        ),
+        hotkey::ValidationError::MissingModifier => i18n::tr("Needs at least one of ⌘ ⌃ ⌥, or an F-key"),
+        hotkey::ValidationError::UnknownKey(_) => error.to_string(),
     };
 }
 
@@ -1720,7 +1722,7 @@ async fn resolve_download(
     queue: &download::Queue,
 ) -> Result<String, (ErrorCode, String)> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err((ErrorCode::Invalid, "invalid url".to_string()));
+        return Err((ErrorCode::Invalid, i18n::key("invalid url").to_string()));
     }
     let tools_dir = paths.tools_dir();
     let yt_dlp = require_tool(tools::ToolKind::YtDlp, &tools_dir, consent).await?;

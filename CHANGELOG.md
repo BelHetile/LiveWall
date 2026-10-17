@@ -4,6 +4,12 @@ All notable changes to LiveWall are listed here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- The whole app is in English and Russian and follows the macOS language; pick a language for LiveWall alone in
+  System Settings → General → Language & Region → Applications. The language setting inside LiveWall is gone.
+
 ## [2.0.0] - 2026-10-16
 
 LiveWall is now a native Rust app for Apple Silicon Macs on macOS 15 or newer. It starts with an empty library.

@@ -104,27 +104,13 @@ fn in_process(mtm: MainThreadMarker) {
     let duplicate =
         exchange(&socket, Request::HotkeysSet { action: HotkeyAction::Next, combo: Some("ctrl+opt+cmd+f18".into()) });
     let body = expect_error(duplicate, ErrorCode::Invalid);
-    assert!(body.contains("another action"), "duplicate reason was {body:?}");
+    assert!(body.contains("⌃⌥⌘F18"), "duplicate reason was {body:?}");
 
     assert!(!status(&socket)["paused"].as_bool().unwrap_or(true));
     assert!(synthesize_press(HotkeyAction::TogglePause), "synthetic hotkey event was not delivered");
     assert_eq!(status(&socket)["paused"].as_bool(), Some(true));
     assert!(synthesize_press(HotkeyAction::TogglePause));
     assert_eq!(status(&socket)["paused"].as_bool(), Some(false));
-
-    let mut patch = serde_json::Map::new();
-    patch.insert("language".into(), serde_json::Value::String("ru".into()));
-    let response = exchange(&socket, Request::SettingsSet { patch: serde_json::Value::Object(patch) });
-    assert!(matches!(response.body, ResponseBody::Ok { .. }), "{response:?}");
-    let menu = ok(&socket, Request::Menu);
-    let titles: Vec<String> = menu["items"]
-        .as_array()
-        .expect("menu items")
-        .iter()
-        .filter_map(|item| item["title"].as_str().map(ToString::to_string))
-        .collect();
-    assert!(titles.iter().any(|title| title == "Пауза"), "menu was not localized: {titles:?}");
-    assert!(titles.iter().any(|title| title == "Завершить LiveWall"), "menu was not localized: {titles:?}");
 
     let login = ok(&socket, Request::LoginItemGet);
     assert!(login["status"].as_str().is_some(), "login item status: {login}");

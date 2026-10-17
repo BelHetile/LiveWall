@@ -20,6 +20,7 @@ use proto::{FillMode, Geometry};
 
 use crate::cf::file_url;
 use crate::geometry::{self, Size};
+use crate::i18n::{self, Arg, tr, trf};
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
@@ -42,8 +43,9 @@ pub const HORIZONTAL: isize = 3;
 pub const VERTICAL: isize = 4;
 pub const ZOOM: isize = 5;
 pub const SCRUB: isize = 6;
-pub const FRAME_TO_LOCK: &str = "Set This Frame as Lock Screen";
-const MODES: [&str; 5] = ["Fill", "Fit", "Stretch", "Center", "Custom"];
+pub const FRAME_TO_LOCK: &str = i18n::key("Set This Frame as Lock Screen");
+const MODES: [&str; 5] =
+    [i18n::key("Fill"), i18n::key("Fit"), i18n::key("Stretch"), i18n::key("Center"), i18n::key("Custom")];
 pub const FILLS: [FillMode; 5] = [FillMode::Fill, FillMode::Fit, FillMode::Stretch, FillMode::Center, FillMode::Custom];
 
 type Shown = (ItemId, PathBuf, bool, bool);
@@ -172,11 +174,11 @@ impl Inspector {
             widgets::reveal(&controls.markers, !refs.is_empty());
         }
         let scope = self.target.unwrap_or(filter.scope);
-        let title = format!("On {}", scope.title());
+        let title = trf("On %@", &[Arg::Text(scope.title())]);
         let menu = scope_menu(mtm, library, scope, &title, sel!(target:), target);
         if self.target.is_some() {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
-            menu.addItem(&widgets::menu_item(mtm, "Match Toolbar", sel!(target:), Some(target), TAG_RESET, None));
+            menu.addItem(&widgets::menu_item(mtm, &tr("Match Toolbar"), sel!(target:), Some(target), TAG_RESET, None));
         }
         controls.destination.setMenu(Some(&menu));
         widgets::alpha(&controls.destination, if self.target.is_some() { 1.0 } else { 0.85 });
@@ -356,11 +358,12 @@ impl Inspector {
         let listening = self.listening.is_some();
         let tint = if listening { NSColor::controlAccentColor() } else { NSColor::secondaryLabelColor() };
         controls.listen.setContentTintColor(Some(&tint));
-        controls.listen.setToolTip(Some(&widgets::ns(if listening {
-            "Stop listening; the desktop plays its own sound again"
+        let tip = if listening {
+            tr("Stop listening; the desktop plays its own sound again")
         } else {
-            "Listen to the preview; the desktop copy is muted meanwhile"
-        })));
+            tr("Listen to the preview; the desktop copy is muted meanwhile")
+        };
+        controls.listen.setToolTip(Some(&widgets::ns(&tip)));
         let volume = if settings.muted { 0.0 } else { settings.volume * 100.0 };
         controls.volume.setDoubleValue(volume);
         controls.volume_value.show(volume);
@@ -452,10 +455,10 @@ impl Inspector {
 
     fn empty(&self, mtm: MainThreadMarker) {
         let icon = widgets::symbol_view(mtm, "sparkles.rectangle.stack", 30.0, &NSColor::tertiaryLabelColor());
-        let title = widgets::label(mtm, "No Selection", 15.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
+        let title = widgets::label(mtm, &tr("No Selection"), 15.0, &Weight::Semibold, &NSColor::secondaryLabelColor());
         let hint = widgets::label(
             mtm,
-            "Select a wallpaper to preview it and\nchange how it plays.",
+            &tr("Select a wallpaper to preview it and\nchange how it plays."),
             12.0,
             &Weight::Regular,
             &NSColor::tertiaryLabelColor(),
@@ -523,18 +526,18 @@ fn actions(
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSPopUpButton>) {
     let (title, icon, action) = match (item.playable, item.progress) {
-        (true, _) => ("Set as Wallpaper", "photo.on.rectangle", sel!(setWallpaper:)),
-        (false, None) => ("Optimize", "wand.and.sparkles", sel!(optimize:)),
-        (false, Some(_)) => ("Optimizing…", "wand.and.sparkles", sel!(optimize:)),
+        (true, _) => (tr("Set as Wallpaper"), "photo.on.rectangle", sel!(setWallpaper:)),
+        (false, None) => (tr("Optimize"), "wand.and.sparkles", sel!(optimize:)),
+        (false, Some(_)) => (tr("Optimizing…"), "wand.and.sparkles", sel!(optimize:)),
     };
-    let wallpaper = widgets::button(mtm, title, Some(icon), action, target);
+    let wallpaper = widgets::button(mtm, &title, Some(icon), action, target);
     widgets::prominent(&wallpaper, theme);
     wallpaper.setKeyEquivalent(&widgets::ns("\r"));
     wallpaper.setEnabled(item.playable || item.progress.is_none());
-    let lock = widgets::button(mtm, "Lock Screen", Some("lock"), sel!(setLock:), target);
-    lock.setToolTip(Some(&widgets::ns("Set as Lock Screen")));
+    let lock = widgets::button(mtm, &tr("Lock Screen"), Some("lock"), sel!(setLock:), target);
+    lock.setToolTip(Some(&widgets::ns(&tr("Set as Lock Screen"))));
     lock.setAttributedTitle(&widgets::styled(
-        "Lock Screen",
+        &tr("Lock Screen"),
         &widgets::font(12.0, &Weight::Regular),
         &NSColor::secondaryLabelColor(),
     ));
@@ -546,7 +549,7 @@ fn actions(
     lock.heightAnchor().constraintEqualToAnchor(&wallpaper.heightAnchor()).setActive(true);
     let destination = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
     widgets::secondary(&destination);
-    destination.setToolTip(Some(&widgets::ns("Choose a specific desktop")));
+    destination.setToolTip(Some(&widgets::ns(&tr("Choose a specific desktop"))));
     let stack = widgets::stack(mtm, &[&buttons, &destination], true, 8.0);
     stack.setAlignment(NSLayoutAttribute::Leading);
     buttons.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
@@ -554,14 +557,14 @@ fn actions(
     destination.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
     destination.trailingAnchor().constraintEqualToAnchor(&wallpaper.trailingAnchor()).setActive(true);
     if video {
-        let frame = widgets::button(mtm, "Use This Frame", None, sel!(lockFrame:), target);
+        let frame = widgets::button(mtm, &tr("Use This Frame"), None, sel!(lockFrame:), target);
         widgets::secondary(&frame);
         frame.setAttributedTitle(&widgets::styled(
-            "Use This Frame",
+            &tr("Use This Frame"),
             &widgets::font(12.0, &Weight::Regular),
             &NSColor::secondaryLabelColor(),
         ));
-        frame.setToolTip(Some(&widgets::ns(FRAME_TO_LOCK)));
+        frame.setToolTip(Some(&widgets::ns(&tr(FRAME_TO_LOCK))));
         frame.setImage(widgets::symbol("film", 11.0).as_deref());
         frame.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
         frame.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -592,9 +595,9 @@ fn playback(mtm: MainThreadMarker, theme: &Theme, target: &AnyObject) -> Playbac
     speed.widthAnchor().constraintEqualToConstant(SLIDER_WIDTH).setActive(true);
     let speed_value = field(mtm, SPEED, target);
     let speed_box = widgets::stack(mtm, &[&speed, &speed_value], false, 6.0);
-    let volume_row = widgets::row(mtm, "Volume", &volume_box);
-    let speed_row = widgets::row(mtm, "Speed", &speed_box);
-    let section = widgets::section(mtm, "PLAYBACK", &[&volume_row, &speed_row]);
+    let volume_row = widgets::row(mtm, &tr("Volume"), &volume_box);
+    let speed_row = widgets::row(mtm, &tr("Speed"), &speed_box);
+    let section = widgets::section(mtm, &tr("PLAYBACK"), &[&volume_row, &speed_row]);
     return (section, mute, volume, volume_value, speed, speed_value);
 }
 
@@ -603,7 +606,7 @@ fn placement(
     theme: &Theme,
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSSegmentedControl>, [Offset; 3]) {
-    let labels: Vec<Retained<NSString>> = MODES.iter().map(|text| widgets::ns(text)).collect();
+    let labels: Vec<Retained<NSString>> = MODES.iter().map(|text| widgets::ns(&tr(text))).collect();
     let modes = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&labels),
@@ -621,7 +624,7 @@ fn placement(
         (slider(mtm, 0.0, -100.0, 100.0, VERTICAL, theme, target), field(mtm, VERTICAL, target)),
         (slider(mtm, 1.0, 1.0, 4.0, ZOOM, theme, target), field(mtm, ZOOM, target)),
     ];
-    let rows: Vec<Retained<NSStackView>> = ["Horizontal", "Vertical", "Zoom"]
+    let rows: Vec<Retained<NSStackView>> = [tr("Horizontal"), tr("Vertical"), tr("Zoom")]
         .iter()
         .zip(&offsets)
         .map(|(name, (control, value))| {
@@ -633,17 +636,17 @@ fn placement(
     gap.heightAnchor().constraintEqualToConstant(2.0).setActive(true);
     let mut views: Vec<&NSView> = vec![&modes, &gap];
     views.extend(rows.iter().map(|row| &***row));
-    let section = widgets::section(mtm, "PLACEMENT", &views);
+    let section = widgets::section(mtm, &tr("PLACEMENT"), &views);
     return (section, modes, offsets);
 }
 
 fn reset_button(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSButton> {
     let reset = widgets::button(mtm, "", Some("arrow.counterclockwise"), sel!(resetSettings:), target);
     let font = widgets::font(12.0, &Weight::Regular);
-    reset.setAttributedTitle(&widgets::styled("Reset to Defaults", &font, &NSColor::systemRedColor()));
+    reset.setAttributedTitle(&widgets::styled(&tr("Reset to Defaults"), &font, &NSColor::systemRedColor()));
     reset.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
     reset.setContentTintColor(Some(&NSColor::systemRedColor()));
-    reset.setToolTip(Some(&widgets::ns("Reset playback and placement for this wallpaper")));
+    reset.setToolTip(Some(&widgets::ns(&tr("Reset playback and placement for this wallpaper"))));
     return reset;
 }
 
@@ -666,14 +669,14 @@ fn library_row(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSStackVi
     );
     let delete = widgets::icon_button(mtm, "trash", sel!(delete:), target);
     delete.setContentTintColor(Some(&NSColor::systemRedColor()));
-    delete.setToolTip(Some(&widgets::ns("Remove from Library")));
+    delete.setToolTip(Some(&widgets::ns(&tr("Remove from Library"))));
     let row = widgets::stack(mtm, &[&icon, &folder, &delete], false, 8.0);
     row.heightAnchor().constraintEqualToConstant(26.0).setActive(true);
     return (row, folder);
 }
 
 fn facts(item: &Item) -> (String, String) {
-    let mut primary = vec![kind_name(item.kind).to_string()];
+    let mut primary = vec![tr(kind_name(item.kind))];
     if item.width > 0 {
         let size = format!("{} × {}", item.width, item.height);
         primary.push(match resolution(item).filter(|short| short.ends_with('p') || short == "4K") {
@@ -693,9 +696,8 @@ fn facts(item: &Item) -> (String, String) {
     if item.fps > 0.0 {
         secondary.push(format!("{:.0} fps", item.fps));
     }
-    #[allow(clippy::cast_precision_loss)]
-    secondary.push(format!("{:.1} MB", item.bytes as f64 / 1_048_576.0));
-    secondary.push(format!("Added {}", item.added.to_zoned(jiff::tz::TimeZone::system()).strftime("%-d %b %Y")));
+    secondary.push(crate::i18n::bytes(i64::try_from(item.bytes).unwrap_or(i64::MAX)));
+    secondary.push(trf("Added %@", &[Arg::Text(crate::i18n::date(item.added))]));
     return (primary.join(" · "), secondary.join(" · "));
 }
 
@@ -755,7 +757,7 @@ fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>)
     let Some(menu) = popup.menu() else { return };
     let mtm = popup.mtm();
     let unfiled = NSMenuItem::new(mtm);
-    unfiled.setTitle(&widgets::ns("Unfiled"));
+    unfiled.setTitle(&widgets::ns(&tr("Unfiled")));
     unfiled.setTag(TAG_ALL);
     menu.addItem(&unfiled);
     for (index, name) in library.folders.iter().enumerate() {

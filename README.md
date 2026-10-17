@@ -86,7 +86,8 @@ cd LiveWall
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
   while the library window is open.
 - **Appearance:** light, dark or system; six color themes plus a custom accent.
-- **Languages:** the menu bar item and messages are in English and Russian; the library window is in English.
+- **Languages:** English and Russian, following the macOS language. To pick one for LiveWall only, use
+  **System Settings → General → Language & Region → Applications** and reopen LiveWall.
 - **Command line:** `lwctl` controls the running app (see below).
 
 ## Hotkeys

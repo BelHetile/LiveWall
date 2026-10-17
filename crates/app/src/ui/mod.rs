@@ -27,6 +27,7 @@ use proto::{Request, Response, ResponseBody};
 use serde_json::{Value, json};
 
 use crate::app::{self, App};
+use crate::i18n::{Arg, tr, trf};
 use crate::model::ItemId;
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::actions::Actions;
@@ -295,11 +296,11 @@ pub fn av1_notice(titles: &[String], converting: bool) {
     }
     let names = titles.iter().map(|title| format!("“{title}”")).collect::<Vec<_>>().join(", ");
     let next = if converting {
-        "LiveWall converts it to HEVC; it plays once the conversion finishes."
+        tr("LiveWall converts it to HEVC; it plays once the conversion finishes.")
     } else {
-        "Use Optimize for This Mac to convert it to HEVC."
+        tr("Use Optimize for This Mac to convert it to HEVC.")
     };
-    let message = format!("This Mac’s chip can’t decode AV1 video: {names}. {next}");
+    let message = format!("{} {}", trf("This Mac’s chip can’t decode AV1 video: %@.", &[Arg::Text(names)]), next);
     DispatchQueue::main().exec_async(move || dialogs::notice(&message));
 }
 
@@ -307,7 +308,7 @@ pub fn download_failed(reason: &str) {
     changed();
     let visible = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.window.isVisible()));
     if visible {
-        dialogs::notice(&format!("Couldn’t download the video: {reason}"));
+        dialogs::notice(&trf("Couldn’t download the video: %@", &[Arg::Text(reason.to_string())]));
     }
 }
 
@@ -401,7 +402,7 @@ pub fn frame(count: isize) {
 }
 
 pub fn rebind(action: proto::HotkeyAction, combo: Option<String>) -> Result<(), String> {
-    let response = app::with(|app| app.set_hotkey(action, combo)).ok_or_else(|| "LiveWall is busy".to_string())?;
+    let response = app::with(|app| app.set_hotkey(action, combo)).ok_or_else(|| tr("LiveWall is busy"))?;
     return match response.body {
         ResponseBody::Ok { .. } => Ok(()),
         ResponseBody::Err(body) => Err(body.message),

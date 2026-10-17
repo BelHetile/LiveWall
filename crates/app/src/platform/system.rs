@@ -1,9 +1,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_core_graphics::{CGError, CGEventSource, CGEventSourceStateID, CGEventType, CGGetOnlineDisplayList};
-use objc2_foundation::{
-    NSActivityOptions, NSLocale, NSObjectProtocol, NSProcessInfo, NSProcessInfoThermalState, NSString,
-};
+use objc2_foundation::{NSActivityOptions, NSObjectProtocol, NSProcessInfo, NSProcessInfoThermalState, NSString};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 pub fn low_power_mode() -> bool {
@@ -26,10 +24,6 @@ pub fn online_display_count() -> usize {
 
 pub fn idle_seconds() -> f64 {
     return CGEventSource::seconds_since_last_event_type(CGEventSourceStateID::HIDSystemState, CGEventType(u32::MAX));
-}
-
-pub fn preferred_languages() -> Vec<String> {
-    return NSLocale::preferredLanguages().to_vec().iter().map(ToString::to_string).collect();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]

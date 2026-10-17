@@ -9,7 +9,7 @@ use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString};
 use serde::Serialize;
 
 use crate::app::{Event, post};
-use crate::i18n::Strings;
+use crate::i18n::tr;
 
 const STATUS_ICON: &[u8] = include_bytes!("../../../resources/status-icon@2x.png");
 const STATUS_ICON_POINTS: f64 = 18.0;
@@ -97,7 +97,7 @@ pub struct Menu {
 }
 
 impl Menu {
-    pub fn install(mtm: MainThreadMarker, state: &MenuState, strings: &Strings) -> Self {
+    pub fn install(mtm: MainThreadMarker, state: &MenuState) -> Self {
         let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         set_status_icon(&status_item, mtm);
 
@@ -144,27 +144,23 @@ impl Menu {
             login,
             quit,
         };
-        menu.update(state, strings);
+        menu.update(state);
         return menu;
     }
 
-    pub fn update(&self, state: &MenuState, strings: &Strings) {
-        let title = state.title.clone().unwrap_or_else(|| strings.get("No wallpaper"));
+    pub fn update(&self, state: &MenuState) {
+        let title = state.title.clone().unwrap_or_else(|| tr("No wallpaper"));
         self.title.setTitle(&NSString::from_str(&title));
         self.title.setSubtitle(state.status.as_deref().map(NSString::from_str).as_deref());
-        self.library.setTitle(&NSString::from_str(&strings.get("Open library")));
-        self.pause.setTitle(&NSString::from_str(&if state.paused {
-            strings.get("Resume")
-        } else {
-            strings.get("Pause")
-        }));
-        self.next.setTitle(&NSString::from_str(&strings.get("Next")));
-        self.previous.setTitle(&NSString::from_str(&strings.get("Previous")));
-        self.random.setTitle(&NSString::from_str(&strings.get("Random")));
-        self.mute.setTitle(&NSString::from_str(&if state.muted { strings.get("Unmute") } else { strings.get("Mute") }));
-        self.login.setTitle(&NSString::from_str(&strings.get("Launch at login")));
+        self.library.setTitle(&NSString::from_str(&tr("Open library")));
+        self.pause.setTitle(&NSString::from_str(&if state.paused { tr("Resume") } else { tr("Pause") }));
+        self.next.setTitle(&NSString::from_str(&tr("Next")));
+        self.previous.setTitle(&NSString::from_str(&tr("Previous")));
+        self.random.setTitle(&NSString::from_str(&tr("Random")));
+        self.mute.setTitle(&NSString::from_str(&if state.muted { tr("Unmute") } else { tr("Mute") }));
+        self.login.setTitle(&NSString::from_str(&tr("Launch at login")));
         self.login.setState(if state.launch_at_login { NSControlStateValueOn } else { NSControlStateValueOff });
-        self.quit.setTitle(&NSString::from_str(&strings.get("Quit LiveWall")));
+        self.quit.setTitle(&NSString::from_str(&tr("Quit LiveWall")));
     }
 
     pub fn report(&self) -> MenuReport {

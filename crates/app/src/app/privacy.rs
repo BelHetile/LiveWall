@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::{App, LOCKED, NO_SUCH_FOLDER, ok};
 use crate::engine::still;
+use crate::i18n;
 use crate::media::{optimize, thumb};
 use crate::model::{Folder, FolderId, Item, ItemId, Library, LockAssignment};
 use crate::paths::{DirKind, Paths, Visibility};
@@ -224,7 +225,7 @@ impl App {
 
     fn relocate(&mut self, items: &[ItemId], to: Visibility) -> Result<(), Response> {
         if items.iter().any(|item| self.optimizing(*item)) {
-            return Err(Response::err(ErrorCode::Busy, "optimize is in progress for this item"));
+            return Err(Response::err(ErrorCode::Busy, i18n::key("optimize is in progress for this item")));
         }
         let lock = self.library.placement.lock;
         if let Err(error) = relocate_many(&self.paths, &mut self.library.items, items, to, lock) {

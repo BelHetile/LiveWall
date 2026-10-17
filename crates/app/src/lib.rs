@@ -20,9 +20,8 @@ mod tools;
 pub mod ui;
 
 pub use app::{App, Event, install, post, terminating, with};
-pub use i18n::{Arg, Strings};
+pub use i18n::{Arg, Catalog};
 pub use ipc::{BindOutcome, cleanup, prepare, serve};
-pub use model::Language;
 pub use paths::Paths;
 #[cfg(feature = "test-support")]
 pub use platform::hotkeys::synthesize_press;

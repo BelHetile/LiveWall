@@ -14,13 +14,14 @@ use proto::Request;
 use uuid::Uuid;
 
 use crate::app;
+use crate::i18n::{self, Arg, tr, trf, trp};
 use crate::ui::widgets::{self, ns};
 use crate::ui::{UI, later, submit};
 
 const NAME_WIDTH: f64 = 260.0;
 pub const PRIVATE_HIDE_TAG: isize = 1;
 const LINK_WIDTH: f64 = 340.0;
-const QUALITIES: [&str; 5] = ["Best Available", "4K", "1440p", "1080p", "720p"];
+const QUALITIES: [&str; 5] = [i18n::key("Best Available"), "4K", "1440p", "1080p", "720p"];
 const DEFAULT_QUALITY: isize = 3;
 
 fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
@@ -40,8 +41,8 @@ pub fn notice(message: &str) {
     };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(message));
-    alert.addButtonWithTitle(&ns("OK"));
+    alert.setMessageText(&ns(&tr(message)));
+    alert.addButtonWithTitle(&ns(&tr("OK")));
     sheet(&alert, |_| {});
 }
 
@@ -50,12 +51,13 @@ pub fn consent_sheet(url: String, message: &str) {
         return;
     };
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns("Install download tools?"));
-    alert.setInformativeText(&ns(&format!(
-        "{message}. LiveWall can download yt-dlp, ffmpeg and deno into its own folder."
+    alert.setMessageText(&ns(&tr("Install download tools?")));
+    alert.setInformativeText(&ns(&trf(
+        "%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.",
+        &[Arg::Text(message.to_string())],
     )));
-    alert.addButtonWithTitle(&ns("Install and Download"));
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Install and Download")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     sheet(&alert, move |response| {
         if response == NSAlertFirstButtonReturn {
             let request = Request::Download { url: url.clone(), consent: true };
@@ -77,11 +79,11 @@ pub fn confirm_delete(mtm: MainThreadMarker, index: Option<usize>) {
     };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&format!("Remove “{title}” from the library?")));
-    alert.setInformativeText(&ns("LiveWall deletes its copy. Your original file isn’t affected."));
-    let remove = alert.addButtonWithTitle(&ns("Remove"));
+    alert.setMessageText(&ns(&trf("Remove “%@” from the library?", &[Arg::Text(title)])));
+    alert.setInformativeText(&ns(&tr("LiveWall deletes its copy. Your original file isn’t affected.")));
+    let remove = alert.addButtonWithTitle(&ns(&tr("Remove")));
     remove.setHasDestructiveAction(true);
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     sheet(&alert, move |response| {
         if response == NSAlertFirstButtonReturn {
             let request = Request::LibraryRemove { ids: vec![id.to_string()] };
@@ -98,12 +100,12 @@ pub fn rename_folder(mtm: MainThreadMarker, id: Uuid) {
         return;
     };
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns("Rename Folder"));
-    let field = widgets::input(mtm, "Folder name", NAME_WIDTH);
+    alert.setMessageText(&ns(&tr("Rename Folder")));
+    let field = widgets::input(mtm, &tr("Folder name"), NAME_WIDTH);
     field.setStringValue(&ns(&name));
     alert.setAccessoryView(Some(&field));
-    alert.addButtonWithTitle(&ns("Rename"));
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Rename")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     alert.window().setInitialFirstResponder(Some(&field));
     sheet(&alert, move |response| {
         let name = field.stringValue().to_string().trim().to_string();
@@ -125,17 +127,17 @@ pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
     };
     let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&format!("Delete the folder “{name}”?")));
+    alert.setMessageText(&ns(&trf("Delete the folder “%@”?", &[Arg::Text(name)])));
     let moved = match count {
-        0 => String::from("The folder is empty."),
-        1 => String::from("The wallpaper inside moves to Unfiled."),
-        count => format!("The {count} wallpapers inside move to Unfiled."),
+        0 => tr("The folder is empty."),
+        1 => tr("The wallpaper inside moves to Unfiled."),
+        count => trp("%ld wallpapers inside move to Unfiled.", i64::try_from(count).unwrap_or(0)),
     };
-    let info = if locked && count > 0 { format!("{moved} They become public.") } else { moved };
+    let info = if locked && count > 0 { format!("{moved} {}", tr("They become public.")) } else { moved };
     alert.setInformativeText(&ns(&info));
-    let delete = alert.addButtonWithTitle(&ns("Delete"));
+    let delete = alert.addButtonWithTitle(&ns(&tr("Delete")));
     delete.setHasDestructiveAction(true);
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     sheet(&alert, move |response| {
         if response == NSAlertFirstButtonReturn {
             let request = Request::FolderDelete { id: id.to_string() };
@@ -146,32 +148,34 @@ pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
 
 pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns("New Folder"));
-    alert.setInformativeText(&ns("Locked folders keep their wallpapers hidden until you unlock them with Touch ID."));
-    let field = widgets::input(mtm, "Folder name", NAME_WIDTH);
+    alert.setMessageText(&ns(&tr("New Folder")));
+    alert.setInformativeText(&ns(&tr(
+        "Locked folders keep their wallpapers hidden until you unlock them with Touch ID.",
+    )));
+    let field = widgets::input(mtm, &tr("Folder name"), NAME_WIDTH);
     let target = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.actions.clone()));
     let private = unsafe {
         NSButton::checkboxWithTitle_target_action(
-            &ns("Private"),
+            &ns(&tr("Private")),
             target.as_deref().map(|target| target as &AnyObject),
             Some(sel!(newFolderPrivate:)),
             mtm,
         )
     };
-    let hidden = unsafe { NSButton::checkboxWithTitle_target_action(&ns("Hide while locked"), None, None, mtm) };
+    let hidden = unsafe { NSButton::checkboxWithTitle_target_action(&ns(&tr("Hide while locked")), None, None, mtm) };
     hidden.setEnabled(false);
     hidden.setTag(PRIVATE_HIDE_TAG);
     if item.is_some() && !app::with(|app| app.is_unlocked()).unwrap_or(false) {
         private.setEnabled(false);
-        private.setToolTip(Some(&ns("Unlock private folders to move a wallpaper into a private folder")));
+        private.setToolTip(Some(&ns(&tr("Unlock private folders to move a wallpaper into a private folder"))));
     }
     let flags = widgets::stack(mtm, &[&private, &hidden], false, 16.0);
     let accessory = widgets::stack(mtm, &[&field, &flags], true, 10.0);
     accessory.setAlignment(NSLayoutAttribute::Leading);
     accessory.setFrameSize(accessory.fittingSize());
     alert.setAccessoryView(Some(&accessory));
-    alert.addButtonWithTitle(&ns("Create"));
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Create")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     alert.window().setInitialFirstResponder(Some(&field));
     sheet(&alert, move |response| {
         let name = field.stringValue().to_string().trim().to_string();
@@ -222,7 +226,7 @@ pub fn add_files(mtm: MainThreadMarker, directories: bool) {
     panel.setCanChooseFiles(!directories);
     panel.setCanChooseDirectories(directories);
     panel.setAllowsMultipleSelection(true);
-    panel.setPrompt(Some(&ns("Add")));
+    panel.setPrompt(Some(&ns(&tr("Add"))));
     let chosen = panel.clone();
     let block = RcBlock::new(move |response: NSModalResponse| {
         if response != NSModalResponseOK {
@@ -247,24 +251,24 @@ pub fn add_files(mtm: MainThreadMarker, directories: bool) {
 
 pub fn download_sheet(mtm: MainThreadMarker) {
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns("Add from Video Link"));
-    alert.setInformativeText(&ns(
+    alert.setMessageText(&ns(&tr("Add from Video Link")));
+    alert.setInformativeText(&ns(&tr(
         "Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.",
-    ));
+    )));
     let field = widgets::input(mtm, "https://youtu.be/…", LINK_WIDTH);
     let quality = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
-    let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(title)).collect();
+    let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(&tr(title))).collect();
     quality.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
     quality.selectItemAtIndex(DEFAULT_QUALITY);
     quality.setEnabled(false);
-    let label = NSTextField::labelWithString(&ns("Quality"), mtm);
+    let label = NSTextField::labelWithString(&ns(&tr("Quality")), mtm);
     let options = widgets::stack(mtm, &[&label, &quality], false, 8.0);
     let accessory = widgets::stack(mtm, &[&field, &options], true, 10.0);
     accessory.setAlignment(NSLayoutAttribute::Leading);
     accessory.setFrameSize(accessory.fittingSize());
     alert.setAccessoryView(Some(&accessory));
-    alert.addButtonWithTitle(&ns("Download"));
-    alert.addButtonWithTitle(&ns("Cancel"));
+    alert.addButtonWithTitle(&ns(&tr("Download")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
     alert.window().setInitialFirstResponder(Some(&field));
     sheet(&alert, move |response| {
         let url = field.stringValue().to_string().trim().to_string();

@@ -16,6 +16,7 @@ use proto::HotkeyAction;
 use serde_json::{Value, json};
 
 use crate::hotkey;
+use crate::i18n::{self, Arg, tr, trf};
 use crate::ui::palette::{Look, Rgb, Theme};
 use crate::ui::widgets::{self, NumberField, Units, Weight};
 
@@ -35,7 +36,6 @@ const HOT: isize = 9;
 const OPTIMIZE: isize = 10;
 const SOUND: isize = 11;
 const SHUFFLE: isize = 12;
-const LANGUAGE: isize = 13;
 const FRAME_RATE: isize = 14;
 const RELEASE: isize = 15;
 const STYLE: isize = 16;
@@ -49,20 +49,34 @@ const DURATION: isize = 21;
 pub const ACCENT: isize = 1;
 pub const CANVAS: isize = 2;
 
-const LANGUAGES: [(&str, Option<&str>); 3] = [("System", None), ("English", Some("en")), ("Русский", Some("ru"))];
 const FRAME_RATES: [u32; 6] = [24, 30, 48, 60, 90, 120];
 const RELEASES: [(&str, u32); 5] = [
-    ("Never", 0),
-    ("After 15 Seconds", 15),
-    ("After 30 Seconds", 30),
-    ("After 1 Minute", 60),
-    ("After 5 Minutes", 300),
+    (i18n::key("Never"), 0),
+    (i18n::key("After 15 Seconds"), 15),
+    (i18n::key("After 30 Seconds"), 30),
+    (i18n::key("After 1 Minute"), 60),
+    (i18n::key("After 5 Minutes"), 300),
 ];
-const STYLES: [(&str, &str); 4] = [("Fade", "fade"), ("Wipe", "wipe"), ("Grow", "grow"), ("Wave", "wave")];
-const INTERVALS: [(&str, u32); 5] =
-    [("5 Minutes", 5), ("15 Minutes", 15), ("1 Hour", 60), ("Daily", 1440), ("On Login", 0)];
-const IDLE_MINUTES: [(&str, u32); 5] =
-    [("1 Minute", 1), ("5 Minutes", 5), ("15 Minutes", 15), ("30 Minutes", 30), ("1 Hour", 60)];
+const STYLES: [(&str, &str); 4] = [
+    (i18n::key("Fade"), "fade"),
+    (i18n::key("Wipe"), "wipe"),
+    (i18n::key("Grow"), "grow"),
+    (i18n::key("Wave"), "wave"),
+];
+const INTERVALS: [(&str, u32); 5] = [
+    (i18n::key("5 Minutes"), 5),
+    (i18n::key("15 Minutes"), 15),
+    (i18n::key("1 Hour"), 60),
+    (i18n::key("Daily"), 1440),
+    (i18n::key("On Login"), 0),
+];
+const IDLE_MINUTES: [(&str, u32); 5] = [
+    (i18n::key("1 Minute"), 1),
+    (i18n::key("5 Minutes"), 5),
+    (i18n::key("15 Minutes"), 15),
+    (i18n::key("30 Minutes"), 30),
+    (i18n::key("1 Hour"), 60),
+];
 const PAUSE_KEYS: [&str; 4] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot", "pause_when_focused"];
 
 type Knob = (Retained<NSSlider>, Retained<NumberField>);
@@ -103,9 +117,6 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
         (TRANSITION, Input::Flag(on)) => {
             patch(json!({ "transition": { "kind": if *on { Value::Null } else { json!("none") } } }))
         }
-        (LANGUAGE, Input::Index(index)) => LANGUAGES.get(*index).and_then(|(_, code)| {
-            return patch(json!({ "language": code }));
-        }),
         (FRAME_RATE, Input::Index(index)) => {
             FRAME_RATES.get(*index).and_then(|rate| patch(json!({ "optimize_fps_limit": rate })))
         }
@@ -202,7 +213,7 @@ impl RecorderView {
         label.centerYAnchor().constraintEqualToAnchor(&this.centerYAnchor()).setActive(true);
         this.widthAnchor().constraintEqualToConstant(128.0).setActive(true);
         this.heightAnchor().constraintEqualToConstant(24.0).setActive(true);
-        this.setToolTip(Some(&widgets::ns("Click, then press a shortcut. ⌫ clears it, ⎋ cancels.")));
+        this.setToolTip(Some(&widgets::ns(&tr("Click, then press a shortcut. ⌫ clears it, ⎋ cancels."))));
         return this;
     }
 
@@ -212,7 +223,7 @@ impl RecorderView {
         }
         let (text, color) = match combo {
             Some(combo) => (hotkey::display(combo), NSColor::labelColor()),
-            None => ("None".to_string(), NSColor::tertiaryLabelColor()),
+            None => (tr("None"), NSColor::tertiaryLabelColor()),
         };
         self.paint(&text, &color, None);
     }
@@ -232,7 +243,7 @@ impl RecorderView {
     fn begin(&self) {
         self.ivars().recording.set(true);
         let accent = NSColor::controlAccentColor();
-        self.paint("Type Shortcut…", &NSColor::secondaryLabelColor(), Some(&accent));
+        self.paint(&tr("Type Shortcut…"), &NSColor::secondaryLabelColor(), Some(&accent));
         crate::ui::recording(true);
     }
 
@@ -267,7 +278,7 @@ impl RecorderView {
             _ => {}
         }
         let Some(name) = hotkey::key_name(code) else {
-            return self.paint("Unsupported Key", &NSColor::systemRedColor(), Some(&NSColor::systemRedColor()));
+            return self.paint(&tr("Unsupported Key"), &NSColor::systemRedColor(), Some(&NSColor::systemRedColor()));
         };
         let flags = event.modifierFlags();
         let mut parts: Vec<&str> = [
@@ -286,19 +297,6 @@ impl RecorderView {
             Err(message) => self.paint(&message, &NSColor::systemRedColor(), Some(&NSColor::systemRedColor())),
         }
     }
-}
-
-pub fn action_title(action: HotkeyAction) -> &'static str {
-    return match action {
-        HotkeyAction::Next => "Next Wallpaper",
-        HotkeyAction::Previous => "Previous Wallpaper",
-        HotkeyAction::VolumeUp => "Volume Up",
-        HotkeyAction::VolumeDown => "Volume Down",
-        HotkeyAction::TogglePause => "Play / Pause",
-        HotkeyAction::ToggleMute => "Mute",
-        HotkeyAction::Random => "Random Wallpaper",
-        HotkeyAction::Lock => "Lock Private Folders",
-    };
 }
 
 pub struct SwatchIvars {
@@ -367,11 +365,11 @@ impl Settings {
         tabs.setCanPropagateSelectedChildViewControllerTitle(true);
         tabs.setTransitionOptions(NSViewControllerTransitionOptions::Crossfade);
         let pages = [
-            ("General", "gearshape", &general),
-            ("Appearance", "paintpalette", &appearance),
-            ("Playback", "play.rectangle", &playback),
-            ("Shortcuts", "keyboard", &shortcuts),
-            ("Privacy", "lock", &privacy),
+            (tr("General"), "gearshape", &general),
+            (tr("Appearance"), "paintpalette", &appearance),
+            (tr("Playback"), "play.rectangle", &playback),
+            (tr("Shortcuts"), "keyboard", &shortcuts),
+            (tr("Privacy"), "lock", &privacy),
         ];
         let height = pages
             .iter()
@@ -382,10 +380,10 @@ impl Settings {
         for (title, icon, view) in pages {
             let controller = NSViewController::new(mtm);
             controller.setView(view);
-            controller.setTitle(Some(&widgets::ns(title)));
+            controller.setTitle(Some(&widgets::ns(&title)));
             controller.setPreferredContentSize(size);
             let item = NSTabViewItem::tabViewItemWithViewController(&controller);
-            item.setLabel(&widgets::ns(title));
+            item.setLabel(&widgets::ns(&title));
             item.setImage(widgets::symbol(icon, 15.0).as_deref());
             tabs.addTabViewItem(&item);
         }
@@ -475,7 +473,6 @@ impl Settings {
             };
             switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
         }
-        let language = values.get("language").and_then(Value::as_str);
         let style = STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0));
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (rate, release, interval) =
@@ -491,11 +488,8 @@ impl Settings {
                     popup,
                     IDLE_MINUTES.len(),
                     IDLE_MINUTES.iter().position(|(_, value)| *value == idle_minutes),
-                    &format!("{idle_minutes} Minutes"),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(idle_minutes))]),
                 ),
-                LANGUAGE => {
-                    show_choice(popup, LANGUAGES.len(), LANGUAGES.iter().position(|(_, code)| *code == language), "?");
-                }
                 FRAME_RATE => show_choice(
                     popup,
                     FRAME_RATES.len(),
@@ -506,14 +500,14 @@ impl Settings {
                     popup,
                     RELEASES.len(),
                     RELEASES.iter().position(|(_, value)| *value == release),
-                    &format!("After {release} Seconds"),
+                    &trf("After %ld Seconds", &[Arg::Int(i64::from(release))]),
                 ),
-                STYLE => show_choice(popup, STYLES.len(), style, "Fade"),
+                STYLE => show_choice(popup, STYLES.len(), style, &tr("Fade")),
                 EVERY => show_choice(
                     popup,
                     INTERVALS.len(),
                     INTERVALS.iter().position(|(_, value)| *value == interval && *value > 0),
-                    &format!("{interval} Minutes"),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(interval))]),
                 ),
                 _ => {}
             }
@@ -734,35 +728,38 @@ fn pair(mtm: MainThreadMarker, knob: &Knob) -> Retained<NSView> {
 fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General {
     let login = switch(mtm, LOGIN, target);
     let open_library = switch(mtm, OPEN_LIBRARY, target);
-    let language = choice(mtm, &LANGUAGES.map(|(title, _)| title), LANGUAGE, target);
     let startup = form(
         mtm,
-        "Startup",
+        &tr("Startup"),
         &[
-            line(mtm, "Open at Login", None, &login),
-            line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
-            line(mtm, "Language", None, &language),
+            line(mtm, &tr("Open at Login"), None, &login),
+            line(mtm, &tr("Open Library at Launch"), Some(&tr("Not when LiveWall starts at login")), &open_library),
         ],
     );
     let master = switch(mtm, PAUSE, target);
     let fullscreen = switch(mtm, FULLSCREEN, target);
     let covered = switch(mtm, COVERED, target);
     let hot = switch(mtm, HOT, target);
-    let release = choice(mtm, &RELEASES.map(|(title, _)| title), RELEASE, target);
+    let release = choice(mtm, &RELEASES.map(|(title, _)| tr(title)).each_ref().map(String::as_str), RELEASE, target);
     let pause = vec![widgets::view(&fullscreen), widgets::view(&covered), widgets::view(&hot)];
     let power = form(
         mtm,
-        "Pause Playback",
+        &tr("Pause Playback"),
         &[
-            line(mtm, "Pause Automatically", None, &master),
-            line(mtm, "When an App Is Full Screen", None, &fullscreen),
-            line(mtm, "When the Desktop Is Covered", Some("Uses more battery to keep track of windows"), &covered),
-            line(mtm, "When the Mac Gets Hot", None, &hot),
-            line(mtm, "Free Memory When Paused", Some("Swaps a paused video for a still frame"), &release),
+            line(mtm, &tr("Pause Automatically"), None, &master),
+            line(mtm, &tr("When an App Is Full Screen"), None, &fullscreen),
+            line(
+                mtm,
+                &tr("When the Desktop Is Covered"),
+                Some(&tr("Uses more battery to keep track of windows")),
+                &covered,
+            ),
+            line(mtm, &tr("When the Mac Gets Hot"), None, &hot),
+            line(mtm, &tr("Free Memory When Paused"), Some(&tr("Swaps a paused video for a still frame")), &release),
         ],
     );
     let place = widgets::label(mtm, location, 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    let change = widgets::compact(mtm, "Change…", None, None);
+    let change = widgets::compact(mtm, &tr("Change…"), None, None);
     change.setEnabled(false);
     let library_row = widgets::stack(mtm, &[&place, &change], false, 8.0);
     let optimize = switch(mtm, OPTIMIZE, target);
@@ -770,19 +767,24 @@ fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General
         choice(mtm, &FRAME_RATES.map(|rate| format!("{rate} fps")).each_ref().map(String::as_str), FRAME_RATE, target);
     let library = form(
         mtm,
-        "Library",
+        &tr("Library"),
         &[
-            line(mtm, "Location", None, &library_row),
-            line(mtm, "Copy Added Files into Library", None, &fixed_switch(mtm)),
-            line(mtm, "Optimize on Import", Some("Convert videos that need it for smooth playback"), &optimize),
-            line(mtm, "Frame Rate Limit", None, &frame_rate),
+            line(mtm, &tr("Location"), None, &library_row),
+            line(mtm, &tr("Copy Added Files into Library"), None, &fixed_switch(mtm)),
+            line(
+                mtm,
+                &tr("Optimize on Import"),
+                Some(&tr("Convert videos that need it for smooth playback")),
+                &optimize,
+            ),
+            line(mtm, &tr("Frame Rate Limit"), None, &frame_rate),
         ],
     );
     return General {
         page: page(mtm, &[&startup, &power, &library]),
         pause,
         switches: vec![login, open_library, master, fullscreen, covered, hot, optimize],
-        popups: vec![language, release, frame_rate],
+        popups: vec![release, frame_rate],
     };
 }
 
@@ -800,23 +802,26 @@ fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
     let sound = switch(mtm, SOUND, target);
     let sound_card = form(
         mtm,
-        "Sound",
-        &[line(mtm, "Play Wallpaper Sound", None, &sound), line(mtm, "Default Volume", None, &pair(mtm, &volume))],
+        &tr("Sound"),
+        &[
+            line(mtm, &tr("Play Wallpaper Sound"), None, &sound),
+            line(mtm, &tr("Default Volume"), None, &pair(mtm, &volume)),
+        ],
     );
     let animate = switch(mtm, TRANSITION, target);
-    let style = choice(mtm, &STYLES.map(|(title, _)| title), STYLE, target);
+    let style = choice(mtm, &STYLES.map(|(title, _)| tr(title)).each_ref().map(String::as_str), STYLE, target);
     let length = knob(mtm, 1000.0, 200.0, 3000.0, DURATION, target);
     let transition_group = vec![widgets::view(&style), widgets::view(&length.0), widgets::view(&length.1)];
     let transitions = form(
         mtm,
-        "Transitions",
+        &tr("Transitions"),
         &[
-            line(mtm, "Animate Wallpaper Changes", None, &animate),
-            line(mtm, "Style", None, &style),
-            line(mtm, "Duration", None, &pair(mtm, &length)),
+            line(mtm, &tr("Animate Wallpaper Changes"), None, &animate),
+            line(mtm, &tr("Style"), None, &style),
+            line(mtm, &tr("Duration"), None, &pair(mtm, &length)),
         ],
     );
-    let every = choice(mtm, &INTERVALS.map(|(title, _)| title), EVERY, target);
+    let every = choice(mtm, &INTERVALS.map(|(title, _)| tr(title)).each_ref().map(String::as_str), EVERY, target);
     if let Some(item) = every.itemAtIndex(4) {
         item.setEnabled(false);
     }
@@ -825,11 +830,11 @@ fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
     let rotate_group = vec![widgets::view(&every), widgets::view(&shuffle)];
     let rotation = form(
         mtm,
-        "Rotation",
+        &tr("Rotation"),
         &[
-            line(mtm, "Change Wallpaper", Some("Cycles through the current folder"), &rotate),
-            line(mtm, "Every", None, &every),
-            line(mtm, "Shuffle", None, &shuffle),
+            line(mtm, &tr("Change Wallpaper"), Some(&tr("Cycles through the current folder")), &rotate),
+            line(mtm, &tr("Every"), None, &every),
+            line(mtm, &tr("Shuffle"), None, &shuffle),
         ],
     );
     return (
@@ -845,13 +850,15 @@ fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
 fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Vec<Retained<RecorderView>>) {
     let recorders: Vec<Retained<RecorderView>> =
         HotkeyAction::ALL.iter().map(|action| RecorderView::new(mtm, *action)).collect();
-    let rows: Vec<Retained<NSView>> =
-        recorders.iter().map(|recorder| line(mtm, action_title(recorder.ivars().action), None, recorder)).collect();
-    let global = form(mtm, "Global", &rows);
-    let restore = widgets::compact(mtm, "Restore Defaults", Some(sel!(restoreShortcuts:)), Some(target));
+    let rows: Vec<Retained<NSView>> = recorders
+        .iter()
+        .map(|recorder| line(mtm, &tr(crate::hotkey::title(recorder.ivars().action)), None, recorder))
+        .collect();
+    let global = form(mtm, &tr("Global"), &rows);
+    let restore = widgets::compact(mtm, &tr("Restore Defaults"), Some(sel!(restoreShortcuts:)), Some(target));
     let hint = widgets::label(
         mtm,
-        "Work in any app, on the current desktop.",
+        &tr("Work in any app, on the current desktop."),
         11.0,
         &Weight::Regular,
         &NSColor::secondaryLabelColor(),
@@ -861,8 +868,11 @@ fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Ve
     let keys = |text: &str| widgets::label(mtm, text, 12.0, &Weight::Medium, &NSColor::secondaryLabelColor());
     let library = form(
         mtm,
-        "In the Library",
-        &[line(mtm, "Set on Desktop", None, &keys("1 – 9")), line(mtm, "Set on All Desktops", None, &keys("`"))],
+        &tr("In the Library"),
+        &[
+            line(mtm, &tr("Set on Desktop"), None, &keys("1 – 9")),
+            line(mtm, &tr("Set on All Desktops"), None, &keys("`")),
+        ],
     );
     return (page(mtm, &[&global, &footer, &library]), recorders);
 }
@@ -871,20 +881,21 @@ fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
     let screen = switch(mtm, LOCK_SCREEN, target);
     let display = switch(mtm, LOCK_DISPLAY, target);
     let idle = switch(mtm, LOCK_IDLE, target);
-    let after = choice(mtm, &IDLE_MINUTES.map(|(title, _)| title), IDLE_AFTER, target);
+    let after =
+        choice(mtm, &IDLE_MINUTES.map(|(title, _)| tr(title)).each_ref().map(String::as_str), IDLE_AFTER, target);
     let automatic = form(
         mtm,
-        "Lock Automatically",
+        &tr("Lock Automatically"),
         &[
-            line(mtm, "Screen Locks or Sleeps", Some("Includes the screen saver"), &screen),
-            line(mtm, "External Display Connects", Some("Includes AirPlay and mirroring"), &display),
-            line(mtm, "After Inactivity", None, &idle),
-            line(mtm, "Inactive For", None, &after),
+            line(mtm, &tr("Screen Locks or Sleeps"), Some(&tr("Includes the screen saver")), &screen),
+            line(mtm, &tr("External Display Connects"), Some(&tr("Includes AirPlay and mirroring")), &display),
+            line(mtm, &tr("After Inactivity"), None, &idle),
+            line(mtm, &tr("Inactive For"), None, &after),
         ],
     );
     let hint = widgets::label(
         mtm,
-        "Always locked at launch and quit. Unlocking needs Touch ID or your password.",
+        &tr("Always locked at launch and quit. Unlocking needs Touch ID or your password."),
         11.0,
         &Weight::Regular,
         &NSColor::secondaryLabelColor(),
@@ -906,7 +917,7 @@ type AppearancePage = (
 );
 
 fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> AppearancePage {
-    let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| widgets::ns(title)).collect();
+    let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| widgets::ns(&tr(title))).collect();
     let mode = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&labels),
@@ -939,14 +950,14 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
     };
     let accent = well(ACCENT);
     let canvas = well(CANVAS);
-    let window = form(mtm, "Appearance", &[line(mtm, "Mode", None, &mode)]);
+    let window = form(mtm, &tr("Appearance"), &[line(mtm, &tr("Mode"), None, &mode)]);
     let theme = form(
         mtm,
-        "Theme",
+        &tr("Theme"),
         &[
             widgets::view(&row),
-            line(mtm, "Accent", Some("Selection, buttons and sliders"), &accent),
-            line(mtm, "Canvas", Some("Tint behind the wallpaper wall"), &canvas),
+            line(mtm, &tr("Accent"), Some(&tr("Selection, buttons and sliders")), &accent),
+            line(mtm, &tr("Canvas"), Some(&tr("Tint behind the wallpaper wall")), &canvas),
         ],
     );
     return (page(mtm, &[&window, &theme]), mode, swatches, accent, canvas);
@@ -969,7 +980,7 @@ fn swatch(mtm: MainThreadMarker, index: usize, name: &str, theme: &Theme) -> Ret
         layer.setBorderWidth(4.0);
         layer.setBorderColor(Some(&widgets::cg(mtm, &theme.canvas)));
     }
-    let caption = widgets::label(mtm, name, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
+    let caption = widgets::label(mtm, &tr(name), 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
     caption.setAlignment(NSTextAlignment::Center);
     let this = SwatchView::alloc(mtm).set_ivars(SwatchIvars { index, ring: ring.clone() });
     let this: Retained<SwatchView> = unsafe { msg_send![super(this), init] };

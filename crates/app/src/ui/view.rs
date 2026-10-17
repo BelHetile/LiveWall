@@ -290,7 +290,7 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
         .collect();
     let status = app.wallpaper_status().map(|status| Status {
         state: status.state,
-        reason: status.reason.map(|reason| (reason.brief(), reason.english())),
+        reason: status.reason.map(|reason| (reason.brief(), reason.localized())),
         sound: status.sound,
     });
 
