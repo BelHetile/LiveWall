@@ -81,6 +81,10 @@ pub fn is_owned(original: &Original, owned: &[PathBuf]) -> bool {
     return original.url.as_deref().is_some_and(|url| owned.iter().any(|dir| Path::new(url).starts_with(dir)));
 }
 
+pub fn is_dangling(original: &Original) -> bool {
+    return original.url.as_deref().is_some_and(|url| !Path::new(url).exists());
+}
+
 pub fn adopt_foreign(original: Original, recorded: &BTreeMap<String, Original>, owned: &[PathBuf]) -> Original {
     if !is_owned(&original, owned) {
         return original;
@@ -230,7 +234,13 @@ impl Desktop {
                         config: ffi::encode(&config),
                         taken_at: jiff::Timestamp::now(),
                     },
-                    None => continue,
+                    None => Original {
+                        space: target.space.clone(),
+                        display_id: target.display_id,
+                        url: None,
+                        config: None,
+                        taken_at: jiff::Timestamp::now(),
+                    },
                 },
                 Mode::Screen => {
                     let url = ffi::screen_path(mtm, target.display_id);
@@ -243,7 +253,7 @@ impl Desktop {
                     }
                 }
             };
-            if is_owned(&original, &self.owned) {
+            if is_owned(&original, &self.owned) || is_dangling(&original) {
                 leftovers.push(original);
                 continue;
             }
@@ -251,6 +261,11 @@ impl Desktop {
         }
         for original in leftovers {
             let adopted = adopt_foreign(original, &self.recorded, &self.owned);
+            if is_dangling(&adopted) {
+                tracing::warn!(space = %adopted.space, "desktop picture file is gone; the space has nothing to restore");
+                self.recorded.insert(adopted.space.clone(), Original { url: None, config: None, ..adopted });
+                continue;
+            }
             self.recorded.insert(adopted.space.clone(), adopted);
         }
         self.persist();
@@ -593,6 +608,18 @@ mod tests {
         assert_eq!(restore_source(&pathless, &recorded, &owned), None);
     }
 
+    #[test]
+    fn a_desktop_picture_whose_file_is_gone_is_not_recorded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("real.jpg");
+        std::fs::write(&file, b"jpg").expect("file");
+        let existing = Original { url: Some(file.to_string_lossy().into_owned()), ..original("S2") };
+        assert!(!is_dangling(&existing));
+        let missing = Original { url: Some("/tmp/livewall-e2e-gone/abc.png".into()), ..original("S1") };
+        assert!(is_dangling(&missing));
+        let pathless = Original { url: None, ..original("S3") };
+        assert!(!is_dangling(&pathless));
+    }
     #[test]
     fn only_a_desktop_showing_a_still_is_restored() {
         let owned = vec![PathBuf::from("/data/Stills")];

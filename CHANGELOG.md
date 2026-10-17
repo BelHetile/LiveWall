@@ -7,9 +7,15 @@ All notable changes to LiveWall are listed here. The format is based on
 ## [Unreleased]
 
 ### Added
+- Folder icons: an SF Symbol or one of your own images for any folder, from the toolbar folder menu or the
+  inspector. `lwctl folder icon` sets one from the command line.
 - Settings → Privacy → *Take Private Wallpapers off the Desktop*. It is on: locking the folders replaces a private
   wallpaper on the desktop with a safe one. Turn it off to keep a private wallpaper on the desktop and the lock
   screen while locked; the library and the menu bar still hide it.
+
+### Fixed
+- Spaces whose desktop picture file was deleted elsewhere no longer block LiveWall: they play a wallpaper like
+  any other Space, and quitting leaves them alone instead of writing a dead path back.
 
 ### Changed
 - The whole app is in English and Russian and follows the macOS language; pick a language for LiveWall alone in

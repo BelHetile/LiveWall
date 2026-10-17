@@ -44,13 +44,20 @@ pub fn wait_for_socket(socket: &Path, timeout: Duration) {
 
 pub struct Sandbox {
     dir: tempfile::TempDir,
+    data: PathBuf,
     child: RefCell<Option<Child>>,
 }
 
 impl Sandbox {
+    /// The data folder lives under `target/tmp/e2e-data/<label>` and is wiped at the START of a
+    /// run, never at the end: wallpapers applied during a test keep pointing at live files after
+    /// the run, so a SIGKILL test cannot leave gray placeholders in Mission Control behind.
     pub fn new(label: &str) -> Self {
         let dir = tempfile::Builder::new().prefix(&format!("livewall-e2e-{label}-")).tempdir().expect("tempdir");
-        return Self { dir, child: RefCell::new(None) };
+        let data = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-data").join(label);
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).expect("e2e data dir");
+        return Self { dir, data, child: RefCell::new(None) };
     }
 
     pub fn path(&self) -> &Path {
@@ -58,7 +65,7 @@ impl Sandbox {
     }
 
     pub fn data_dir(&self) -> PathBuf {
-        return self.dir.path().join("data");
+        return self.data.clone();
     }
 
     pub fn socket(&self) -> PathBuf {
