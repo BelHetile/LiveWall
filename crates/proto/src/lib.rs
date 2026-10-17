@@ -526,6 +526,20 @@ pub enum Request {
     OptimizeCancel {
         id: String,
     },
+    FolderStyle {
+        id: String,
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    IconImport {
+        path: String,
+    },
+    IconList,
+    IconRemove {
+        icon: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -686,6 +700,15 @@ mod tests {
             Request::Optimize { id: "a".into() },
             Request::OptimizeStatus { id: "a".into() },
             Request::OptimizeCancel { id: "a".into() },
+            Request::FolderStyle {
+                id: "f".into(),
+                icon: Some("symbol:star.fill".into()),
+                color: Some("#E07A5F".into()),
+            },
+            Request::FolderStyle { id: "f".into(), icon: Some(String::new()), color: None },
+            Request::IconImport { path: "/tmp/a.png".into() },
+            Request::IconList,
+            Request::IconRemove { icon: "image:a.png".into() },
         ];
     }
 

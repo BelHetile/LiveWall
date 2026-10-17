@@ -80,9 +80,71 @@ pub struct Folder {
     #[serde(default)]
     pub icon: Option<String>,
     #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
     pub locked: bool,
     #[serde(default)]
     pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon<'a> {
+    Symbol(&'a str),
+    Image(&'a str),
+}
+
+pub const SYMBOL_PREFIX: &str = "symbol:";
+pub const IMAGE_PREFIX: &str = "image:";
+
+impl<'a> Icon<'a> {
+    pub fn parse(value: &'a str) -> Option<Self> {
+        if let Some(name) = value.strip_prefix(SYMBOL_PREFIX) {
+            let valid = !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '.');
+            return valid.then_some(Self::Symbol(name));
+        }
+        if let Some(file) = value.strip_prefix(IMAGE_PREFIX) {
+            let valid = !file.is_empty()
+                && !file.starts_with('.')
+                && std::path::Path::new(file).extension().is_some_and(|extension| extension == "png")
+                && file
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+            return valid.then_some(Self::Image(file));
+        }
+        return None;
+    }
+}
+
+pub fn parse_color(value: &str) -> Option<String> {
+    let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    let valid = hex.len() == 6 && hex.chars().all(|character| character.is_ascii_hexdigit());
+    return valid.then(|| format!("#{}", hex.to_ascii_uppercase()));
+}
+
+impl Library {
+    pub fn style_folder(&mut self, id: FolderId, icon: Option<String>, color: Option<String>) -> bool {
+        let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
+            return false;
+        };
+        folder.icon = icon;
+        folder.color = color;
+        return true;
+    }
+
+    pub fn drop_icon(&mut self, icon: &str) -> usize {
+        let mut cleared = 0;
+        for folder in &mut self.folders {
+            if folder.icon.as_deref() == Some(icon) {
+                folder.icon = None;
+                cleared += 1;
+            }
+        }
+        return cleared;
+    }
 }
 
 impl Item {
@@ -138,7 +200,7 @@ impl Default for Library {
 impl Library {
     pub fn create_folder(&mut self, name: String) -> FolderId {
         let id = Uuid::new_v4();
-        self.folders.push(Folder { id, name, icon: None, locked: false, hidden: false });
+        self.folders.push(Folder { id, name, icon: None, color: None, locked: false, hidden: false });
         return id;
     }
 
@@ -634,5 +696,41 @@ mod tests {
         settings.normalize();
         assert_eq!(settings.transition.duration, Some(0.0));
         assert_eq!(settings.transition.wave, Some([0.0, 5.0]));
+    }
+
+    #[test]
+    fn icon_values_are_validated() {
+        assert_eq!(Icon::parse("symbol:star.fill"), Some(Icon::Symbol("star.fill")));
+        assert_eq!(Icon::parse("image:abc-1.png"), Some(Icon::Image("abc-1.png")));
+        assert!(Icon::parse("symbol:").is_none());
+        assert!(Icon::parse("symbol:Star").is_none());
+        assert!(Icon::parse("image:.hidden.png").is_none());
+        assert!(Icon::parse("image:a.jpg").is_none());
+        assert!(Icon::parse("image:../a.png").is_none());
+        assert!(Icon::parse("star.fill").is_none());
+    }
+
+    #[test]
+    fn colors_are_normalized() {
+        assert_eq!(parse_color("#e07a5f").as_deref(), Some("#E07A5F"));
+        assert_eq!(parse_color(" 81B29A ").as_deref(), Some("#81B29A"));
+        assert!(parse_color("#E07A5").is_none());
+        assert!(parse_color("#GGGGGG").is_none());
+        assert!(parse_color("").is_none());
+    }
+
+    #[test]
+    fn folder_styles_can_be_set_and_icons_dropped() {
+        let mut library = Library::default();
+        let folder = library.create_folder("F".into());
+        assert!(library.style_folder(folder, Some("symbol:star.fill".into()), Some("#E07A5F".into())));
+        assert_eq!(library.folders[0].icon.as_deref(), Some("symbol:star.fill"));
+        assert_eq!(library.folders[0].color.as_deref(), Some("#E07A5F"));
+        assert!(!library.style_folder(Uuid::new_v4(), None, None));
+        let other = library.create_folder("G".into());
+        assert!(library.style_folder(other, Some("symbol:star.fill".into()), None));
+        assert_eq!(library.drop_icon("symbol:star.fill"), 2);
+        assert!(library.folders.iter().all(|folder| folder.icon.is_none()));
+        assert_eq!(library.drop_icon("symbol:star.fill"), 0);
     }
 }

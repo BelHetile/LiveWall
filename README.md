@@ -123,7 +123,8 @@ ln -s /Applications/LiveWall.app/Contents/MacOS/lwctl /usr/local/bin/lwctl
 pause  resume  toggle-pause  mute  unmute  next  previous  random  lock
 status  current  quit  spaces  windows  desktop  rules
 library {list,add [--folder ID],remove,rename,move}
-folder {create,rename,delete,lock}
+folder {create,rename,delete,lock,style ID [--icon symbol:NAME|image:FILE|none] [--color #RRGGBB|none]}
+icon {import PATH,list,remove image:FILE}
 apply [--item ID] [--target default|space] [--target-id ID]
 set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
 set-item ID [--volume N --speed N --muted BOOL --still-time N]

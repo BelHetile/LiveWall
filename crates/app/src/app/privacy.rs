@@ -153,7 +153,7 @@ pub fn denies(library: &Library, request: &Request) -> bool {
         | Request::SetGeometry { item: id, .. }
         | Request::SetItem { item: id, .. }
         | Request::Apply { item: Some(id), .. } => item(id),
-        Request::FolderRename { id, .. } | Request::FolderDelete { id } => folder(id),
+        Request::FolderRename { id, .. } | Request::FolderDelete { id } | Request::FolderStyle { id, .. } => folder(id),
         _ => false,
     };
 }

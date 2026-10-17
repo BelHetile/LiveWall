@@ -234,6 +234,7 @@ fn every_verb() {
     ok_json(&socket, &["library", "move", &id, "--folder", &folder_id]);
     let moved = ok_json(&socket, &["library", "list"]);
     assert_eq!(moved["data"]["items"][0]["folder"], serde_json::json!(folder_id), "move into folder: {moved}");
+    folder_styles(&socket, &folder_id, &png);
     ok_json(&socket, &["folder", "delete", &folder_id]);
     let after = ok_json(&socket, &["library", "list"]);
     assert_eq!(after["data"]["items"].as_array().map(Vec::len), Some(1), "folder delete dropped an item: {after}");
@@ -266,6 +267,30 @@ fn every_verb() {
 
     ok_json(&socket, &["quit"]);
     sandbox.reap();
+}
+
+fn folder_styles(socket: &Path, folder_id: &str, png: &str) {
+    let styled = ok_json(socket, &["folder", "style", folder_id, "--icon", "symbol:star.fill", "--color", "#e07a5f"]);
+    assert_eq!(styled["data"]["icon"], serde_json::json!("symbol:star.fill"), "set folder icon: {styled}");
+    assert_eq!(styled["data"]["color"], serde_json::json!("#E07A5F"), "color is normalized: {styled}");
+    let recolored = ok_json(socket, &["folder", "style", folder_id, "--color", "none"]);
+    assert_eq!(recolored["data"]["icon"], serde_json::json!("symbol:star.fill"), "icon kept: {recolored}");
+    assert!(recolored["data"]["color"].is_null(), "color cleared: {recolored}");
+    err(socket, &["folder", "style", folder_id, "--icon", "star.fill"]);
+    err(socket, &["folder", "style", folder_id, "--icon", "image:missing.png"]);
+    err(socket, &["folder", "style", folder_id, "--color", "#12345"]);
+    err(socket, &["folder", "style", MISSING, "--icon", "symbol:star.fill"]);
+    let imported = ok_json(socket, &["icon", "import", png]);
+    let image = imported["data"]["icon"].as_str().expect("imported icon").to_string();
+    let listed = ok_json(socket, &["icon", "list"]);
+    assert_eq!(listed["data"]["icons"], serde_json::json!([image]), "icon list: {listed}");
+    ok_json(socket, &["folder", "style", folder_id, "--icon", &image]);
+    let removed = ok_json(socket, &["icon", "remove", &image]);
+    assert_eq!(removed["data"]["cleared"], serde_json::json!(1), "removing clears the folder: {removed}");
+    let folders = ok_json(socket, &["library", "list"]);
+    assert!(folders["data"]["folders"][0]["icon"].is_null(), "icon cleared from folder: {folders}");
+    err(socket, &["icon", "remove", &image]);
+    err(socket, &["icon", "import", "/nonexistent.png"]);
 }
 
 fn second_instance_exits() {

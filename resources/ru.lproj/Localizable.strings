@@ -618,6 +618,12 @@ change how it plays.</key>
 	<string>как список</string>
 	<key>by you</key>
 	<string>вручную</string>
+	<key>cannot open the image</key>
+	<string>Не удалось открыть изображение</string>
+	<key>cannot write PNG</key>
+	<string>Не удалось сохранить PNG</string>
+	<key>color must be a #RRGGBB hex value</key>
+	<string>цвет должен быть в формате #RRGGBB</string>
 	<key>covered</key>
 	<string>закрыт окнами</string>
 	<key>desktop hidden</key>
@@ -628,8 +634,12 @@ change how it plays.</key>
 	<string>ffmpeg не установлен</string>
 	<key>full screen</key>
 	<string>полноэкранный режим</string>
+	<key>icon must be symbol:&lt;name&gt; or image:&lt;file&gt;.png</key>
+	<string>иконка должна быть symbol:&lt;имя&gt; или image:&lt;файл&gt;.png</string>
 	<key>invalid folder id</key>
 	<string>неверный идентификатор папки</string>
+	<key>invalid image path</key>
+	<string>Неверный путь к изображению</string>
 	<key>invalid item id</key>
 	<string>неверный идентификатор элемента</string>
 	<key>invalid url</key>
@@ -648,6 +658,8 @@ change how it plays.</key>
 	<string>задача загрузки не найдена</string>
 	<key>no such folder</key>
 	<string>папка не найдена</string>
+	<key>no such icon image</key>
+	<string>нет такой картинки иконки</string>
 	<key>no such item</key>
 	<string>элемент не найден</string>
 	<key>optimize is already queued for this item</key>

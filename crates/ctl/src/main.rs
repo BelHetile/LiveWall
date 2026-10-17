@@ -58,6 +58,8 @@ enum Command {
     Library(LibraryCommand),
     #[command(subcommand)]
     Folder(FolderCommand),
+    #[command(subcommand)]
+    Icon(IconCommand),
     Apply {
         #[arg(long)]
         item: Option<String>,
@@ -171,6 +173,20 @@ enum FolderCommand {
         #[arg(long, action = clap::ArgAction::Set)]
         hidden: Option<bool>,
     },
+    Style {
+        id: String,
+        #[arg(long)]
+        icon: Option<String>,
+        #[arg(long)]
+        color: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IconCommand {
+    Import { path: String },
+    List,
+    Remove { icon: String },
 }
 
 #[derive(Subcommand)]
@@ -343,6 +359,10 @@ fn connect() -> Result<UnixStream, u8> {
     return Ok(stream);
 }
 
+fn cleared(value: String) -> String {
+    return if value.eq_ignore_ascii_case("none") { String::new() } else { value };
+}
+
 fn build_request(command: Command) -> Result<Request, String> {
     let request = match command {
         Command::Pause => Request::Pause,
@@ -373,6 +393,16 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Rename { id, name } => Request::FolderRename { id, name },
             FolderCommand::Delete { id } => Request::FolderDelete { id },
             FolderCommand::Lock { id, locked, hidden } => Request::FolderLock { id, locked, hidden },
+            FolderCommand::Style { id, icon, color } => {
+                Request::FolderStyle { id, icon: icon.map(cleared), color: color.map(cleared) }
+            }
+        },
+        Command::Icon(command) => match command {
+            IconCommand::Import { path } => Request::IconImport {
+                path: std::path::absolute(&path).map_err(|error| error.to_string())?.to_string_lossy().into_owned(),
+            },
+            IconCommand::List => Request::IconList,
+            IconCommand::Remove { icon } => Request::IconRemove { icon },
         },
         Command::Apply { item, target, transition } => {
             Request::Apply { item, target: target.build()?, transition: transition.build()? }

@@ -103,6 +103,10 @@ impl Paths {
         return self.join("Tools");
     }
 
+    pub fn icons_dir(&self) -> PathBuf {
+        return self.join("Icons");
+    }
+
     pub fn ensure(&self) -> io::Result<()> {
         for dir in [
             self.base.clone(),
@@ -115,6 +119,7 @@ impl Paths {
             self.dir_for(DirKind::Stills, Visibility::Private),
             self.incoming_dir(),
             self.tools_dir(),
+            self.icons_dir(),
         ] {
             create_private_dir(&dir)?;
         }

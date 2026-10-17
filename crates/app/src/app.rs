@@ -21,7 +21,9 @@ use crate::import;
 use crate::media::probe;
 use crate::media::{optimize, plan, thumb};
 use crate::menu::{Menu, MenuAction, MenuState};
-use crate::model::{FolderId, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch};
+use crate::model::{
+    FolderId, IMAGE_PREFIX, Icon, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch,
+};
 use crate::paths::{DirKind, Paths, Visibility};
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
 use crate::platform::observe::Observers;
@@ -38,6 +40,7 @@ mod privacy;
 pub use privacy::{visible_folders, visible_items};
 
 const GEOMETRY_POLL_SECONDS: f64 = 2.0;
+const ICON_PX: usize = 128;
 const VOLUME_STEP: f32 = 0.1;
 const IDLE_POLL_SECONDS: f64 = 10.0;
 const UNLOCK_REASON: &str = i18n::key("Unlock private wallpaper folders");
@@ -48,6 +51,9 @@ const NO_SUCH_ITEM: &str = i18n::key("no such item");
 const NO_SUCH_FOLDER: &str = i18n::key("no such folder");
 const NO_OPTIMIZE_JOB: &str = i18n::key("no optimize job for this item");
 const SERIALIZATION_FAILED: &str = i18n::key("serialization failed");
+const INVALID_ICON: &str = i18n::key("icon must be symbol:<name> or image:<file>.png");
+const INVALID_COLOR: &str = i18n::key("color must be a #RRGGBB hex value");
+const NO_SUCH_ICON: &str = i18n::key("no such icon image");
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -1127,6 +1133,84 @@ impl App {
         return ok(&serde_json::json!({ "lock": item.to_string(), "time": time }));
     }
 
+    pub fn style_folder(&mut self, id: FolderId, icon: Option<&str>, color: Option<&str>) -> Response {
+        let Some(folder) = self.library.folders.iter().find(|folder| folder.id == id) else {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_FOLDER);
+        };
+        if folder.locked && !self.unlocked {
+            return Response::err(ErrorCode::Locked, LOCKED);
+        }
+        let icon = match icon {
+            None => folder.icon.clone(),
+            Some("") => None,
+            Some(value) => match Icon::parse(value) {
+                None => return Response::err(ErrorCode::Invalid, INVALID_ICON),
+                Some(Icon::Image(file)) if !self.paths.icons_dir().join(file).is_file() => {
+                    return Response::err(ErrorCode::NotFound, NO_SUCH_ICON);
+                }
+                Some(_) => Some(value.to_string()),
+            },
+        };
+        let color = match color {
+            None => folder.color.clone(),
+            Some("") => None,
+            Some(value) => match crate::model::parse_color(value) {
+                None => return Response::err(ErrorCode::Invalid, INVALID_COLOR),
+                some => some,
+            },
+        };
+        let body = serde_json::json!({ "id": id.to_string(), "icon": icon, "color": color });
+        self.library.style_folder(id, icon, color);
+        self.persist_library();
+        return ok(&body);
+    }
+
+    pub fn import_icon(&self, path: &std::path::Path) -> Result<String, String> {
+        let file = format!("{}.png", Uuid::new_v4());
+        crate::media::orient::write_png(path, &self.paths.icons_dir().join(&file), ICON_PX)?;
+        crate::ui::changed();
+        return Ok(format!("{IMAGE_PREFIX}{file}"));
+    }
+
+    pub fn custom_icons(&self) -> Vec<String> {
+        let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(self.paths.icons_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let value = format!("{IMAGE_PREFIX}{}", entry.file_name().to_string_lossy());
+                Icon::parse(&value)?;
+                let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+                return Some((modified, value));
+            })
+            .collect();
+        files.sort();
+        return files.into_iter().map(|(_, value)| value).collect();
+    }
+
+    pub fn remove_icon(&mut self, icon: &str) -> Response {
+        let Some(Icon::Image(file)) = Icon::parse(icon) else {
+            return Response::err(ErrorCode::Invalid, INVALID_ICON);
+        };
+        let path = self.paths.icons_dir().join(file);
+        if !path.is_file() {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ICON);
+        }
+        if !self.unlocked
+            && self.library.folders.iter().any(|folder| folder.locked && folder.icon.as_deref() == Some(icon))
+        {
+            return Response::err(ErrorCode::Locked, LOCKED);
+        }
+        remove_quietly(&path);
+        let cleared = self.library.drop_icon(icon);
+        if cleared > 0 {
+            self.persist_library();
+        } else {
+            crate::ui::changed();
+        }
+        return ok(&serde_json::json!({ "removed": icon, "cleared": cleared }));
+    }
+
     pub fn reset_item(&mut self, id: ItemId) -> Response {
         let (volume, speed) = (self.settings.volume, self.settings.speed);
         let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == id) else {
@@ -1214,6 +1298,15 @@ impl App {
             }
             Request::FolderDelete { id } => self.delete_folder(parse_folder(id)?),
             Request::FolderLock { id, locked, hidden } => self.set_folder_lock(parse_folder(id)?, *locked, *hidden),
+            Request::FolderStyle { id, icon, color } => {
+                self.style_folder(parse_folder(id)?, icon.as_deref(), color.as_deref())
+            }
+            Request::IconImport { path } => match self.import_icon(std::path::Path::new(path)) {
+                Ok(icon) => ok(&serde_json::json!({ "icon": icon })),
+                Err(message) => Response::err(ErrorCode::Invalid, message),
+            },
+            Request::IconList => ok(&serde_json::json!({ "icons": self.custom_icons() })),
+            Request::IconRemove { icon } => self.remove_icon(icon),
             Request::Lock => {
                 self.lock();
                 ok(&serde_json::json!({ "locked": true }))

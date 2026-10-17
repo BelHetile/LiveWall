@@ -2,7 +2,7 @@ use std::path::Path;
 
 use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType, CGAffineTransform};
 use objc2_core_graphics::CGImage;
-use objc2_image_io::{CGImageSource, kCGImagePropertyOrientation};
+use objc2_image_io::{CGImageDestination, CGImageSource, kCGImagePropertyOrientation};
 
 use crate::cf::{cf_file_url, cf_i64};
 use crate::media::av::{image_size, thumbnail_options};
@@ -30,6 +30,26 @@ pub fn orientation(source: &CGImageSource) -> u32 {
         .unwrap_or(1);
 }
 
+pub fn write_png(input: &Path, output: &Path, max_px: usize) -> Result<(), String> {
+    let source_url = cf_file_url(input).ok_or_else(|| crate::i18n::tr("invalid image path"))?;
+    let source = unsafe { CGImageSource::with_url(&source_url, None) }
+        .ok_or_else(|| crate::i18n::tr("cannot open the image"))?;
+    let options = thumbnail_options(max_px);
+    let options: &CFDictionary = unsafe { (*options).cast_unchecked() };
+    let image = unsafe { source.thumbnail_at_index(0, Some(options)) }
+        .ok_or_else(|| crate::i18n::tr("cannot open the image"))?;
+    let target_url = cf_file_url(output).ok_or_else(|| crate::i18n::tr("invalid image path"))?;
+    let kind = CFString::from_static_str("public.png");
+    let destination = unsafe { CGImageDestination::with_url(&target_url, &kind, 1, None) }
+        .ok_or_else(|| crate::i18n::tr("cannot write PNG"))?;
+    unsafe { destination.add_image(&image, None) };
+    if !unsafe { destination.finalize() } {
+        let _ = std::fs::remove_file(output);
+        return Err(crate::i18n::tr("cannot write PNG"));
+    }
+    return Ok(());
+}
+
 pub fn upright_image(path: &Path) -> Option<CFRetained<CGImage>> {
     let url = cf_file_url(path)?;
     let source = unsafe { CGImageSource::with_url(&url, None) }?;
@@ -45,7 +65,6 @@ pub fn upright_image(path: &Path) -> Option<CFRetained<CGImage>> {
 #[cfg(test)]
 mod tests {
     use objc2_core_foundation::CFNumber;
-    use objc2_image_io::CGImageDestination;
 
     use super::*;
 
@@ -112,6 +131,16 @@ mod tests {
     fn upright_size(path: &Path) -> (usize, usize) {
         let image = upright_image(path).expect("decodes");
         return (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
+    }
+
+    #[test]
+    fn icons_are_written_as_small_upright_pngs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let turned = oriented(dir.path(), 6);
+        let icon = dir.path().join("icon.png");
+        write_png(&turned, &icon, 16).expect("icon");
+        assert_eq!(upright_size(&icon), (1, 2), "no upscaling, upright orientation kept");
+        assert!(write_png(&dir.path().join("missing.png"), &icon, 16).is_err());
     }
 
     #[test]
