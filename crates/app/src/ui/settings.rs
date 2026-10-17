@@ -669,6 +669,12 @@ fn line(mtm: MainThreadMarker, title: &str, note: Option<&str>, control: &NSView
     };
     let gap = widgets::spacer(mtm);
     let row = widgets::stack(mtm, &[&text, &gap, control], false, 12.0);
+    let mut tip = String::from(title);
+    if let Some(note) = note {
+        tip.push_str("\n\n");
+        tip.push_str(note);
+    }
+    row.setToolTip(Some(&widgets::ns(&tip)));
     row.setEdgeInsets(widgets::insets(0.0, 12.0, 0.0, 12.0));
     row.heightAnchor().constraintGreaterThanOrEqualToConstant(if note.is_some() { 50.0 } else { 40.0 }).setActive(true);
     return widgets::view(&row);
