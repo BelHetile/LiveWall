@@ -5,17 +5,17 @@ use objc2_app_kit::{
     NSApplication, NSBeep, NSButton, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
     NSPopUpButton, NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
+use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol};
 use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
 use serde_json::json;
 
 use crate::app::{self, Event, post};
-use crate::i18n::tr;
+use crate::i18n::{key, tr};
 use crate::model::ItemId;
 use crate::ui::settings::{self, Change, Input};
 use crate::ui::state::{
-    KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_RESET,
-    TAG_UNLOCK_FOLDER, privacy_title,
+    KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER,
+    TAG_RESET, TAG_STYLE_FOLDER, privacy_title,
 };
 use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
@@ -42,38 +42,15 @@ define_class!(
         }
 
         #[unsafe(method(folder:))]
-        fn folder(&self, sender: &NSMenuItem) {
-            let tag = sender.tag();
-            if tag == TAG_NEW_FOLDER {
+        fn folder(&self, sender: &AnyObject) {
+            if tag_of(sender) == TAG_NEW_FOLDER {
                 dialogs::new_folder(self.mtm(), None);
-                return;
             }
-            let folder = usize::try_from(tag).ok();
-            if folder.is_some_and(sealed) {
-                unlock();
-                return;
-            }
-            commit(|ui| ui.filter.folder = folder);
         }
 
-        #[unsafe(method(folderLock:))]
-        fn folder_lock(&self, sender: &NSMenuItem) {
-            let tag = sender.tag();
-            let Some((id, lock)) = UI.with_borrow(|ui| {
-                let ui = ui.as_ref()?;
-                let index = ui.filter.folder?;
-                return Some((*ui.library.folder_ids.get(index)?, *ui.library.locks.get(index)?));
-            }) else {
-                return;
-            };
-            let (locked, hidden) = match tag {
-                TAG_RENAME_FOLDER => return dialogs::rename_folder(self.mtm(), id),
-                TAG_DELETE_FOLDER => return dialogs::delete_folder(self.mtm(), id),
-                TAG_LOCK_FOLDER => (Some(true), None),
-                TAG_UNLOCK_FOLDER => (Some(false), None),
-                _ => (None, Some(!lock.hidden)),
-            };
-            submit(move |app| Some(app.set_folder_lock(id, locked, hidden)));
+        #[unsafe(method(folderAction:))]
+        fn folder_action(&self, sender: &NSMenuItem) {
+            folder_action(sender);
         }
 
         #[unsafe(method(togglePrivacy:))]
@@ -452,6 +429,9 @@ fn validate(item: &NSMenuItem) -> bool {
     if action == Some(sel!(moveTo:)) || action == Some(sel!(moveFolder:)) {
         return usize::try_from(item.tag()).map_or(true, |folder| !sealed(folder));
     }
+    if action == Some(sel!(folderAction:)) {
+        return validate_folder(item);
+    }
     if action != Some(sel!(togglePrivacy:)) {
         return true;
     }
@@ -462,6 +442,113 @@ fn validate(item: &NSMenuItem) -> bool {
         item.setKeyEquivalent(&ns(if unlocked { PRIVACY_KEY } else { "" }));
         item.setHidden(!guarded);
     }
+    return true;
+}
+
+fn tag_of(sender: &AnyObject) -> isize {
+    if let Some(item) = sender.downcast_ref::<NSMenuItem>() {
+        return item.tag();
+    }
+    return sender.downcast_ref::<NSButton>().map_or(0, |button| button.tag());
+}
+
+fn target_folder(item: &NSMenuItem) -> Option<usize> {
+    let represented = item.representedObject().and_then(|object| object.downcast::<NSNumber>().ok());
+    if let Some(number) = represented {
+        return Some(number.as_usize());
+    }
+    return UI.with(|ui| ui.try_borrow().ok()?.as_ref()?.filter.folder);
+}
+
+fn validate_folder(item: &NSMenuItem) -> bool {
+    let state = target_folder(item).and_then(|folder| {
+        return UI.with(|ui| {
+            let ui = ui.try_borrow().ok()?;
+            let ui = ui.as_ref()?;
+            return Some((*ui.library.locks.get(folder)?, ui.library.sealed(folder)));
+        });
+    });
+    let Some((lock, sealed)) = state else {
+        return false;
+    };
+    match item.tag() {
+        TAG_LOCK_FOLDER => item.setTitle(&ns(&tr(if lock.locked { key("Remove Lock") } else { key("Lock Folder") }))),
+        TAG_HIDE_FOLDER => {
+            item.setState(isize::from(lock.hidden));
+            return lock.locked && !sealed;
+        }
+        _ => {}
+    }
+    return !sealed;
+}
+
+fn folder_action(item: &NSMenuItem) {
+    let Some(folder) = target_folder(item) else {
+        return;
+    };
+    let Some((id, lock, sealed)) = UI.with_borrow(|ui| {
+        let ui = ui.as_ref()?;
+        let library = &ui.library;
+        return Some((*library.folder_ids.get(folder)?, *library.locks.get(folder)?, library.sealed(folder)));
+    }) else {
+        return;
+    };
+    if sealed {
+        unlock();
+        return;
+    }
+    let (locked, hidden) = match item.tag() {
+        TAG_RENAME_FOLDER => return crate::ui::rename_folder(folder),
+        TAG_DELETE_FOLDER => return delete_folder(folder),
+        TAG_STYLE_FOLDER => return crate::ui::style_folder(folder),
+        TAG_LOCK_FOLDER => (Some(!lock.locked), None),
+        TAG_HIDE_FOLDER => (None, Some(!lock.hidden)),
+        _ => return,
+    };
+    submit(move |app| Some(app.set_folder_lock(id, locked, hidden)));
+}
+
+pub fn delete_folder(folder: usize) {
+    let id = UI.with_borrow(|ui| ui.as_ref()?.library.folder_ids.get(folder).copied());
+    if let (Some(id), Some(mtm)) = (id, MainThreadMarker::new()) {
+        dialogs::delete_folder(mtm, id);
+    }
+}
+
+pub fn open_folder(folder: Option<usize>) {
+    if folder.is_some_and(sealed) {
+        unlock();
+        later(Ui::refresh);
+        return;
+    }
+    commit(|ui| ui.filter.folder = folder);
+}
+
+pub fn move_items(ids: Vec<String>, folder: Option<usize>) {
+    later(move |ui, _| {
+        let folder = folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
+        send(&Request::LibraryMove { ids, folder });
+    });
+}
+
+pub fn import(paths: &[String], folder: Option<usize>) {
+    add_media(paths, move |ui| folder.and_then(|index| ui.library.folder_ids.get(index)).copied());
+}
+
+pub fn import_here(paths: &[String]) -> bool {
+    return add_media(paths, |ui| ui.filter.folder.and_then(|index| ui.library.folder_ids.get(index)).copied());
+}
+
+fn add_media(paths: &[String], folder: impl FnOnce(&Ui) -> Option<uuid::Uuid> + Send + 'static) -> bool {
+    let files: Vec<String> = paths.iter().flat_map(|path| dialogs::media_in(std::path::Path::new(path))).collect();
+    if files.is_empty() {
+        return false;
+    }
+    later(move |ui, _| {
+        ui.awaiting = true;
+        let folder = folder(ui).map(|id| id.to_string());
+        app::with(|app| app.submit(Request::LibraryAdd { paths: files, folder }));
+    });
     return true;
 }
 

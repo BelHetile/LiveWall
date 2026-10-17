@@ -7,15 +7,10 @@ pub const TAG_ALL: isize = -1;
 pub const TAG_NEW_FOLDER: isize = -2;
 pub const TAG_RESET: isize = -100;
 pub const TAG_LOCK_FOLDER: isize = 1;
-pub const TAG_UNLOCK_FOLDER: isize = 2;
 pub const TAG_HIDE_FOLDER: isize = 3;
 pub const TAG_RENAME_FOLDER: isize = 4;
 pub const TAG_DELETE_FOLDER: isize = 5;
-
-pub fn folder_glyph(library: &Library, folder: usize) -> Option<&'static str> {
-    let lock = library.locks.get(folder)?;
-    return lock.locked.then_some(if library.unlocked { "lock.open.fill" } else { "lock.fill" });
-}
+pub const TAG_STYLE_FOLDER: isize = 6;
 
 pub fn desktop_name(space: usize) -> String {
     return trf("Desktop %ld", &[Arg::Int(i64::try_from(space + 1).unwrap_or(0))]);

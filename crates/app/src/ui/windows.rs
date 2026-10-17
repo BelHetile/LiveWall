@@ -4,23 +4,25 @@ use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameAqua, NSApplication, NSBackingStoreType, NSImage, NSSplitViewController,
-    NSSplitViewItem, NSTitlebarSeparatorStyle, NSViewController, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSSplitViewItem, NSTitlebarSeparatorStyle, NSView, NSViewController, NSWindow, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSBundle, NSData};
 
 use crate::ui::inspector::Inspector;
+use crate::ui::sidebar::{self, Sidebar};
 use crate::ui::wall::WallView;
 use crate::ui::widgets::{self, ns};
 
 const ICON: &[u8] = include_bytes!("../../../../resources/AppIcon.iconset/icon_512x512@2x.png");
-const WINDOW_SIZE: CGSize = CGSize::new(1320.0, 840.0);
+const WINDOW_SIZE: CGSize = CGSize::new(1500.0, 860.0);
 const MIN_SIZE: CGSize = CGSize::new(1180.0, 600.0);
 
 pub struct Panes {
     pub split: Retained<NSSplitViewController>,
     pub inspector: Retained<NSSplitViewItem>,
+    pub sidebar: Retained<NSSplitViewItem>,
 }
 
 pub fn application_icon(mtm: MainThreadMarker) {
@@ -43,7 +45,13 @@ pub fn set_appearance(mtm: MainThreadMarker, mode: usize) {
     NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
 }
 
-pub fn panes(mtm: MainThreadMarker, wall: &WallView, inspector: &Inspector) -> Panes {
+pub fn panes(mtm: MainThreadMarker, sidebar: &NSView, wall: &WallView, inspector: &Inspector) -> Panes {
+    let sidebar_controller = NSViewController::new(mtm);
+    sidebar_controller.setView(sidebar);
+    let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar_controller);
+    sidebar_item.setMinimumThickness(Sidebar::min_width());
+    sidebar_item.setMaximumThickness(Sidebar::max_width());
+    sidebar_item.setCanCollapse(true);
     let wall_controller = NSViewController::new(mtm);
     wall_controller.setView(wall);
     let inspector_controller = NSViewController::new(mtm);
@@ -55,9 +63,11 @@ pub fn panes(mtm: MainThreadMarker, wall: &WallView, inspector: &Inspector) -> P
     inspector_item.setMinimumThickness(Inspector::width());
     inspector_item.setMaximumThickness(Inspector::width());
     inspector_item.setCanCollapse(true);
+    split.addSplitViewItem(&sidebar_item);
     split.addSplitViewItem(&wall_item);
     split.addSplitViewItem(&inspector_item);
-    return Panes { split, inspector: inspector_item };
+    split.splitView().setPosition_ofDividerAtIndex(sidebar::WIDTH, 0);
+    return Panes { split, inspector: inspector_item, sidebar: sidebar_item };
 }
 
 pub fn main_window(mtm: MainThreadMarker, split: &NSSplitViewController) -> Retained<NSWindow> {

@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use objc2::AnyThread;
@@ -106,6 +107,10 @@ pub struct Library {
     pub lock: Option<Lock>,
     pub folders: Vec<String>,
     pub folder_ids: Vec<Uuid>,
+    pub icons: Vec<Option<String>>,
+    pub colors: Vec<Option<String>>,
+    pub counts: Vec<usize>,
+    pub icons_dir: PathBuf,
     pub locks: Vec<FolderLock>,
     pub unlocked: bool,
     pub has_locked: bool,
@@ -207,8 +212,26 @@ impl Thumbs {
     }
 }
 
-fn load(file: &std::path::Path) -> Option<Retained<NSImage>> {
+thread_local! {
+    static IMAGES: RefCell<HashMap<PathBuf, (SystemTime, Retained<NSImage>)>> = RefCell::new(HashMap::new());
+}
+
+fn load(file: &Path) -> Option<Retained<NSImage>> {
     return NSImage::initWithContentsOfFile(NSImage::alloc(), &ns(&file.to_string_lossy()));
+}
+
+pub fn icon_file(file: &Path) -> Option<Retained<NSImage>> {
+    let modified = fs::metadata(file).and_then(|meta| meta.modified()).ok()?;
+    let cached = IMAGES.with_borrow(|cache| {
+        let (seen, image) = cache.get(file)?;
+        return (*seen == modified).then(|| image.clone());
+    });
+    if cached.is_some() {
+        return cached;
+    }
+    let image = load(file)?;
+    IMAGES.with_borrow_mut(|cache| cache.insert(file.to_path_buf(), (modified, image.clone())));
+    return Some(image);
 }
 
 pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
@@ -295,10 +318,16 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     });
 
     return Library {
-        items,
         lock,
         folders: folders.iter().map(|folder| folder.name.clone()).collect(),
+        counts: (0..folder_ids.len())
+            .map(|folder| items.iter().filter(|item| item.folder == Some(folder)).count())
+            .collect(),
+        icons: folders.iter().map(|folder| folder.icon.clone()).collect(),
+        colors: folders.iter().map(|folder| folder.color.clone()).collect(),
         folder_ids,
+        items,
+        icons_dir: app.paths().icons_dir(),
         locks: folders.iter().map(|folder| FolderLock { locked: folder.locked, hidden: folder.hidden }).collect(),
         unlocked,
         has_locked: model.folders.iter().any(|folder| folder.locked),

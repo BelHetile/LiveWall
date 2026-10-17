@@ -6,9 +6,12 @@ use proto::HotkeyAction;
 
 use crate::i18n::tr;
 use crate::ui::actions::{Actions, PRIVACY_KEY};
-use crate::ui::state::{TAG_ALL, TAG_NEW_FOLDER, folder_glyph, privacy_title};
-use crate::ui::widgets::{lock_mark, menu_item, ns};
-use crate::ui::{UI, inspector, toolbar};
+use crate::ui::state::{
+    TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_STYLE_FOLDER,
+    privacy_title,
+};
+use crate::ui::widgets::{menu_item, ns};
+use crate::ui::{UI, folders, inspector, toolbar};
 
 fn submenu(mtm: MainThreadMarker, bar: &NSMenu, title: &str, items: &[Retained<NSMenuItem>]) -> Retained<NSMenu> {
     let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &ns(title));
@@ -74,6 +77,11 @@ pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
             menu_item(mtm, &tr("Download from URL…"), sel!(download:), Some(target), 0, Some(("l", command))),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, &tr("New Folder…"), sel!(folder:), Some(target), TAG_NEW_FOLDER, Some(("n", shift))),
+            menu_item(mtm, &tr("Folder Icon & Color…"), sel!(folderAction:), Some(target), TAG_STYLE_FOLDER, None),
+            menu_item(mtm, &tr("Rename Folder"), sel!(folderAction:), Some(target), TAG_RENAME_FOLDER, None),
+            menu_item(mtm, &tr("Lock Folder"), sel!(folderAction:), Some(target), TAG_LOCK_FOLDER, None),
+            menu_item(mtm, &tr("Hide When Locked"), sel!(folderAction:), Some(target), TAG_HIDE_FOLDER, None),
+            menu_item(mtm, &tr("Delete Folder…"), sel!(folderAction:), Some(target), TAG_DELETE_FOLDER, None),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, &tr("Close Window"), sel!(performClose:), None, 0, Some(("w", command))),
         ],
@@ -110,6 +118,14 @@ pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
             menu_item(mtm, &tr("as Grid"), sel!(showGrid:), Some(target), 0, Some(("1", command))),
             menu_item(mtm, &tr("as List"), sel!(showList:), Some(target), 0, Some(("2", command))),
             NSMenuItem::separatorItem(mtm),
+            menu_item(
+                mtm,
+                &tr("Show Sidebar"),
+                sel!(toggleSidebar:),
+                None,
+                0,
+                Some(("s", command | NSEventModifierFlags::Control)),
+            ),
             menu_item(mtm, &tr("Show Inspector"), sel!(toggleInspector:), None, 0, Some(("i", option))),
             NSMenuItem::separatorItem(mtm),
             menu_item(
@@ -201,7 +217,8 @@ pub fn context_menu(mtm: MainThreadMarker, index: usize) -> Option<Retained<NSMe
         folders.addItem(&NSMenuItem::separatorItem(mtm));
         for (position, name) in ui.library.folders.iter().enumerate() {
             let entry = item(name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL));
-            lock_mark(&entry, folder_glyph(&ui.library, position), current == Some(position));
+            entry.setState(isize::from(current == Some(position)));
+            entry.setImage(folders::image(&ui.library, position, folders::MENU).as_deref());
             folders.addItem(&entry);
         }
         folders.addItem(&NSMenuItem::separatorItem(mtm));

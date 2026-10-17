@@ -1,9 +1,12 @@
 mod actions;
 mod dialogs;
+mod folders;
 mod inspector;
 mod menus;
 mod palette;
+mod picker;
 mod settings;
+mod sidebar;
 mod state;
 mod toolbar;
 mod view;
@@ -33,6 +36,7 @@ use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::actions::Actions;
 use crate::ui::inspector::Inspector;
 use crate::ui::palette::Look;
+use crate::ui::sidebar::Sidebar;
 use crate::ui::state::{Filter, Scope, Sort};
 use crate::ui::toolbar::Toolbar;
 use crate::ui::view::{Library, Thumbs};
@@ -51,6 +55,8 @@ struct Ui {
     wall: Retained<WallView>,
     inspector: Inspector,
     inspector_item: Retained<NSSplitViewItem>,
+    sidebar: Sidebar,
+    sidebar_item: Retained<NSSplitViewItem>,
     toolbar: Toolbar,
     settings: Option<settings::Settings>,
     values: Value,
@@ -140,6 +146,7 @@ impl Ui {
         let theme = &self.look.colors;
         self.wall.reload(&self.library, &visible, self.selected, self.filter.scope, self.filter.list, theme);
         self.toolbar.sync(mtm, &self.library, &self.filter, &self.look, &self.actions);
+        self.sidebar.sync(&self.library, &self.filter);
         self.inspector.refresh(&self.library, &self.filter, theme, self.selected, &self.actions);
     }
 
@@ -184,6 +191,13 @@ impl Ui {
         objc2_app_kit::NSAnimationContext::runAnimationGroup_completionHandler(&changes, Some(&done));
     }
 
+    fn show_sidebar(&self) {
+        if self.sidebar_item.isCollapsed() {
+            self.sidebar_item.setCollapsed(false);
+            self.split.view().layoutSubtreeIfNeeded();
+        }
+    }
+
     fn settings(&mut self, mtm: MainThreadMarker) -> &settings::Settings {
         return self.settings.get_or_insert_with(|| {
             let settings = settings::Settings::new(mtm, &self.look, &self.location, &self.actions);
@@ -221,6 +235,7 @@ impl Ui {
         windows::set_appearance(mtm, self.look.mode);
         self.wall.paint(&self.look.colors);
         self.inspector.restyle(&self.look.colors);
+        self.sidebar.restyle(&self.look.colors);
         self.refresh(mtm);
     }
 
@@ -506,7 +521,9 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
 
     let wall = WallView::new(mtm, &look.colors);
     let inspector = Inspector::new(mtm, &look.colors);
-    let windows::Panes { split, inspector: inspector_item } = windows::panes(mtm, &wall, &inspector);
+    let sidebar = Sidebar::new(mtm, &look.colors, &actions);
+    let windows::Panes { split, inspector: inspector_item, sidebar: sidebar_item } =
+        windows::panes(mtm, &sidebar.view, &wall, &inspector);
 
     let window = windows::main_window(mtm, &split);
     window.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
@@ -528,6 +545,8 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
         wall,
         inspector,
         inspector_item,
+        sidebar,
+        sidebar_item,
         toolbar,
         settings: None,
         values,
@@ -563,6 +582,25 @@ pub fn launched() {
         {
             tracing::warn!(%error, %path, "cannot write window number");
         }
+    });
+}
+
+fn item_image(index: usize) -> Option<Retained<objc2_app_kit::NSImage>> {
+    return UI.with(|ui| ui.try_borrow().ok()?.as_ref()?.library.items.get(index)?.image.clone());
+}
+
+fn rename_folder(folder: usize) {
+    later(move |ui, _| {
+        ui.show_sidebar();
+        ui.sidebar.rename(folder);
+    });
+}
+
+fn style_folder(folder: usize) {
+    later(move |ui, mtm| {
+        ui.open(mtm);
+        ui.show_sidebar();
+        picker::show(mtm, ui, folder);
     });
 }
 

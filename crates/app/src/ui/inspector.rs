@@ -24,8 +24,9 @@ use crate::i18n::{self, Arg, tr, trf};
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
+use crate::ui::folders;
 use crate::ui::palette::Theme;
-use crate::ui::state::{Filter, Scope, TAG_ALL, TAG_RESET, folder_glyph, markers};
+use crate::ui::state::{Filter, Scope, TAG_ALL, TAG_RESET, markers};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
 use crate::ui::wall::{TILE_ASPECT, duration, kind_name, resolution};
@@ -765,9 +766,7 @@ fn fill_folders(popup: &NSPopUpButton, library: &Library, folder: Option<usize>)
         item.setTitle(&widgets::ns(name));
         item.setTag(isize::try_from(index).unwrap_or(TAG_ALL));
         item.setEnabled(!library.sealed(index));
-        if let Some(image) = folder_glyph(library, index).and_then(|icon| widgets::symbol(icon, 12.0)) {
-            item.setImage(Some(&image));
-        }
+        item.setImage(folders::image(library, index, folders::MENU).as_deref());
         menu.addItem(&item);
     }
     popup.selectItemAtIndex(folder.map_or(0, |index| isize::try_from(index + 1).unwrap_or(0)));

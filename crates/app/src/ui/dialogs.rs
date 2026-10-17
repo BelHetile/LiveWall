@@ -92,31 +92,6 @@ pub fn confirm_delete(mtm: MainThreadMarker, index: Option<usize>) {
     });
 }
 
-pub fn rename_folder(mtm: MainThreadMarker, id: Uuid) {
-    let Some(name) =
-        app::with(|app| app.library().folders.iter().find(|folder| folder.id == id).map(|folder| folder.name.clone()))
-            .flatten()
-    else {
-        return;
-    };
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns(&tr("Rename Folder")));
-    let field = widgets::input(mtm, &tr("Folder name"), NAME_WIDTH);
-    field.setStringValue(&ns(&name));
-    alert.setAccessoryView(Some(&field));
-    alert.addButtonWithTitle(&ns(&tr("Rename")));
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    alert.window().setInitialFirstResponder(Some(&field));
-    sheet(&alert, move |response| {
-        let name = field.stringValue().to_string().trim().to_string();
-        if response != NSAlertFirstButtonReturn || name.is_empty() {
-            return;
-        }
-        let request = Request::FolderRename { id: id.to_string(), name };
-        submit(move |app| Some(app.dispatch(&request)));
-    });
-}
-
 pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
     let Some((name, count, locked)) = app::with(|app| {
         let folder = app.library().folders.iter().find(|folder| folder.id == id)?;
@@ -202,7 +177,7 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
     });
 }
 
-fn media_in(path: &Path) -> Vec<String> {
+pub fn media_in(path: &Path) -> Vec<String> {
     if !path.is_dir() {
         return vec![path.to_string_lossy().into_owned()];
     }

@@ -4,15 +4,17 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSColor, NSEvent, NSEventModifierFlags, NSMenu, NSScrollView,
-    NSStackView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSColor, NSDragOperation, NSDraggingContext,
+    NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
+    NSEventModifierFlags, NSMenu, NSPasteboardItem, NSPasteboardTypeFileURL, NSScrollView, NSStackView,
+    NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
-use objc2_foundation::{NSArray, NSNumber};
+use objc2_foundation::{NSArray, NSCopying, NSNumber, NSObjectProtocol};
 use objc2_quartz_core::{
     CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CATransaction, CATransform3D,
     CATransform3DIdentity, CATransition, kCAGravityResizeAspectFill, kCAMediaTimingFunctionEaseIn,
@@ -25,7 +27,7 @@ use crate::ui::palette::{Theme, is_dark};
 use crate::ui::state::{Marker, Scope, markers};
 use crate::ui::view::{Download, Item, Library, Stage};
 use crate::ui::widgets::{self, Weight};
-use crate::ui::{actions, menus};
+use crate::ui::{actions, menus, sidebar};
 
 pub const TILE_ASPECT: CGFloat = 10.0 / 16.0;
 const PADDING: CGFloat = 16.0;
@@ -46,6 +48,11 @@ const SELECT: f64 = 0.22;
 const CHIPS: f64 = 0.22;
 const SCROLL_MIN: f64 = 0.16;
 const SCROLL_MAX: f64 = 0.35;
+const DRAG_WIDTH: CGFloat = 160.0;
+
+thread_local! {
+    static DRAGGED: RefCell<Option<Retained<TileView>>> = const { RefCell::new(None) };
+}
 
 fn ease_out() -> Retained<CAMediaTimingFunction> {
     return CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
@@ -122,6 +129,7 @@ pub struct TileIvars {
     list: Cell<bool>,
     fresh: Cell<bool>,
     stale: Cell<bool>,
+    dragging: Cell<bool>,
 }
 
 define_class!(
@@ -139,6 +147,7 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let index = self.ivars().index.get();
+            self.ivars().dragging.set(false);
             crate::ui::focus();
             crate::ui::select(Some(index));
             if event.clickCount() >= 2 {
@@ -162,10 +171,49 @@ define_class!(
         fn mouse_exited(&self, _event: &NSEvent) {
             self.hover(false);
         }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            self.drag(event);
+        }
+    }
+
+    unsafe impl NSObjectProtocol for TileView {}
+
+    unsafe impl NSDraggingSource for TileView {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn drag_mask(&self, _session: &NSDraggingSession, context: NSDraggingContext) -> NSDragOperation {
+            if context == NSDraggingContext::WithinApplication { NSDragOperation::Move } else { NSDragOperation::None }
+        }
+
+        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
+        fn drag_ended(&self, _session: &NSDraggingSession, _point: CGPoint, _operation: NSDragOperation) {
+            DRAGGED.with_borrow_mut(Option::take);
+        }
     }
 );
 
 impl TileView {
+    fn drag(&self, event: &NSEvent) {
+        let ivars = self.ivars();
+        if ivars.dragging.replace(true) {
+            return;
+        }
+        let index = ivars.index.get();
+        let image = crate::ui::item_image(index);
+        let item = NSPasteboardItem::new();
+        item.setString_forType(&widgets::ns(&ivars.ident.to_string()), &widgets::ns(sidebar::ITEM_TYPE));
+        let dragged =
+            NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), ProtocolObject::from_ref(&*item));
+        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        let size = CGSize::new(DRAG_WIDTH, DRAG_WIDTH * TILE_ASPECT);
+        let frame = CGRect::new(CGPoint::new(point.x - size.width / 2.0, point.y - size.height / 2.0), size);
+        unsafe { dragged.setDraggingFrame_contents(frame, image.as_deref().map(|image| image as &AnyObject)) };
+        let items = NSArray::from_retained_slice(&[dragged]);
+        DRAGGED.with_borrow_mut(|slot| *slot = Some(self.retain()));
+        self.beginDraggingSessionWithItems_event_source(&items, event, ProtocolObject::from_ref(self));
+    }
+
     fn new(mtm: MainThreadMarker, index: usize, library: &Library, scope: Scope, theme: &Theme) -> Retained<Self> {
         let item = &library.items[index];
         let dark = is_dark(&objc2_app_kit::NSApplication::sharedApplication(mtm).effectiveAppearance());
@@ -233,6 +281,7 @@ impl TileView {
             list: Cell::new(false),
             fresh: Cell::new(true),
             stale: Cell::new(false),
+            dragging: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
@@ -258,6 +307,8 @@ impl TileView {
             )
         };
         this.addTrackingArea(&area);
+        let types = [unsafe { NSPasteboardTypeFileURL }.copy()];
+        this.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
         return this;
     }
 
@@ -612,6 +663,20 @@ define_class!(
             if self.ivars().keyboard.replace(false) {
                 self.rehover();
             }
+        }
+    }
+
+    unsafe impl NSObjectProtocol for WallView {}
+
+    unsafe impl NSDraggingDestination for WallView {
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            if sidebar::dropped_files(info).is_empty() { NSDragOperation::None } else { NSDragOperation::Copy }
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            actions::import_here(&sidebar::dropped_files(info))
         }
     }
 );

@@ -8,7 +8,8 @@ use objc2_app_kit::{
     NSLineBreakMode, NSMenu, NSMenuItem, NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSStackView, NSTextField,
     NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarItemGroup, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier,
-    NSToolbarToggleInspectorItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarToggleInspectorItemIdentifier,
+    NSToolbarToggleSidebarItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
@@ -17,17 +18,13 @@ use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 use crate::app::{PlayState, Sound};
 use crate::i18n::{Arg, key, tr, trf};
 use crate::ui::palette::Look;
-use crate::ui::state::{
-    Filter, KINDS, Scope, Showing, Sort, TAG_ALL, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER,
-    TAG_RENAME_FOLDER, TAG_UNLOCK_FOLDER, desktop_name, folder_glyph, lock_tip, privacy_title, showing,
-};
+use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, TAG_ALL, desktop_name, lock_tip, showing};
 use crate::ui::view::{Library, Status};
 use crate::ui::widgets::{self, Weight};
 
 const PILL_WIDTH: CGFloat = 148.0;
 const PILL_HEIGHT: CGFloat = 26.0;
 const SCOPE_WIDTH: CGFloat = 128.0;
-const FOLDER_WIDTH: CGFloat = 136.0;
 const SEARCH_WIDTH: CGFloat = 120.0;
 const ADD_WIDTH: CGFloat = 76.0;
 const STATUS_TEXT_WIDTH: CGFloat = 150.0;
@@ -127,7 +124,6 @@ pub struct Toolbar {
     pub layout: Retained<NSToolbarItemGroup>,
     pub search: Retained<NSSearchField>,
     scope: Retained<NSPopUpButton>,
-    folder: Retained<NSPopUpButton>,
     sort: Retained<NSMenuToolbarItem>,
     add: Retained<NSButton>,
     add_menu: Retained<NSMenu>,
@@ -135,7 +131,6 @@ pub struct Toolbar {
     screen: Pill,
     status: StatusBadge,
     scope_title: RefCell<String>,
-    folder_title: RefCell<String>,
     _delegate: Retained<ToolbarDelegate>,
 }
 
@@ -151,7 +146,6 @@ struct Pill {
 impl Toolbar {
     pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> Self {
         let scope = popup(mtm, SCOPE_WIDTH);
-        let folder = popup(mtm, FOLDER_WIDTH);
         let sort = NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &widgets::ns("sort"));
         sort.setShowsIndicator(false);
         if let Some(image) = widgets::symbol("arrow.up.arrow.down", 13.0) {
@@ -202,7 +196,6 @@ impl Toolbar {
 
         let items: Vec<Retained<NSToolbarItem>> = vec![
             view_item(mtm, "scope", &tr("Desktop"), &scope),
-            view_item(mtm, "folder", &tr("Folder"), &folder),
             showing.clone(),
             status.toolbar_item(mtm),
             Retained::into_super(sort.clone()),
@@ -214,8 +207,9 @@ impl Toolbar {
         let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier };
         let toggle = unsafe { NSToolbarToggleInspectorItemIdentifier };
         let order: Vec<Retained<NSString>> = vec![
+            unsafe { NSToolbarToggleSidebarItemIdentifier }.copy(),
+            unsafe { NSToolbarSidebarTrackingSeparatorItemIdentifier }.copy(),
             widgets::ns("scope"),
-            widgets::ns("folder"),
             flexible.copy(),
             widgets::ns("showing"),
             widgets::ns("status"),
@@ -240,7 +234,6 @@ impl Toolbar {
             layout,
             search,
             scope,
-            folder,
             sort,
             add,
             add_menu: add_menu(mtm, target),
@@ -248,7 +241,6 @@ impl Toolbar {
             screen,
             status,
             scope_title: RefCell::new(String::new()),
-            folder_title: RefCell::new(String::new()),
             _delegate: delegate,
         };
     }
@@ -260,14 +252,6 @@ impl Toolbar {
             self.scope_title.borrow_mut().clone_from(&title);
         }
         self.scope.setMenu(Some(&scope_menu(mtm, library, filter.scope, &title, sel!(scope:), target)));
-        let all = tr("All Wallpapers");
-        let folder_title =
-            filter.folder.and_then(|index| library.folders.get(index)).map_or(all.as_str(), |name| name.as_str());
-        if self.folder_title.borrow().as_str() != folder_title {
-            widgets::fade(&self.folder);
-            *self.folder_title.borrow_mut() = folder_title.to_string();
-        }
-        self.folder.setMenu(Some(&folder_menu(mtm, library, filter.folder, folder_title, target)));
         self.sort.setMenu(&sort_menu(mtm, filter, target));
         self.layout.setSelectedIndex(isize::from(filter.list));
         widgets::prominent(&self.add, &look.colors);
@@ -630,59 +614,6 @@ pub fn scope_menu(
         items.push(entry(mtm, &desktop_name(space), action, scope.tag(), current == scope, target));
     }
     return menu(mtm, &items);
-}
-
-fn folder_menu(
-    mtm: MainThreadMarker,
-    library: &Library,
-    current: Option<usize>,
-    title: &str,
-    target: &AnyObject,
-) -> Retained<NSMenu> {
-    let action = sel!(folder:);
-    let mut items = vec![
-        title_entry(mtm, title, "folder"),
-        entry(mtm, &tr("All Wallpapers"), action, TAG_ALL, current.is_none(), target),
-        separator(mtm),
-    ];
-    for (index, name) in library.folders.iter().enumerate() {
-        let tag = isize::try_from(index).unwrap_or(TAG_ALL);
-        let item = entry(mtm, name, action, tag, current == Some(index), target);
-        widgets::lock_mark(&item, folder_glyph(library, index), current == Some(index));
-        items.push(item);
-    }
-    items.push(separator(mtm));
-    items.push(entry(mtm, &tr("New Folder"), action, TAG_NEW_FOLDER, false, target));
-    items.extend(privacy_entries(mtm, library, current, target));
-    return menu(mtm, &items);
-}
-
-fn privacy_entries(
-    mtm: MainThreadMarker,
-    library: &Library,
-    current: Option<usize>,
-    target: &AnyObject,
-) -> Vec<Retained<NSMenuItem>> {
-    let mut items = Vec::new();
-    let selected = current.and_then(|index| library.folders.get(index).zip(library.locks.get(index)));
-    if let Some((name, lock)) = selected {
-        let action = sel!(folderLock:);
-        items.push(separator(mtm));
-        items.push(header(mtm, name));
-        if lock.locked {
-            items.push(entry(mtm, &tr("Remove Lock"), action, TAG_UNLOCK_FOLDER, false, target));
-            items.push(entry(mtm, &tr("Hide When Locked"), action, TAG_HIDE_FOLDER, lock.hidden, target));
-        } else {
-            items.push(entry(mtm, &tr("Lock Folder"), action, TAG_LOCK_FOLDER, false, target));
-        }
-        items.push(entry(mtm, &tr("Rename Folder…"), action, TAG_RENAME_FOLDER, false, target));
-        items.push(entry(mtm, &tr("Delete Folder…"), action, TAG_DELETE_FOLDER, false, target));
-    }
-    if library.has_locked {
-        items.push(separator(mtm));
-        items.push(entry(mtm, &tr(privacy_title(library.unlocked)), sel!(togglePrivacy:), 0, false, target));
-    }
-    return items;
 }
 
 fn sort_menu(mtm: MainThreadMarker, filter: &Filter, target: &AnyObject) -> Retained<NSMenu> {

@@ -102,12 +102,18 @@
 	<string>Менять обои</string>
 	<key>Change…</key>
 	<string>Изменить…</string>
+	<key>Choose Image…</key>
+	<string>Выбрать картинку…</string>
 	<key>Choose a specific desktop</key>
 	<string>Выбрать конкретный рабочий стол</string>
 	<key>Click, then press a shortcut. ⌫ clears it, ⎋ cancels.</key>
 	<string>Нажмите, затем введите сочетание. ⌫ — очистить, ⎋ — отмена.</string>
 	<key>Close Window</key>
 	<string>Закрыть окно</string>
+	<key>Cocoa</key>
+	<string>Какао</string>
+	<key>Color</key>
+	<string>Цвет</string>
 	<key>Convert videos that need it for smooth playback</key>
 	<string>Конвертировать видео, которым это нужно для плавного воспроизведения</string>
 	<key>Copy</key>
@@ -132,6 +138,8 @@
 	<string>Дата добавления (сначала новые)</string>
 	<key>Date Added (Oldest)</key>
 	<string>Дата добавления (сначала старые)</string>
+	<key>Default</key>
+	<string>По умолчанию</string>
 	<key>Default Volume</key>
 	<string>Громкость по умолчанию</string>
 	<key>Delete</key>
@@ -156,6 +164,8 @@
 	<string>Рабочие столы %@</string>
 	<key>Display asleep</key>
 	<string>Дисплей спит</string>
+	<key>Done</key>
+	<string>Готово</string>
 	<key>Download</key>
 	<string>Скачать</string>
 	<key>Download from URL…</key>
@@ -164,8 +174,12 @@
 	<string>Загрузка %@</string>
 	<key>Downloading %ld videos · %@</key>
 	<string>Загрузка видео (%1$ld) · %2$@</string>
+	<key>Drop a PNG, JPEG or HEIC here, or choose one.</key>
+	<string>Перетащите сюда PNG, JPEG или HEIC или выберите файл.</string>
 	<key>Duration</key>
 	<string>Длительность</string>
+	<key>Dusty Blue</key>
+	<string>Пыльно-голубой</string>
 	<key>Edit</key>
 	<string>Правка</string>
 	<key>Emoji &amp; Symbols</key>
@@ -188,10 +202,12 @@
 	<string>поиск в Finder</string>
 	<key>Fit</key>
 	<string>Вписать</string>
-	<key>Folder</key>
-	<string>Папка</string>
+	<key>Folder Icon &amp; Color…</key>
+	<string>Иконка и цвет папки…</string>
 	<key>Folder name</key>
 	<string>Название папки</string>
+	<key>Folders</key>
+	<string>Папки</string>
 	<key>Force Quit</key>
 	<string>принудительное завершение</string>
 	<key>Forest</key>
@@ -234,8 +250,14 @@
 	<string>скрыть остальные</string>
 	<key>Hide while locked</key>
 	<string>Скрывать при блокировке</string>
+	<key>Honey</key>
+	<string>Медовый</string>
 	<key>Horizontal</key>
 	<string>По горизонтали</string>
+	<key>Icon</key>
+	<string>Иконка</string>
+	<key>Icon &amp; Color…</key>
+	<string>Иконка и цвет…</string>
 	<key>Image</key>
 	<string>Картинка</string>
 	<key>Images</key>
@@ -254,6 +276,8 @@
 	<string>Установить инструменты для скачивания?</string>
 	<key>Launch at login</key>
 	<string>Запускать при входе в систему</string>
+	<key>Lavender</key>
+	<string>Лавандовый</string>
 	<key>Library</key>
 	<string>Библиотека</string>
 	<key>Light</key>
@@ -310,6 +334,8 @@
 	<string>Mission Control</string>
 	<key>Mode</key>
 	<string>Режим</string>
+	<key>Moss</key>
+	<string>Мох</string>
 	<key>Move one space left</key>
 	<string>переход на стол влево</string>
 	<key>Move one space right</key>
@@ -424,6 +450,8 @@
 	<string>Повторить</string>
 	<key>Remove</key>
 	<string>Удалить</string>
+	<key>Remove Image</key>
+	<string>Удалить картинку</string>
 	<key>Remove Lock</key>
 	<string>Снять блокировку</string>
 	<key>Remove from Library</key>
@@ -436,8 +464,8 @@
 	<string>Переименовать</string>
 	<key>Rename Folder</key>
 	<string>Переименовать папку</string>
-	<key>Rename Folder…</key>
-	<string>Переименовать папку…</string>
+	<key>Reset</key>
+	<string>Сбросить</string>
 	<key>Reset playback and placement for this wallpaper</key>
 	<string>Сбросить воспроизведение и размещение этих обоев</string>
 	<key>Reset to Defaults</key>
@@ -450,6 +478,8 @@
 	<string>Роза</string>
 	<key>Rotation</key>
 	<string>Смена обоев</string>
+	<key>Sage</key>
+	<string>Шалфей</string>
 	<key>Screen Locks or Sleeps</key>
 	<string>Экран блокируется или засыпает</string>
 	<key>Screen locked</key>
@@ -488,6 +518,8 @@ change how it plays.</key>
 	<string>Показывать</string>
 	<key>Show Inspector</key>
 	<string>Показать инспектор</string>
+	<key>Show Sidebar</key>
+	<string>Показать боковую панель</string>
 	<key>Show or hide the Dock</key>
 	<string>показать или скрыть Dock</string>
 	<key>Shuffle</key>
@@ -524,6 +556,8 @@ change how it plays.</key>
 	<string>Система</string>
 	<key>Take Private Wallpapers off the Desktop</key>
 	<string>Убирать приватные обои с рабочего стола</string>
+	<key>Terracotta</key>
+	<string>Терракотовый</string>
 	<key>The folder is empty.</key>
 	<string>Папка пуста.</string>
 	<key>The wallpaper inside moves to Unfiled.</key>
@@ -558,6 +592,8 @@ change how it plays.</key>
 	<string>Разблокировать приватные папки…</string>
 	<key>Unlock private folders to move a wallpaper into a private folder</key>
 	<string>Откройте приватные папки, чтобы переместить обои в приватную папку</string>
+	<key>Unlock private folders to open this folder</key>
+	<string>Откройте приватные папки, чтобы открыть эту папку</string>
 	<key>Unlock private wallpaper folders</key>
 	<string>разблокировать приватные папки с обоями</string>
 	<key>Unmute</key>
@@ -568,6 +604,8 @@ change how it plays.</key>
 	<string>Используйте «Оптимизировать для этого Mac», чтобы перекодировать в HEVC.</string>
 	<key>Use This Frame</key>
 	<string>Этот кадр</string>
+	<key>Use as Icon</key>
+	<string>Сделать иконкой</string>
 	<key>Use for Lock Screen</key>
 	<string>На экран блокировки</string>
 	<key>Uses more battery to keep track of windows</key>
@@ -606,6 +644,10 @@ change how it plays.</key>
 	<string>Шторка</string>
 	<key>Work in any app, on the current desktop.</key>
 	<string>Работают в любом приложении, на текущем рабочем столе.</string>
+	<key>Your Images</key>
+	<string>Ваши картинки</string>
+	<key>Your image · right-click to remove</key>
+	<string>Ваша картинка · удалить — правый клик</string>
 	<key>Zoom</key>
 	<string>Изменить масштаб</string>
 	<key>app commands (⌘ + key)</key>

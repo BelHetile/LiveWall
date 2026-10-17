@@ -61,8 +61,9 @@ cd LiveWall
   different one per desktop (keys 1–9 in the library, ` for all).
 - **Library:** add files and folders with a button or by drag & drop (files are copied into the library), or
   paste a video link (YouTube first; other sites [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports may work).
-  New files land in the folder you are viewing. Folders (created private right away if you like, renamed and
-  deleted from the folder menu), search, grid and list views; Delete removes the wallpaper under the pointer.
+  New files land in the folder you are viewing. Folders live in the sidebar: created private right away if you
+  like, renamed in place, given an SF Symbol or your own image and a color, and filled by dragging wallpapers or
+  files onto them. Search, grid and list views; Delete removes the wallpaper under the pointer.
 - **Per-wallpaper settings:** **Fill, Fit, Stretch, Center** or **Custom** (position and zoom), volume, mute and
   playback speed. The inspector preview can play with sound while the desktop copy stays silent.
 - **Transitions:** fade, wipe, wave, grow, directional sweeps and more between wallpapers, rendered on the GPU.

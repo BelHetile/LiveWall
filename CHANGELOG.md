@@ -7,8 +7,14 @@ All notable changes to LiveWall are listed here. The format is based on
 ## [Unreleased]
 
 ### Added
-- Folder icons: an SF Symbol or one of your own images for any folder, from the toolbar folder menu or the
-  inspector. `lwctl folder icon` sets one from the command line.
+- A folder sidebar replaces the toolbar folder menu: All Wallpapers plus every folder with its wallpaper count.
+  Right-click a folder to change its icon and color, rename it in place, lock it, hide it while locked or
+  delete it; ⌃⌘S shows and hides the sidebar.
+- Folder icons and colors: pick an SF Symbol, one of eight presets or any #RRGGBB color (previewed as you type),
+  or use your own PNG, JPEG or HEIC image; drop an image on the picker to add it. A locked folder shows a lock
+  until you give it an icon of its own. `lwctl folder style` and `lwctl icon` do the same from the command line.
+- Drag wallpapers onto a folder in the sidebar to move them; drop files from Finder on a folder or on the
+  library to import them there.
 - Settings → Privacy → *Take Private Wallpapers off the Desktop*. It is on: locking the folders replaces a private
   wallpaper on the desktop with a safe one. Turn it off to keep a private wallpaper on the desktop and the lock
   screen while locked; the library and the menu bar still hide it.
