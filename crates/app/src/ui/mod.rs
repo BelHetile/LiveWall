@@ -31,7 +31,6 @@ use crate::app::{self, App};
 use crate::i18n::{Arg, tr, trf};
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
-use crate::style::StyleError;
 use crate::ui::state::{Filter, Layout, Scope, Sort};
 use crate::ui::view::{Library, Thumbs};
 
@@ -499,8 +498,6 @@ pub fn changed() {
     });
 }
 
-pub fn restyled() {}
-
 pub fn dismiss_sheets() {
     update(|ui, _| ui.end_sheets());
 }
@@ -532,8 +529,6 @@ pub fn frame(count: isize) {
         }
     });
 }
-
-pub fn style(_work: impl FnOnce(&mut App) -> Result<String, StyleError> + Send + 'static) {}
 
 pub fn av1_notice(titles: &[String], converting: bool) {
     let names = titles.iter().map(|title| format!("“{title}”")).collect::<Vec<_>>().join(", ");

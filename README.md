@@ -88,11 +88,7 @@ cd LiveWall
 - **Rotation:** change the wallpaper on a timer, in order or shuffled.
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
   while the library window is open.
-- **Appearance:** light, dark or system, and color styles: System follows your macOS accent color; Graphite,
-  Sequoia, Harbour, Dusk, Terracotta, Sand, Linen and Slate are built in. Change the accent, the tint behind the
-  window or any single part under **Advanced**; the first change makes your own copy. Each color has a light and a
-  dark value (dark follows light until you set it), Increase Contrast gets a stronger version automatically, and
-  Reduce Transparency and Reduce Motion are respected. Styles export and import as `.livewallstyle` files.
+- **Appearance:** light, dark or system.
 - **Languages:** English and Russian, following the macOS language. To pick one for LiveWall only, use
   **System Settings → General → Language & Region → Applications** and reopen LiveWall.
 - **Command line:** `lwctl` controls the running app (see below).
@@ -130,8 +126,6 @@ status  current  quit  spaces  windows  desktop  rules
 library {list,add [--folder ID],remove,rename,move}
 folder {create,rename,delete,lock,style ID [--icon symbol:NAME|image:FILE|none] [--color TAG|#RRGGBB|none]}
 icon {import PATH,list,remove image:FILE}
-style {list,keys,apply NAME,export [NAME] [-o FILE],import FILE,delete NAME,rename NAME TO}
-style {set KEY LIGHT [DARK],reset KEY}
 apply [--item ID] [--target default|space] [--target-id ID]
 set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
 set-item ID [--volume N --speed N --muted BOOL --still-time N]
@@ -169,7 +163,6 @@ Everything lives in `~/Library/Application Support/LiveWall/`:
 | --- | --- |
 | `library.json` | wallpapers, folders, what is shown where |
 | `settings.json` | settings and hotkeys |
-| `styles.json` | your own color styles |
 | `swap-state.json` | your original desktop pictures, while LiveWall replaces them |
 | `Wallpapers/`, `Thumbs/`, `Stills/` | media, thumbnails, still frames |
 | `private/` | the same for locked folders (hidden, owner-only) |

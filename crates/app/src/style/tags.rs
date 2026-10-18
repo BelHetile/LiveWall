@@ -1,6 +1,5 @@
 use crate::i18n::key;
 use crate::style::color::Rgba;
-use crate::style::keys::SystemColor;
 
 const NEUTRAL_CHROMA: f64 = 0.04;
 
@@ -49,19 +48,6 @@ impl Tag {
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim();
         return Self::ALL.into_iter().find(|tag| tag.id().eq_ignore_ascii_case(text));
-    }
-
-    pub fn system(self) -> SystemColor {
-        return match self {
-            Self::Red => SystemColor::Red,
-            Self::Orange => SystemColor::Orange,
-            Self::Yellow => SystemColor::Yellow,
-            Self::Green => SystemColor::Green,
-            Self::Blue => SystemColor::Blue,
-            Self::Purple => SystemColor::Purple,
-            Self::Pink => SystemColor::Pink,
-            Self::Gray => SystemColor::Gray,
-        };
     }
 
     pub fn reference(self) -> Rgba {

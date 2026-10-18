@@ -336,14 +336,7 @@ pub enum AppearanceMode {
 #[serde(default)]
 pub struct Appearance {
     pub mode: AppearanceMode,
-    pub style: String,
     pub list: bool,
-    #[serde(skip_serializing)]
-    pub theme: Option<String>,
-    #[serde(skip_serializing)]
-    pub accent: Option<String>,
-    #[serde(skip_serializing)]
-    pub canvas: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -750,16 +743,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_appearance_fields_are_read_but_never_written() {
+    fn legacy_appearance_fields_are_ignored_and_dropped() {
         let settings: Settings = serde_json::from_str(
-            r##"{"appearance":{"mode":"dark","theme":"Ocean","accent":"#112233","canvas":"#445566"}}"##,
+            r##"{"appearance":{"mode":"dark","style":"Dusk","theme":"Ocean","accent":"#112233","canvas":"#445566"}}"##,
         )
         .expect("legacy appearance");
-        assert_eq!(settings.appearance.theme.as_deref(), Some("Ocean"));
-        assert_eq!(settings.appearance.accent.as_deref(), Some("#112233"));
-        assert!(settings.appearance.style.is_empty());
+        assert_eq!(settings.appearance.mode, AppearanceMode::Dark);
         let written = serde_json::to_value(&settings).expect("serialize");
-        assert_eq!(written["appearance"], serde_json::json!({ "mode": "dark", "style": "", "list": false }));
+        assert_eq!(written["appearance"], serde_json::json!({ "mode": "dark", "list": false }));
     }
 
     #[test]

@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>%@ (edited)</key>
-	<string>%@ (изменено)</string>
 	<key>%@ is already used by %@. Press another combination.</key>
 	<string>%1$@ уже занято: %2$@. Нажмите другое сочетание.</string>
 	<key>%@ is already used by another app. Press another combination.</key>
@@ -22,16 +20,8 @@
 	<string>30 минут</string>
 	<key>5 Minutes</key>
 	<string>5 минут</string>
-	<key>A style name can’t be empty or longer than 64 characters.</key>
-	<string>Название стиля не может быть пустым или длиннее 64 символов.</string>
-	<key>A style named “%@” already exists.</key>
-	<string>Стиль «%@» уже существует.</string>
 	<key>About LiveWall</key>
 	<string>О программе LiveWall</string>
-	<key>Accent</key>
-	<string>Акцент</string>
-	<key>Active Chip</key>
-	<string>Активный чип</string>
 	<key>Add</key>
 	<string>Добавить</string>
 	<key>Add Files…</key>
@@ -82,10 +72,6 @@
 	<string>окна приложения</string>
 	<key>Appearance</key>
 	<string>Оформление</string>
-	<key>Background</key>
-	<string>Подложка</string>
-	<key>Base Colors</key>
-	<string>Основные цвета</string>
 	<key>Best Available</key>
 	<string>Лучшее доступное</string>
 	<key>Blue</key>
@@ -94,26 +80,14 @@
 	<string>Все окна — на передний план</string>
 	<key>Cancel</key>
 	<string>Отмена</string>
-	<key>Canvas</key>
-	<string>Фон</string>
-	<key>Card</key>
-	<string>Карточка</string>
 	<key>Center</key>
 	<string>По центру</string>
 	<key>Change Wallpaper</key>
 	<string>Менять обои</string>
 	<key>Change…</key>
 	<string>Изменить…</string>
-	<key>Chip</key>
-	<string>Чип</string>
-	<key>Chip Text</key>
-	<string>Текст чипа</string>
-	<key>Chips</key>
-	<string>Чипы</string>
 	<key>Choose Image…</key>
 	<string>Выбрать изображение…</string>
-	<key>Chrome</key>
-	<string>Оформление окна</string>
 	<key>Click, then press a shortcut. ⌫ clears it, ⎋ cancels.</key>
 	<string>Нажмите, затем введите сочетание. ⌫ — очистить, ⎋ — отмена.</string>
 	<key>Close Window</key>
@@ -126,8 +100,6 @@
 	<string>Копировать файлы в библиотеку</string>
 	<key>Couldn’t download the video: %@</key>
 	<string>Не удалось скачать видео: %@</string>
-	<key>Counts</key>
-	<string>Счётчики</string>
 	<key>Create</key>
 	<string>Создать</string>
 	<key>Custom</key>
@@ -164,44 +136,24 @@
 	<string>Рабочий стол скрыт</string>
 	<key>Desktops %@</key>
 	<string>Рабочие столы %@</string>
-	<key>Destructive</key>
-	<string>Опасное действие</string>
-	<key>Details</key>
-	<string>Подробности</string>
 	<key>Display asleep</key>
 	<string>Дисплей спит</string>
-	<key>Divider</key>
-	<string>Разделитель</string>
 	<key>Download</key>
 	<string>Загрузить</string>
-	<key>Download Status</key>
-	<string>Статус загрузки</string>
 	<key>Download from URL…</key>
 	<string>Скачать по ссылке…</string>
 	<key>Duration</key>
 	<string>Длительность</string>
-	<key>Dusk</key>
-	<string>Сумерки</string>
 	<key>Edit</key>
 	<string>Правка</string>
 	<key>Emoji &amp; Symbols</key>
 	<string>эмодзи и символы</string>
-	<key>Empty State</key>
-	<string>Пустой экран</string>
 	<key>Enter Full Screen</key>
 	<string>Перейти в полноэкранный режим</string>
-	<key>Error Status</key>
-	<string>Статус ошибки</string>
 	<key>Every</key>
 	<string>Интервал</string>
 	<key>Fade</key>
 	<string>Растворение</string>
-	<key>Field</key>
-	<string>Поле</string>
-	<key>Field Text</key>
-	<string>Текст поля</string>
-	<key>Fields</key>
-	<string>Поля</string>
 	<key>File</key>
 	<string>Файл</string>
 	<key>Fill</key>
@@ -230,22 +182,12 @@
 	<string>GIF</string>
 	<key>General</key>
 	<string>Основные</string>
-	<key>Glass Tint</key>
-	<string>Оттенок стекла</string>
-	<key>Good Status</key>
-	<string>Статус «в порядке»</string>
-	<key>Graphite</key>
-	<string>Графит</string>
 	<key>Gray</key>
 	<string>Серый</string>
 	<key>Green</key>
 	<string>Зелёный</string>
 	<key>Grow</key>
 	<string>Увеличение</string>
-	<key>Hairline</key>
-	<string>Тонкая линия</string>
-	<key>Harbour</key>
-	<string>Гавань</string>
 	<key>Help menu</key>
 	<string>меню «Справка»</string>
 	<key>Hide LiveWall</key>
@@ -256,14 +198,6 @@
 	<string>Скрывать при блокировке</string>
 	<key>Horizontal</key>
 	<string>По горизонтали</string>
-	<key>Hover</key>
-	<string>При наведении</string>
-	<key>Icon Picker</key>
-	<string>Выбор значка</string>
-	<key>Icons</key>
-	<string>Значки</string>
-	<key>Idle Status</key>
-	<string>Статус простоя</string>
 	<key>Image</key>
 	<string>Изображение</string>
 	<key>Images</key>
@@ -272,8 +206,6 @@
 	<string>Бездействие</string>
 	<key>Includes the screen saver</key>
 	<string>Включая заставку</string>
-	<key>Inspector</key>
-	<string>Инспектор</string>
 	<key>Install and Download</key>
 	<string>Установить и загрузить</string>
 	<key>Install download tools?</key>
@@ -284,8 +216,6 @@
 	<string>Библиотека</string>
 	<key>Light</key>
 	<string>Светлое</string>
-	<key>Linen</key>
-	<string>Лён</string>
 	<key>List</key>
 	<string>Список</string>
 	<key>Listen to the preview; the desktop copy is muted meanwhile</key>
@@ -406,8 +336,6 @@
 	<string>Воспроизводить звук обоев</string>
 	<key>Playback</key>
 	<string>Воспроизведение</string>
-	<key>Preview Border</key>
-	<string>Рамка превью</string>
 	<key>Previous</key>
 	<string>Предыдущие обои</string>
 	<key>Previous Wallpaper</key>
@@ -418,22 +346,16 @@
 	<string>Приватная</string>
 	<key>Private wallpaper</key>
 	<string>Приватные обои</string>
-	<key>Progress</key>
-	<string>Прогресс</string>
 	<key>Purple</key>
 	<string>Фиолетовый</string>
 	<key>Quality</key>
 	<string>Качество</string>
 	<key>Quit LiveWall</key>
 	<string>Завершить LiveWall</string>
-	<key>Raised Card</key>
-	<string>Приподнятая карточка</string>
 	<key>Random</key>
 	<string>Случайные обои</string>
 	<key>Random Wallpaper</key>
 	<string>Случайные обои</string>
-	<key>Recording</key>
-	<string>Запись</string>
 	<key>Red</key>
 	<string>Красный</string>
 	<key>Redo</key>
@@ -462,10 +384,6 @@
 	<string>Продолжить</string>
 	<key>Rotation</key>
 	<string>Смена обоев</string>
-	<key>Row Highlight</key>
-	<string>Подсветка строки</string>
-	<key>Sand</key>
-	<string>Песок</string>
 	<key>Screen Locks or Sleeps</key>
 	<string>Экран блокируется или засыпает</string>
 	<key>Screen locked</key>
@@ -476,24 +394,8 @@
 	<string>снимок экрана</string>
 	<key>Search</key>
 	<string>Поиск</string>
-	<key>Secondary Text</key>
-	<string>Вторичный текст</string>
-	<key>Segmented Control</key>
-	<string>Переключатель</string>
 	<key>Select All</key>
 	<string>Выбрать все</string>
-	<key>Selected Cell</key>
-	<string>Выбранная ячейка</string>
-	<key>Selected Title</key>
-	<string>Выбранное название</string>
-	<key>Selection</key>
-	<string>Выделение</string>
-	<key>Selection Ring</key>
-	<string>Рамка выделения</string>
-	<key>Separator</key>
-	<string>Разделитель</string>
-	<key>Sequoia</key>
-	<string>Секвойя</string>
 	<key>Services</key>
 	<string>Службы</string>
 	<key>Set as Lock Screen</key>
@@ -506,14 +408,8 @@
 	<string>Установить на рабочий стол</string>
 	<key>Set This Frame as Lock Screen</key>
 	<string>Сделать этот кадр экраном блокировки</string>
-	<key>Settings</key>
-	<string>Настройки</string>
 	<key>Settings…</key>
 	<string>Настройки…</string>
-	<key>Shadow</key>
-	<string>Тень</string>
-	<key>Shortcut Field</key>
-	<string>Поле сочетания клавиш</string>
 	<key>Shortcuts</key>
 	<string>Сочетания клавиш</string>
 	<key>Show All</key>
@@ -526,14 +422,6 @@
 	<string>показать или скрыть Dock</string>
 	<key>Shuffle</key>
 	<string>Перемешивать</string>
-	<key>Sidebar</key>
-	<string>Боковая панель</string>
-	<key>Slate</key>
-	<string>Сланец</string>
-	<key>Sliders</key>
-	<string>Ползунки</string>
-	<key>Soft Selection</key>
-	<string>Мягкое выделение</string>
 	<key>Sort &amp; Filter</key>
 	<string>Сортировка и фильтр</string>
 	<key>Sound</key>
@@ -562,52 +450,14 @@
 	<string>Авто</string>
 	<key>Take Private Wallpapers off the Desktop</key>
 	<string>Убирать приватные обои с рабочего стола</string>
-	<key>Terracotta</key>
-	<string>Терракотовый</string>
-	<key>Tertiary Text</key>
-	<string>Третичный текст</string>
-	<key>Text</key>
-	<string>Текст</string>
-	<key>Text on Accent</key>
-	<string>Текст на акценте</string>
 	<key>The folder is empty.</key>
 	<string>Папка пуста.</string>
-	<key>The style file isn’t valid JSON: %@</key>
-	<string>Файл стиля содержит некорректный JSON: %@</string>
 	<key>The wallpaper inside moves to Unfiled.</key>
 	<string>Обои внутри перейдут в «Без папки».</string>
-	<key>There’s no style named “%@”.</key>
-	<string>Стиля «%@» нет.</string>
 	<key>They become public.</key>
 	<string>Они перестанут быть приватными.</string>
 	<key>This Mac’s chip can’t decode AV1 video: %@.</key>
 	<string>Чип этого Mac не поддерживает декодирование AV1: %@.</string>
-	<key>This isn’t a LiveWall style file.</key>
-	<string>Это не файл стиля LiveWall.</string>
-	<key>This style was made by a newer version of LiveWall (format %@). Update LiveWall to import it.</key>
-	<string>Этот стиль создан более новой версией LiveWall (формат %@). Обновите LiveWall, чтобы импортировать его.</string>
-	<key>Thumbnail Well</key>
-	<string>Подложка миниатюры</string>
-	<key>Tile</key>
-	<string>Плитка</string>
-	<key>Tile Border</key>
-	<string>Рамка плитки</string>
-	<key>Tile Shadow</key>
-	<string>Тень плитки</string>
-	<key>Tint</key>
-	<string>Оттенок</string>
-	<key>Tint Strength</key>
-	<string>Сила оттенка</string>
-	<key>Tint strength must be a number from 0 to 100.</key>
-	<string>Сила оттенка — число от 0 до 100.</string>
-	<key>Title</key>
-	<string>Название</string>
-	<key>Toolbar</key>
-	<string>Панель инструментов</string>
-	<key>Top Shade</key>
-	<string>Затенение сверху</string>
-	<key>Track</key>
-	<string>Дорожка</string>
 	<key>Transitions</key>
 	<string>Переходы</string>
 	<key>Type Shortcut…</key>
@@ -616,10 +466,6 @@
 	<string>Отменить</string>
 	<key>Unfiled</key>
 	<string>Без папки</string>
-	<key>Unknown color “%@”. Run lwctl style keys to list them.</key>
-	<string>Неизвестный цвет «%@». Список цветов: lwctl style keys.</string>
-	<key>Unknown style setting “%@”.</key>
-	<string>Неизвестный параметр стиля «%@».</string>
 	<key>Unloaded</key>
 	<string>Выгружено</string>
 	<key>Unloaded to free memory; the desktop shows the paused frame.</key>
@@ -656,10 +502,6 @@
 	<string>Громче</string>
 	<key>Wallpaper</key>
 	<string>Обои</string>
-	<key>Wallpapers</key>
-	<string>Обои</string>
-	<key>Warning Status</key>
-	<string>Статус предупреждения</string>
 	<key>Wave</key>
 	<string>Волна</string>
 	<key>When an App Is Full Screen</key>
@@ -756,10 +598,6 @@
 	<string>неизвестный инструмент</string>
 	<key>unsupported format</key>
 	<string>формат не поддерживается</string>
-	<key>“%@” is a built-in style and can’t be changed.</key>
-	<string>«%@» — встроенный стиль, его нельзя изменить.</string>
-	<key>“%@” isn’t a color for %@. Use #RRGGBB or #RRGGBBAA.</key>
-	<string>«%@» — не цвет для %@. Используйте #RRGGBB или #RRGGBBAA.</string>
 	<key>Large Grid</key>
 	<string>Крупная сетка</string>
 	<key>Small Grid</key>

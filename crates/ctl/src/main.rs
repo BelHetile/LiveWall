@@ -60,8 +60,6 @@ enum Command {
     Folder(FolderCommand),
     #[command(subcommand)]
     Icon(IconCommand),
-    #[command(subcommand)]
-    Style(StyleCommand),
     Apply {
         #[arg(long)]
         item: Option<String>,
@@ -192,39 +190,6 @@ enum IconCommand {
 }
 
 #[derive(Subcommand)]
-enum StyleCommand {
-    #[command(about = "List built-in and saved styles")]
-    List,
-    #[command(about = "List the colors a style can set")]
-    Keys,
-    #[command(about = "Use a style")]
-    Apply { name: String },
-    #[command(about = "Print a style as a .livewallstyle document (the active style by default)")]
-    Export {
-        name: Option<String>,
-        #[arg(long, short, help = "Write the document to this file instead of printing it")]
-        output: Option<String>,
-    },
-    #[command(about = "Add a style from a .livewallstyle file")]
-    Import { path: String },
-    #[command(about = "Delete a saved style")]
-    Delete { name: String },
-    #[command(about = "Rename a saved style")]
-    Rename { name: String, to: String },
-    #[command(about = "Change a color of the active style; a built-in style is copied first")]
-    Set {
-        #[arg(help = "accent, tint, tint_strength or a color from `lwctl style keys`")]
-        key: String,
-        #[arg(help = "#RRGGBB or #RRGGBBAA; system for accent, none for tint, 0-100 for tint_strength")]
-        light: String,
-        #[arg(help = "Dark appearance color; derived from the light one when omitted")]
-        dark: Option<String>,
-    },
-    #[command(about = "Reset a color of the active style to its default")]
-    Reset { key: String },
-}
-
-#[derive(Subcommand)]
 enum SettingsCommand {
     Get,
     Set {
@@ -348,10 +313,6 @@ fn main() -> ExitCode {
     };
 
     let streams = matches!(cli.command, Command::Download { no_wait: false, .. });
-    let export = match &cli.command {
-        Command::Style(StyleCommand::Export { output, .. }) => Some(output.clone()),
-        _ => None,
-    };
     let request = match build_request(cli.command) {
         Ok(request) => request,
         Err(message) => {
@@ -366,9 +327,6 @@ fn main() -> ExitCode {
     }
 
     let code = match exchange(&mut stream, request) {
-        Ok((response, raw)) if !cli.json && export.is_some() => {
-            write_export(&response, export.flatten().as_deref(), &raw)
-        }
         Ok((response, raw)) => print_response(&response, &raw, cli.json),
         Err(error) => {
             eprintln!("lwctl: {error}");
@@ -445,19 +403,6 @@ fn build_request(command: Command) -> Result<Request, String> {
             },
             IconCommand::List => Request::IconList,
             IconCommand::Remove { icon } => Request::IconRemove { icon },
-        },
-        Command::Style(command) => match command {
-            StyleCommand::List => Request::StyleList,
-            StyleCommand::Keys => Request::StyleKeys,
-            StyleCommand::Apply { name } => Request::StyleApply { name },
-            StyleCommand::Export { name, .. } => Request::StyleExport { name },
-            StyleCommand::Import { path } => Request::StyleImport {
-                text: std::fs::read_to_string(&path).map_err(|error| format!("cannot read {path}: {error}"))?,
-            },
-            StyleCommand::Delete { name } => Request::StyleDelete { name },
-            StyleCommand::Rename { name, to } => Request::StyleRename { name, to },
-            StyleCommand::Set { key, light, dark } => Request::StyleSet { key, light, dark },
-            StyleCommand::Reset { key } => Request::StyleReset { key },
         },
         Command::Apply { item, target, transition } => {
             Request::Apply { item, target: target.build()?, transition: transition.build()? }
@@ -539,24 +484,6 @@ fn print_response(response: &Response, raw: &str, json: bool) -> u8 {
             return EXIT_ERROR;
         }
     }
-}
-
-fn write_export(response: &Response, output: Option<&str>, raw: &str) -> u8 {
-    let ResponseBody::Ok { data } = &response.body else {
-        return print_response(response, raw, false);
-    };
-    let Some(document) = data.get("document").and_then(Value::as_str) else {
-        return print_response(response, raw, false);
-    };
-    let Some(path) = output else {
-        print!("{document}");
-        return EXIT_OK;
-    };
-    if let Err(error) = std::fs::write(path, document) {
-        eprintln!("lwctl: cannot write {path}: {error}");
-        return EXIT_ERROR;
-    }
-    return EXIT_OK;
 }
 
 fn run_download(stream: &mut UnixStream, request: Request, json: bool) -> u8 {

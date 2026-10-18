@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Seeds the running dev app (scripts/dev.sh) with fixtures, folders and styles.
+Seeds the running dev app (scripts/dev.sh) with fixtures and folders.
 
   scripts/dev-seed.sh          seed once; prints "already seeded" if not empty
 
