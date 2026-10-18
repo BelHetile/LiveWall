@@ -291,7 +291,9 @@ impl Toolbar {
         };
         entry(Scope::All);
         if library.desktops > 0 {
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            let separator = NSMenuItem::separatorItem(mtm);
+            separator.setTag(isize::MIN);
+            menu.addItem(&separator);
         }
         for space in 0..library.desktops {
             entry(Scope::Space(space));

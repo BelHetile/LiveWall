@@ -38,6 +38,8 @@
 	<string>Добавить файлы…</string>
 	<key>Add from Video Link</key>
 	<string>Добавить по ссылке на видео</string>
+	<key>Add wallpapers, or try a different search, filter or folder.</key>
+	<string>Добавьте обои или измените поиск, фильтр или папку.</string>
 	<key>Add wallpapers from files, a folder or a video link</key>
 	<string>Добавить обои из файлов, папки или по ссылке на видео</string>
 	<key>Added %@</key>
@@ -350,6 +352,8 @@
 	<string>Следующие обои</string>
 	<key>No Selection</key>
 	<string>Ничего не выбрано</string>
+	<key>No Wallpapers</key>
+	<string>Нет обоев</string>
 	<key>No wallpaper</key>
 	<string>Нет обоев</string>
 	<key>None</key>

@@ -24,18 +24,21 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{NSSplitViewDidResizeSubviewsNotification, NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState};
-use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString};
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString, NSTimer};
 use proto::{ErrorCode, Request, Response, ResponseBody};
 
 use crate::app::{self, App};
 use crate::i18n::{Arg, tr, trf};
 use crate::model::{ItemId, ItemKind};
+use crate::platform::{cancel_timer, schedule_block};
 use crate::style::StyleError;
 use crate::ui::state::{Filter, Layout, Scope, Sort};
 use crate::ui::view::{Library, Thumbs};
 
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REFOCUS: AtomicBool = AtomicBool::new(false);
+
+const PROGRESS_TICK: f64 = 0.5;
 
 struct Ui {
     library: Library,
@@ -50,6 +53,7 @@ struct Ui {
     _sidebar: Retained<NSSplitViewItem>,
     _inspector: Retained<NSSplitViewItem>,
     toolbar: toolbar::Toolbar,
+    ticker: Option<Retained<NSTimer>>,
     _observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _menus: menus::Menus,
 }
@@ -74,7 +78,28 @@ impl Ui {
             self.filter.scope = Scope::Space(self.library.desktops.saturating_sub(1));
         }
         self.refresh(mtm);
+        self.tick();
         settings::sync();
+    }
+
+    fn tick(&mut self) {
+        let busy = self.library.items.iter().any(|item| item.progress.is_some()) || !self.library.downloads.is_empty();
+        match (busy, self.ticker.is_some()) {
+            (true, false) => self.ticker = Some(schedule_block(PROGRESS_TICK, true, progress_tick)),
+            (false, true) => cancel_timer(self.ticker.take()),
+            _ => {}
+        }
+    }
+
+    fn reveal_item(&mut self, mtm: MainThreadMarker, index: usize) {
+        if !self.filter.visible(&self.library).contains(&index) {
+            self.filter.folder = None;
+            self.filter.kind = None;
+            self.filter.query.clear();
+            self.toolbar.show_query("");
+            self.refresh(mtm);
+        }
+        self.choose(self.item_id(Some(index)), true);
     }
 
     fn sync_visibility(&mut self, _mtm: MainThreadMarker) {
@@ -194,6 +219,7 @@ fn submit(work: impl FnOnce(&mut App) -> Option<Response> + Send + 'static) {
         {
             notice(body.message.clone());
         }
+        changed();
     });
 }
 
@@ -301,6 +327,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
             _sidebar: panes.sidebar,
             _inspector: panes.inspector,
             toolbar,
+            ticker: None,
             _observers: observers,
             _menus: menus,
         });
@@ -411,19 +438,32 @@ fn set_query(query: String) {
 }
 
 fn reveal_desktop() {
-    update(|ui, _| {
+    update(|ui, mtm| {
         if let Some(index) = toolbar::desktop_item(&ui.library, ui.filter.scope) {
-            ui.choose(ui.item_id(Some(index)), true);
+            ui.reveal_item(mtm, index);
         }
     });
 }
 
 fn reveal_lock() {
-    update(|ui, _| {
+    update(|ui, mtm| {
         if let Some(index) = toolbar::lock_item(&ui.library) {
-            ui.choose(ui.item_id(Some(index)), true);
+            ui.reveal_item(mtm, index);
         }
     });
+}
+
+fn progress_tick() {
+    let visible = UI.with(|ui| {
+        ui.try_borrow().ok().is_some_and(|ui| {
+            ui.as_ref().is_some_and(|ui| {
+                ui.window.isVisible() && ui.window.occlusionState().contains(NSWindowOcclusionState::Visible)
+            })
+        })
+    });
+    if visible {
+        changed();
+    }
 }
 
 fn toggle_privacy() {

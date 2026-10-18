@@ -28,7 +28,7 @@ use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
 use crate::ui::state::{Marker, Scope, TAG_ALL, desktop_name, duration, markers};
 use crate::ui::view::{Item, Library};
-use crate::ui::{Ui, folders, ns, submit, update};
+use crate::ui::{Ui, context, folders, ns, submit, update};
 
 const PREVIEW_ASPECT: CGFloat = 10.0 / 16.0;
 const PREVIEW_RADIUS: CGFloat = 8.0;
@@ -202,6 +202,41 @@ define_class!(
             let value = sender.doubleValue().max(0.0);
             update(move |ui, _| ui.inspector.seek(value));
         }
+
+        #[unsafe(method(seekTo:))]
+        fn seek_to(&self, sender: &NSTextField) {
+            let seconds = parse_time(&sender.stringValue().to_string());
+            selected(move |ui, index| {
+                let length = ui.library.items[index].duration;
+                ui.inspector.jump(seconds, length);
+            });
+            crate::ui::focus();
+        }
+
+        #[unsafe(method(moveFolder:))]
+        fn move_folder(&self, sender: &NSPopUpButton) {
+            let tag = sender.selectedItem().map_or(TAG_ALL, |item| item.tag());
+            let folder = usize::try_from(tag).ok();
+            selected(move |ui, index| {
+                let id = ui.library.items[index].id;
+                context::move_items(ui, vec![id], folder);
+            });
+        }
+
+        #[unsafe(method(optimize:))]
+        fn optimize_item(&self, _sender: Option<&AnyObject>) {
+            context::optimize();
+        }
+
+        #[unsafe(method(resetSettings:))]
+        fn reset_settings(&self, _sender: Option<&AnyObject>) {
+            context::reset();
+        }
+
+        #[unsafe(method(removeItem:))]
+        fn remove_item(&self, _sender: Option<&AnyObject>) {
+            context::confirm_delete(self.mtm());
+        }
     }
 );
 
@@ -260,6 +295,15 @@ fn adjust(tag: isize, value: f64, live: bool) {
         }
         ui.inspector.sync(&ui.library, index);
     });
+}
+
+fn parse_time(text: &str) -> Option<f64> {
+    return text
+        .split(':')
+        .try_fold(0.0, |total, part| {
+            return part.trim().replace(',', ".").parse::<f64>().ok().map(|value| total * 60.0 + value);
+        })
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0);
 }
 
 fn speed_to_slider(speed: f64) -> f64 {
@@ -643,6 +687,16 @@ impl Inspector {
         }
     }
 
+    fn jump(&self, seconds: Option<f64>, length: f64) {
+        let seconds = seconds.or_else(|| self.time().map(|time| if length > 0.0 { time % length } else { time }));
+        let seconds = seconds.unwrap_or(0.0).clamp(0.0, length.max(0.0));
+        self.seek(seconds);
+        if let Some(controls) = &self.controls {
+            controls.scrub.setDoubleValue(seconds);
+            controls.time.setStringValue(&ns(&duration(seconds)));
+        }
+    }
+
     fn start_clock(&mut self, scrub: &NSSlider, time: &NSTextField, length: f64) {
         let Some((player, _)) = &self.player else {
             return;
@@ -654,7 +708,9 @@ impl Inspector {
             if seconds.is_finite() && length > 0.0 && !dragging(scrub.mtm()) {
                 let seconds = seconds % length;
                 scrub.setDoubleValue(seconds);
-                time.setStringValue(&ns(&format!("{} / {}", duration(seconds), duration(length))));
+                if time.currentEditor().is_none() {
+                    time.setStringValue(&ns(&duration(seconds)));
+                }
             }
         }));
     }
@@ -674,15 +730,20 @@ impl Inspector {
         wire(&play, target, sel!(play:));
         let scrub = slider(mtm, 0.0, item.duration.max(0.01));
         wire(&scrub, target, sel!(scrub:));
-        let time = label(mtm, "", &small_font, &secondary);
-        time.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(NSFont::smallSystemFontSize(), unsafe {
+        let digits = NSFont::monospacedDigitSystemFontOfSize_weight(NSFont::smallSystemFontSize(), unsafe {
             NSFontWeightRegular
-        })));
-        time.setStringValue(&ns(&format!("{} / {}", duration(0.0), duration(item.duration))));
-        time.setContentCompressionResistancePriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
+        });
+        let time = NSTextField::textFieldWithString(&ns(&duration(0.0)), mtm);
+        time.setControlSize(NSControlSize::Small);
+        time.setFont(Some(&digits));
+        time.setAlignment(NSTextAlignment::Right);
+        time.widthAnchor().constraintEqualToConstant(VALUE_WIDTH).setActive(true);
+        wire(&time, target, sel!(seekTo:));
+        let length = label(mtm, &format!("/ {}", duration(item.duration)), &digits, &secondary);
+        length.setContentCompressionResistancePriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
         let listen = symbol_button(mtm, "headphones");
         wire(&listen, target, sel!(listen:));
-        let transport = stack(mtm, &[&play, &scrub, &time, &listen], false);
+        let transport = stack(mtm, &[&play, &scrub, &time, &length, &listen], false);
 
         let headline = unsafe {
             NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new())
@@ -713,9 +774,7 @@ impl Inspector {
         wallpaper.setKeyEquivalent(&ns("\r"));
         wallpaper.setEnabled(item.playable || item.progress.is_none());
         wallpaper.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
-        if item.playable {
-            wire(&wallpaper, target, sel!(setWallpaper:));
-        }
+        wire(&wallpaper, target, if item.playable { sel!(setWallpaper:) } else { sel!(optimize:) });
         let lock = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Lock Screen")), None, None, mtm) };
         lock.setImage(folders::symbol("lock").as_deref());
         lock.setImagePosition(NSCellImagePosition::ImageLeading);
@@ -811,11 +870,14 @@ impl Inspector {
             menu.setAutoenablesItems(false);
         }
         folder.setContentCompressionResistancePriority_forOrientation(250.0, NSLayoutConstraintOrientation::Horizontal);
+        wire(&folder, target, sel!(moveFolder:));
         let library_form = folder.clone();
 
         let reset = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Reset to Defaults")), None, None, mtm) };
         let remove = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Remove from Library")), None, None, mtm) };
         remove.setHasDestructiveAction(true);
+        wire(&reset, target, sel!(resetSettings:));
+        wire(&remove, target, sel!(removeItem:));
         let keys: [&NSAttributedStringKey; 1] = unsafe { [NSForegroundColorAttributeName] };
         let values: [&AnyObject; 1] = [&NSColor::systemRedColor()];
         let red = NSDictionary::from_slices(&keys, &values);
@@ -966,6 +1028,21 @@ impl Inspector {
             }
             self.player = Some((player, looper));
             layers.push(Retained::into_super(layer));
+        }
+        if item.kind == ItemKind::Video {
+            let target: &AnyObject = &self.target;
+            let menu = NSMenu::new(mtm);
+            let entry = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &ns(&tr("Set This Frame as Lock Screen")),
+                    Some(sel!(lockFrame:)),
+                    &ns(""),
+                )
+            };
+            unsafe { entry.setTarget(Some(target)) };
+            menu.addItem(&entry);
+            unsafe { view.setMenu(Some(&menu)) };
         }
         view.setWantsLayer(true);
         if let Some(host) = view.layer() {

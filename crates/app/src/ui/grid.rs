@@ -2,11 +2,13 @@ use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use block2::RcBlock;
-use objc2::runtime::Bool;
+use objc2::runtime::{AnyObject, Bool};
 use objc2_app_kit::{
-    NSBezierPath, NSCompositingOperation, NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSImage,
+    NSBeep, NSBezierPath, NSCompositingOperation, NSControlSize, NSDraggingImageComponent,
+    NSDraggingImageComponentIconKey, NSEventModifierFlags, NSFontTextStyleHeadline, NSImage, NSProgressIndicator,
+    NSProgressIndicatorStyle,
 };
 use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_app_kit::{
@@ -24,14 +26,14 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGFloat, CGSize};
 use objc2_app_kit::NSIndexPathNSCollectionViewAdditions;
-use objc2_foundation::{NSCopying, NSArray, NSEdgeInsets, NSIndexPath, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSSet};
+use objc2_foundation::{NSCopying, NSArray, NSDictionary, NSEdgeInsets, NSIndexPath, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSSet};
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspectFill};
 
 use crate::i18n::{self, tr};
 use crate::model::{ItemId, ItemKind};
-use crate::ui::state::{Filter, Layout, duration, markers};
+use crate::ui::state::{Filter, Layout, Scope, duration, markers};
 use crate::ui::view::{Item, Library};
-use crate::ui::{context, folders, inspector, ns, update};
+use crate::ui::{context, folders, frame, inspector, ns, toggle_play, update};
 
 const TILE: &str = "tile";
 const LARGE: CGFloat = 240.0;
@@ -48,6 +50,20 @@ const ROW_HEIGHT: CGFloat = 36.0;
 const ROW_THUMB: CGSize = CGSize::new(48.0, 30.0);
 const ROW_RADIUS: CGFloat = 4.0;
 const NAME: &str = "name";
+const BAR_INSET: CGFloat = 8.0;
+const BAR_WIDTH: CGFloat = 80.0;
+const BAR: usize = 4;
+const EMPTY_GAP: CGFloat = 4.0;
+const KEY_RETURN: u16 = 36;
+const KEY_ENTER: u16 = 76;
+const KEY_SPACE: u16 = 49;
+const KEY_COMMA: u16 = 43;
+const KEY_PERIOD: u16 = 47;
+const KEY_GRAVE: u16 = 50;
+const KEY_DELETE: u16 = 51;
+const KEY_FORWARD_DELETE: u16 = 117;
+const KEY_ESCAPE: u16 = 53;
+const KEY_DIGITS: [u16; 9] = [18, 19, 20, 21, 23, 22, 26, 28, 25];
 const COLUMNS: [(&str, &str, CGFloat); 5] = [
     ("kind", i18n::key("Kind"), 100.0),
     ("length", i18n::key("Duration"), 100.0),
@@ -65,8 +81,24 @@ struct Cell {
     resolution: String,
     size: String,
     added: String,
+    progress: Option<f64>,
     image: Option<Retained<objc2_app_kit::NSImage>>,
     markers: Vec<(&'static str, String, bool)>,
+}
+
+impl Cell {
+    fn same_shape(&self, other: &Cell) -> bool {
+        return self.title == other.title
+            && self.meta == other.meta
+            && self.kind == other.kind
+            && self.length == other.length
+            && self.resolution == other.resolution
+            && self.size == other.size
+            && self.added == other.added
+            && self.image == other.image
+            && self.markers == other.markers
+            && self.progress.is_some() == other.progress.is_some();
+    }
 }
 
 define_class!(
@@ -190,6 +222,17 @@ fn label(mtm: MainThreadMarker, font: &NSFont, color: &NSColor) -> Retained<NSTe
     return label;
 }
 
+fn progress_bar(mtm: MainThreadMarker) -> Retained<NSProgressIndicator> {
+    let bar = NSProgressIndicator::new(mtm);
+    bar.setStyle(NSProgressIndicatorStyle::Bar);
+    bar.setIndeterminate(false);
+    bar.setMinValue(0.0);
+    bar.setMaxValue(1.0);
+    bar.setControlSize(NSControlSize::Small);
+    bar.setTranslatesAutoresizingMaskIntoConstraints(false);
+    return bar;
+}
+
 fn title_font() -> Retained<NSFont> {
     return NSFont::systemFontOfSize(NSFont::systemFontSize());
 }
@@ -221,7 +264,9 @@ impl Tile {
         marks.setTranslatesAutoresizingMaskIntoConstraints(false);
         marks.setContentHuggingPriority_forOrientation(750.0, NSLayoutConstraintOrientation::Horizontal);
         marks.setContentCompressionResistancePriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
-        for view in [&*thumb as &NSView, &title, &meta, &marks] {
+        let bar = progress_bar(mtm);
+        bar.setHidden(true);
+        for view in [&*thumb as &NSView, &title, &meta, &marks, &bar] {
             root.addSubview(view);
         }
         thumb.topAnchor().constraintEqualToAnchor(&root.topAnchor()).setActive(true);
@@ -236,6 +281,9 @@ impl Tile {
         meta.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&marks.leadingAnchor(), -6.0).setActive(true);
         marks.trailingAnchor().constraintEqualToAnchor(&root.trailingAnchor()).setActive(true);
         marks.centerYAnchor().constraintEqualToAnchor(&meta.centerYAnchor()).setActive(true);
+        bar.leadingAnchor().constraintEqualToAnchor_constant(&thumb.leadingAnchor(), BAR_INSET).setActive(true);
+        bar.trailingAnchor().constraintEqualToAnchor_constant(&thumb.trailingAnchor(), -BAR_INSET).setActive(true);
+        bar.bottomAnchor().constraintEqualToAnchor_constant(&thumb.bottomAnchor(), -BAR_INSET).setActive(true);
         self.setView(&root);
         self.setTextField(Some(&title));
     }
@@ -279,7 +327,15 @@ impl Tile {
             let refs: Vec<&NSView> = views.iter().map(|view| view.as_ref()).collect();
             marks.setViews_inGravity(&NSArray::from_slice(&refs), objc2_app_kit::NSStackViewGravity::Trailing);
         }
+        self.show_progress(cell.progress);
         self.paint();
+    }
+
+    fn show_progress(&self, progress: Option<f64>) {
+        if let Some(bar) = self.part(BAR).and_then(|view| view.downcast::<NSProgressIndicator>().ok()) {
+            bar.setHidden(progress.is_none());
+            bar.setDoubleValue(progress.unwrap_or(0.0));
+        }
     }
 
     fn paint(&self) {
@@ -333,6 +389,15 @@ define_class!(
     }
 
     unsafe impl NSControlTextEditingDelegate for GridSource {}
+
+    impl GridSource {
+        #[unsafe(method(open:))]
+        fn open(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().table.clickedRow() >= 0 {
+                place(None);
+            }
+        }
+    }
 
     unsafe impl NSTableViewDataSource for GridSource {
         #[unsafe(method(numberOfRowsInTableView:))]
@@ -407,6 +472,29 @@ define_class!(
             let index = self.indexPathForItemAtPoint(point).and_then(|path| usize::try_from(path.item()).ok());
             context_menu(self.mtm(), index)
         }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if !handle_key(self.mtm(), event) {
+                let _: () = unsafe { msg_send![super(self), keyDown: event] };
+            }
+        }
+
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            crate::ui::select(None);
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            let point = self.convertPoint_fromView(event.locationInWindow(), None);
+            match self.indexPathForItemAtPoint(point) {
+                Some(_) if event.clickCount() == 2 => place(None),
+                Some(_) => {}
+                None => crate::ui::select(None),
+            }
+        }
     }
 );
 
@@ -422,6 +510,18 @@ define_class!(
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             context_menu(self.mtm(), usize::try_from(self.rowAtPoint(point)).ok())
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if !handle_key(self.mtm(), event) {
+                let _: () = unsafe { msg_send![super(self), keyDown: event] };
+            }
+        }
+
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            crate::ui::select(None);
         }
     }
 );
@@ -459,6 +559,54 @@ fn accepts(info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
         return NSDragOperation::Copy;
     }
     return NSDragOperation::None;
+}
+
+fn handle_key(mtm: MainThreadMarker, event: &NSEvent) -> bool {
+    let blocked = NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option;
+    if event.modifierFlags().intersects(blocked) {
+        return false;
+    }
+    let code = event.keyCode();
+    match code {
+        KEY_RETURN | KEY_ENTER => place(None),
+        KEY_SPACE => toggle_play(),
+        KEY_COMMA => frame(-1),
+        KEY_PERIOD => frame(1),
+        KEY_GRAVE => place(Some(Scope::All)),
+        KEY_DELETE | KEY_FORWARD_DELETE => context::confirm_delete(mtm),
+        KEY_ESCAPE => crate::ui::select(None),
+        _ => match KEY_DIGITS.iter().position(|digit| *digit == code) {
+            Some(space) => place(Some(Scope::Space(space))),
+            None => return false,
+        },
+    }
+    return true;
+}
+
+fn place(scope: Option<Scope>) {
+    let mut chosen = None;
+    update(|ui, mtm| {
+        let Some(item) = ui.selected_index().and_then(|index| ui.library.items.get(index)) else {
+            return;
+        };
+        let scope = scope.unwrap_or(ui.filter.scope);
+        let exists = match scope {
+            Scope::All => true,
+            Scope::Space(space) => space < ui.library.desktops,
+        };
+        if !exists || !item.playable {
+            NSBeep();
+            return;
+        }
+        if ui.filter.scope != scope {
+            ui.filter.scope = scope;
+            ui.refresh(mtm);
+        }
+        chosen = Some(scope);
+    });
+    if let Some(scope) = chosen {
+        context::apply(scope);
+    }
 }
 
 fn context_menu(mtm: MainThreadMarker, index: Option<usize>) -> Option<Retained<NSMenu>> {
@@ -525,6 +673,7 @@ pub struct Grid {
     collection: Retained<Collection>,
     scroll: Retained<NSScrollView>,
     list: Retained<NSScrollView>,
+    empty: Retained<NSStackView>,
     actions: Retained<context::ContextActions>,
 }
 
@@ -597,9 +746,34 @@ impl Grid {
             pane.topAnchor().constraintEqualToAnchor(&root.topAnchor()).setActive(true);
             pane.bottomAnchor().constraintEqualToAnchor(&root.bottomAnchor()).setActive(true);
         }
+        let headline = unsafe { NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new()) };
+        let secondary = NSColor::secondaryLabelColor();
+        let heading = NSTextField::labelWithString(&ns(&tr("No Wallpapers")), mtm);
+        heading.setFont(Some(&headline));
+        heading.setTextColor(Some(&secondary));
+        let hint = NSTextField::labelWithString(
+            &ns(&tr("Add wallpapers, or try a different search, filter or folder.")),
+            mtm,
+        );
+        hint.setTextColor(Some(&secondary));
+        let empty = NSStackView::new(mtm);
+        empty.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        empty.setSpacing(EMPTY_GAP);
+        empty.addArrangedSubview(&heading);
+        empty.addArrangedSubview(&hint);
+        empty.setHidden(true);
+        empty.setTranslatesAutoresizingMaskIntoConstraints(false);
+        root.addSubview(&empty);
+        empty.centerXAnchor().constraintEqualToAnchor(&root.centerXAnchor()).setActive(true);
+        empty.centerYAnchor().constraintEqualToAnchor(&root.centerYAnchor()).setActive(true);
+        let object: &AnyObject = &source;
+        unsafe {
+            table.setTarget(Some(object));
+            table.setDoubleAction(Some(sel!(open:)));
+        }
         let controller = NSViewController::new(mtm);
         controller.setView(&root);
-        return Self { controller, source, collection, scroll, list, actions: context::ContextActions::new(mtm) };
+        return Self { controller, source, collection, scroll, list, empty, actions: context::ContextActions::new(mtm) };
     }
 
     pub fn actions(&self) -> &objc2::runtime::AnyObject {
@@ -644,6 +818,33 @@ impl Grid {
         ivars.syncing.set(false);
     }
 
+    fn update_progress(&self) {
+        let ivars = self.source.ivars();
+        let cells = ivars.cells.borrow();
+        for item in &ivars.view.visibleItems() {
+            let progress = ivars
+                .view
+                .indexPathForItem(&item)
+                .and_then(|path| usize::try_from(path.item()).ok())
+                .and_then(|index| cells.get(index))
+                .and_then(|cell| cell.progress);
+            if let Ok(tile) = item.downcast::<Tile>() {
+                tile.show_progress(progress);
+            }
+        }
+        let rows = ivars.table.rowsInRect(ivars.table.visibleRect());
+        for row in rows.location..rows.location + rows.length {
+            let progress = cells.get(row).and_then(|cell| cell.progress);
+            let bar = isize::try_from(row)
+                .ok()
+                .and_then(|row| ivars.table.viewAtColumn_row_makeIfNecessary(0, row, false))
+                .and_then(|view| view.subviews().iter().find_map(|sub| sub.downcast::<NSProgressIndicator>().ok()));
+            if let (Some(bar), Some(progress)) = (bar, progress) {
+                bar.setDoubleValue(progress);
+            }
+        }
+    }
+
     pub fn responder(&self, layout: Layout) -> Retained<NSView> {
         let ivars = self.source.ivars();
         if layout == Layout::List {
@@ -679,6 +880,7 @@ impl Grid {
                     },
                     size: i18n::bytes(i64::try_from(item.bytes).unwrap_or(i64::MAX)),
                     added: i18n::date(item.added),
+                    progress: item.progress,
                     image: item.image.clone(),
                     markers: markers(library, *index, filter.scope)
                         .into_iter()
@@ -687,11 +889,18 @@ impl Grid {
                 };
             })
             .collect();
+        self.empty.setHidden(!visible.is_empty());
         let ids: Vec<ItemId> = visible.iter().map(|index| library.items[*index].id).collect();
         let position = selected.and_then(|id| ids.iter().position(|other| *other == id));
         let ivars = self.source.ivars();
+        let in_place = *ivars.ids.borrow() == ids
+            && ivars.cells.borrow().iter().zip(&cells).all(|(old, new)| old.same_shape(new));
         *ivars.cells.borrow_mut() = cells;
         *ivars.ids.borrow_mut() = ids;
+        if in_place {
+            self.update_progress();
+            return;
+        }
         ivars.view.reloadData();
         ivars.syncing.set(true);
         ivars.table.reloadData();
@@ -787,13 +996,26 @@ fn list_cell(mtm: MainThreadMarker, cell: &Cell, identifier: &str) -> Retained<N
         }
     }
     view.addSubview(&marks);
+    let bar = cell.progress.map(|value| {
+        let bar = progress_bar(mtm);
+        bar.setDoubleValue(value);
+        view.addSubview(&bar);
+        bar.trailingAnchor().constraintEqualToAnchor_constant(&marks.leadingAnchor(), -6.0).setActive(true);
+        bar.centerYAnchor().constraintEqualToAnchor(&view.centerYAnchor()).setActive(true);
+        bar.widthAnchor().constraintEqualToConstant(BAR_WIDTH).setActive(true);
+        return bar;
+    });
     thumb.leadingAnchor().constraintEqualToAnchor(&view.leadingAnchor()).setActive(true);
     thumb.centerYAnchor().constraintEqualToAnchor(&view.centerYAnchor()).setActive(true);
     thumb.widthAnchor().constraintEqualToConstant(ROW_THUMB.width).setActive(true);
     thumb.heightAnchor().constraintEqualToConstant(ROW_THUMB.height).setActive(true);
     title.leadingAnchor().constraintEqualToAnchor_constant(&thumb.trailingAnchor(), 8.0).setActive(true);
     title.centerYAnchor().constraintEqualToAnchor(&view.centerYAnchor()).setActive(true);
-    title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&marks.leadingAnchor(), -6.0).setActive(true);
+    match &bar {
+        Some(bar) => title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&bar.leadingAnchor(), -6.0),
+        None => title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&marks.leadingAnchor(), -6.0),
+    }
+    .setActive(true);
     marks.trailingAnchor().constraintEqualToAnchor(&view.trailingAnchor()).setActive(true);
     marks.centerYAnchor().constraintEqualToAnchor(&view.centerYAnchor()).setActive(true);
     unsafe { view.setTextField(Some(&title)) };

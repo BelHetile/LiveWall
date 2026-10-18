@@ -96,6 +96,7 @@ objc2-app-kit = { workspace = true, features = [
   "NSColor",
   "NSWorkspace",
   "NSGraphics",
+  "NSProgressIndicator",
   "NSMenu",
   "NSMenuItem",
   "NSStatusBar",
