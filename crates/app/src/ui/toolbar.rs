@@ -105,6 +105,8 @@ impl ToolbarDelegate {
 pub struct Toolbar {
     pub bar: Retained<NSToolbar>,
     scope: Retained<NSPopUpButton>,
+    layout: Retained<NSToolbarItemGroup>,
+    search: Retained<NSSearchToolbarItem>,
     _delegate: Retained<ToolbarDelegate>,
 }
 
@@ -200,11 +202,22 @@ impl Toolbar {
         toolbar.setAllowsUserCustomization(false);
         toolbar.setAllowsDisplayModeCustomization(false);
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
-        return Self { bar: toolbar, scope: popup, _delegate: delegate };
+        return Self { bar: toolbar, scope: popup, layout, search, _delegate: delegate };
     }
 }
 
 impl Toolbar {
+    pub fn show_layout(&self, layout: Layout) {
+        self.layout.setSelectedIndex(layout.index());
+    }
+
+    pub fn find(&self) {
+        if !self.bar.isVisible() {
+            self.bar.setVisible(true);
+        }
+        self.search.beginSearchInteraction();
+    }
+
     pub fn reload(&self, desktops: usize, current: Scope) {
         let mtm = self.scope.mtm();
         let menu = NSMenu::new(mtm);

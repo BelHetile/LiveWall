@@ -214,7 +214,7 @@ fn selected(change: impl FnOnce(&mut Ui, usize)) {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn lock(frame: bool) {
+pub fn lock(frame: bool) {
     selected(|ui, index| {
         let id = ui.library.items[index].id;
         let time = frame.then(|| ui.inspector.time()).flatten().map(|time| time as f32);

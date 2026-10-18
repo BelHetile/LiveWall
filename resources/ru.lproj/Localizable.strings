@@ -8,6 +8,8 @@
 	<string>%1$@ уже занято: %2$@. Нажмите другое сочетание.</string>
 	<key>%@ is already used by another app. Press another combination.</key>
 	<string>%@ уже занято другим приложением. Нажмите другое сочетание.</string>
+	<key>%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.</key>
+	<string>%@. LiveWall может загрузить yt-dlp, ffmpeg и deno в собственную папку.</string>
 	<key>%ld Minutes</key>
 	<string>%ld мин</string>
 	<key>1 Hour</key>
@@ -34,6 +36,8 @@
 	<string>Добавить</string>
 	<key>Add Files…</key>
 	<string>Добавить файлы…</string>
+	<key>Add from Video Link</key>
+	<string>Добавить по ссылке на видео</string>
 	<key>Add wallpapers from files, a folder or a video link</key>
 	<string>Добавить обои из файлов, папки или по ссылке на видео</string>
 	<key>Added %@</key>
@@ -80,6 +84,8 @@
 	<string>Подложка</string>
 	<key>Base Colors</key>
 	<string>Основные цвета</string>
+	<key>Best Available</key>
+	<string>Лучшее доступное</string>
 	<key>Blue</key>
 	<string>Синий</string>
 	<key>Bring All to Front</key>
@@ -108,6 +114,8 @@
 	<string>Оформление окна</string>
 	<key>Click, then press a shortcut. ⌫ clears it, ⎋ cancels.</key>
 	<string>Нажмите, затем введите сочетание. ⌫ — очистить, ⎋ — отмена.</string>
+	<key>Close Window</key>
+	<string>Закрыть окно</string>
 	<key>Convert videos that need it for smooth playback</key>
 	<string>Преобразовывать видео для плавного воспроизведения, если это необходимо</string>
 	<key>Copy</key>
@@ -140,6 +148,8 @@
 	<string>Удалить</string>
 	<key>Delete the folder “%@”?</key>
 	<string>Удалить папку «%@»?</string>
+	<key>Deselect</key>
+	<string>Снять выделение</string>
 	<key>Desktop</key>
 	<string>Рабочий стол</string>
 	<key>Desktop %@</key>
@@ -160,6 +170,8 @@
 	<string>Дисплей спит</string>
 	<key>Divider</key>
 	<string>Разделитель</string>
+	<key>Download</key>
+	<string>Загрузить</string>
 	<key>Download Status</key>
 	<string>Статус загрузки</string>
 	<key>Download from URL…</key>
@@ -260,6 +272,10 @@
 	<string>Включая заставку</string>
 	<key>Inspector</key>
 	<string>Инспектор</string>
+	<key>Install and Download</key>
+	<string>Установить и загрузить</string>
+	<key>Install download tools?</key>
+	<string>Установить инструменты загрузки?</string>
 	<key>Launch at Login</key>
 	<string>Открывать при входе в систему</string>
 	<key>Library</key>
@@ -326,6 +342,8 @@
 	<string>Никогда</string>
 	<key>New Folder</key>
 	<string>Новая папка</string>
+	<key>New Folder…</key>
+	<string>Новая папка…</string>
 	<key>Next</key>
 	<string>Следующие обои</string>
 	<key>Next Wallpaper</key>
@@ -354,12 +372,16 @@
 	<string>Оптимизировать</string>
 	<key>Optimize on Import</key>
 	<string>Оптимизировать при импорте</string>
+	<key>Optimize…</key>
+	<string>Оптимизировать…</string>
 	<key>Optimizing…</key>
 	<string>Оптимизация…</string>
 	<key>Orange</key>
 	<string>Оранжевый</string>
 	<key>Paste</key>
 	<string>Вставить</string>
+	<key>Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.</key>
+	<string>Вставьте ссылку на YouTube, Vimeo или любой сайт, который поддерживает yt-dlp. Видео будет загружено в вашу библиотеку.</string>
 	<key>Pause</key>
 	<string>Пауза</string>
 	<key>Pause Automatically</key>
@@ -394,6 +416,8 @@
 	<string>Прогресс</string>
 	<key>Purple</key>
 	<string>Фиолетовый</string>
+	<key>Quality</key>
+	<string>Качество</string>
 	<key>Quit LiveWall</key>
 	<string>Завершить LiveWall</string>
 	<key>Raised Card</key>
@@ -406,6 +430,8 @@
 	<string>Запись</string>
 	<key>Red</key>
 	<string>Красный</string>
+	<key>Redo</key>
+	<string>Повторить</string>
 	<key>Remove</key>
 	<string>Удалить</string>
 	<key>Remove Image</key>
@@ -462,6 +488,8 @@
 	<string>Разделитель</string>
 	<key>Sequoia</key>
 	<string>Секвойя</string>
+	<key>Services</key>
+	<string>Службы</string>
 	<key>Set as Lock Screen</key>
 	<string>Сделать экраном блокировки</string>
 	<key>Set as Wallpaper</key>
@@ -470,6 +498,8 @@
 	<string>Установить на все рабочие столы</string>
 	<key>Set on Desktop</key>
 	<string>Установить на рабочий стол</string>
+	<key>Set This Frame as Lock Screen</key>
+	<string>Сделать этот кадр экраном блокировки</string>
 	<key>Settings</key>
 	<string>Настройки</string>
 	<key>Settings…</key>
@@ -576,6 +606,8 @@
 	<string>Переходы</string>
 	<key>Type Shortcut…</key>
 	<string>Введите сочетание…</string>
+	<key>Undo</key>
+	<string>Отменить</string>
 	<key>Unfiled</key>
 	<string>Без папки</string>
 	<key>Unknown color “%@”. Run lwctl style keys to list them.</key>
@@ -616,6 +648,8 @@
 	<string>Тише</string>
 	<key>Volume Up</key>
 	<string>Громче</string>
+	<key>Wallpaper</key>
+	<string>Обои</string>
 	<key>Wallpapers</key>
 	<string>Обои</string>
 	<key>Warning Status</key>

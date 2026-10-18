@@ -14,6 +14,7 @@ use crate::app;
 use crate::i18n::{Arg, tr, trf};
 use crate::model::ItemId;
 use crate::ui::state::{Scope, TAG_ALL, desktop_name};
+use crate::ui::view::Item;
 use crate::ui::{UI, Ui, dialogs, ns, submit, update};
 
 const ITEM_TYPE: &str = "app.livewall.item";
@@ -28,23 +29,17 @@ define_class!(
     impl ContextActions {
         #[unsafe(method(applyTo:))]
         fn apply_to(&self, sender: &NSMenuItem) {
-            let scope = Scope::from_tag(sender.tag());
-            selected(move |ui, id| {
-                let target = match scope {
-                    Scope::All => Some(ApplyTarget::Default),
-                    Scope::Space(space) => ui.library.spaces.get(space).cloned().map(|space| ApplyTarget::Space { space }),
-                };
-                if let Some(target) = target {
-                    let id = id.to_string();
-                    let everywhere = scope == Scope::All;
-                    submit(move |app| Some(app.apply(Some(&id), &target, everywhere, None)));
-                }
-            });
+            apply(Scope::from_tag(sender.tag()));
         }
 
         #[unsafe(method(setLock:))]
         fn set_lock(&self, _sender: Option<&AnyObject>) {
             selected(|_, id| submit(move |app| Some(app.set_lock(Some((id, None))))));
+        }
+
+        #[unsafe(method(optimize:))]
+        fn optimize_item(&self, _sender: Option<&AnyObject>) {
+            optimize();
         }
 
         #[unsafe(method(moveTo:))]
@@ -72,6 +67,31 @@ fn selected(change: impl FnOnce(&mut Ui, ItemId)) {
             change(ui, id);
         }
     });
+}
+
+pub fn apply(scope: Scope) {
+    selected(move |ui, id| {
+        let target = match scope {
+            Scope::All => Some(ApplyTarget::Default),
+            Scope::Space(space) => ui.library.spaces.get(space).cloned().map(|space| ApplyTarget::Space { space }),
+        };
+        if let Some(target) = target {
+            let id = id.to_string();
+            let everywhere = scope == Scope::All;
+            submit(move |app| Some(app.apply(Some(&id), &target, everywhere, None)));
+        }
+    });
+}
+
+pub fn optimize() {
+    selected(|_, id| {
+        let request = Request::Optimize { id: id.to_string() };
+        submit(move |app| Some(app.dispatch(&request)));
+    });
+}
+
+pub fn reset() {
+    selected(|_, id| submit(move |app| Some(app.reset_item(id))));
 }
 
 fn entry(mtm: MainThreadMarker, title: &str, action: Sel, tag: isize, target: &AnyObject) -> Retained<NSMenuItem> {
@@ -109,21 +129,15 @@ pub fn menu(mtm: MainThreadMarker) -> Option<Retained<NSMenu>> {
         wallpaper.setEnabled(item.playable);
         menu.addItem(&wallpaper);
         menu.addItem(&entry(mtm, &tr("Set as Lock Screen"), sel!(setLock:), 0, target));
+        if item.optimizable {
+            let optimize = entry(mtm, &tr("Optimize…"), sel!(optimize:), 0, target);
+            optimize.setEnabled(item.progress.is_none());
+            menu.addItem(&optimize);
+        }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         let folders = NSMenu::new(mtm);
         folders.setAutoenablesItems(false);
-        let unfiled = entry(mtm, &tr("Unfiled"), sel!(moveTo:), TAG_ALL, target);
-        unfiled.setState(isize::from(item.folder.is_none()));
-        folders.addItem(&unfiled);
-        if !ui.library.folders.is_empty() {
-            folders.addItem(&NSMenuItem::separatorItem(mtm));
-        }
-        for (position, name) in ui.library.folders.iter().enumerate() {
-            let folder = entry(mtm, name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL), target);
-            folder.setState(isize::from(item.folder == Some(position)));
-            folder.setEnabled(!ui.library.sealed(position));
-            folders.addItem(&folder);
-        }
+        fill_folders(mtm, &folders, ui, item, target);
         menu.addItem(&submenu(mtm, &tr("Move to"), &folders));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&entry(mtm, &tr("Remove from Library…"), sel!(delete:), 0, target));
@@ -131,7 +145,22 @@ pub fn menu(mtm: MainThreadMarker) -> Option<Retained<NSMenu>> {
     });
 }
 
-fn confirm_delete(mtm: MainThreadMarker) {
+pub fn fill_folders(mtm: MainThreadMarker, menu: &NSMenu, ui: &Ui, item: &Item, target: &AnyObject) {
+    let unfiled = entry(mtm, &tr("Unfiled"), sel!(moveTo:), TAG_ALL, target);
+    unfiled.setState(isize::from(item.folder.is_none()));
+    menu.addItem(&unfiled);
+    if !ui.library.folders.is_empty() {
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+    }
+    for (position, name) in ui.library.folders.iter().enumerate() {
+        let folder = entry(mtm, name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL), target);
+        folder.setState(isize::from(item.folder == Some(position)));
+        folder.setEnabled(!ui.library.sealed(position));
+        menu.addItem(&folder);
+    }
+}
+
+pub fn confirm_delete(mtm: MainThreadMarker) {
     let Some((id, title)) = UI.with_borrow(|ui| {
         let ui = ui.as_ref()?;
         let item = ui.library.items.get(ui.selected_index()?)?;
@@ -219,7 +248,7 @@ pub fn dragged_files(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
         .collect();
 }
 
-fn media_in(path: &Path) -> Vec<String> {
+pub fn media_in(path: &Path) -> Vec<String> {
     if !path.is_dir() {
         return vec![path.to_string_lossy().into_owned()];
     }

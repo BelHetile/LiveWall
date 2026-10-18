@@ -88,6 +88,11 @@ impl Layout {
         (Layout::List, "list.bullet", key("List")),
     ];
 
+    pub fn index(self) -> isize {
+        let position = Self::ALL.iter().position(|(layout, _, _)| *layout == self).unwrap_or(0);
+        return isize::try_from(position).unwrap_or(0);
+    }
+
     pub fn from_index(index: isize) -> Self {
         return usize::try_from(index).ok().and_then(|index| Self::ALL.get(index)).map_or(Layout::Large, |(layout, _, _)| *layout);
     }

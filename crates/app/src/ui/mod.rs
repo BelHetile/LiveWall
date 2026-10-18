@@ -25,7 +25,7 @@ use block2::RcBlock;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{NSSplitViewDidResizeSubviewsNotification, NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString};
-use proto::{Request, Response, ResponseBody};
+use proto::{ErrorCode, Request, Response, ResponseBody};
 
 use crate::app::{self, App};
 use crate::i18n::{Arg, tr, trf};
@@ -279,6 +279,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let menus = menus::Menus::new(mtm);
     let toolbar = toolbar::Toolbar::new(mtm, menus.target());
     toolbar.reload(library.desktops, filter.scope);
+    toolbar.show_layout(filter.layout);
     window.setToolbar(Some(&toolbar.bar));
     if !restored {
         window.center();
@@ -376,7 +377,19 @@ fn set_layout(layout: Layout) {
         if ui.filter.layout != layout {
             ui.filter.layout = layout;
             ui.grid.set_layout(layout);
+            ui.toolbar.show_layout(layout);
         }
+    });
+}
+
+fn toggle_privacy() {
+    submit(|app| {
+        if app.is_unlocked() {
+            app.lock();
+        } else {
+            app.request_unlock();
+        }
+        return None;
     });
 }
 
@@ -445,11 +458,17 @@ pub fn download_failed(reason: &str) {
     notice(trf("Couldn’t download the video: %@", &[Arg::Text(reason.to_string())]));
 }
 
-pub fn reply(_request: &Request, response: &Response) {
+pub fn reply(request: &Request, response: &Response) {
     let ResponseBody::Err(body) = &response.body else {
         return;
     };
-    notice(body.message.clone());
+    match request {
+        Request::Download { url, .. } if body.code == ErrorCode::ConsentRequired => {
+            let (url, message) = (url.clone(), body.message.clone());
+            DispatchQueue::main().exec_async(move || dialogs::consent_sheet(url, &message));
+        }
+        _ => notice(body.message.clone()),
+    }
 }
 
 pub fn rebind(action: proto::HotkeyAction, combo: Option<String>) -> Result<(), String> {

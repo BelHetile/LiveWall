@@ -217,14 +217,7 @@ define_class!(
 
         #[unsafe(method(togglePrivacy:))]
         fn toggle_privacy(&self, _sender: Option<&AnyObject>) {
-            submit(|app| {
-                if app.is_unlocked() {
-                    app.lock();
-                } else {
-                    app.request_unlock();
-                }
-                return None;
-            });
+            crate::ui::toggle_privacy();
         }
 
         #[unsafe(method(styleFolder:))]

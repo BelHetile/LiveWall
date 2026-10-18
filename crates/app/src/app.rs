@@ -924,6 +924,10 @@ impl App {
         return &self.settings;
     }
 
+    pub fn paused(&self) -> bool {
+        return self.paused;
+    }
+
     pub fn paths(&self) -> &Paths {
         return &self.paths;
     }

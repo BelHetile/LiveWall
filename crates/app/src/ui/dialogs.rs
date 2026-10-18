@@ -1,25 +1,36 @@
+use std::path::Path;
+
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlStateValueOff, NSControlStateValueOn,
-    NSLayoutAttribute, NSModalResponse, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutAttribute, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow,
 };
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol};
+use objc2_core_foundation::CGRect;
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
+use objc2_uniform_type_identifiers::{UTTypeGIF, UTTypeImage, UTTypeMovie};
 use proto::Request;
 use uuid::Uuid;
 
 use crate::app;
-use crate::i18n::{Arg, tr, trf, trp};
-use crate::ui::{UI, later, ns, submit};
+use crate::i18n::{self, Arg, tr, trf, trp};
+use crate::ui::{UI, context, later, ns, submit};
 
 const NAME_WIDTH: f64 = 260.0;
+const LINK_WIDTH: f64 = 340.0;
+const QUALITIES: [&str; 5] = [i18n::key("Best Available"), "4K", "1440p", "1080p", "720p"];
+const DEFAULT_QUALITY: isize = 3;
+
+fn host() -> Option<Retained<NSWindow>> {
+    return UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.window.clone())).filter(|window| window.isVisible());
+}
 
 pub fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
     alert.window().setPreventsApplicationTerminationWhenModal(false);
-    let Some(window) = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.window.clone())).filter(|window| window.isVisible())
-    else {
+    let Some(window) = host() else {
         done(alert.runModal());
         return;
     };
@@ -38,11 +49,15 @@ pub fn notice(message: &str) {
     sheet(&alert, |_| {});
 }
 
-fn name_field(mtm: MainThreadMarker) -> Retained<NSTextField> {
+fn input(mtm: MainThreadMarker, placeholder: &str, width: f64) -> Retained<NSTextField> {
     let field = NSTextField::textFieldWithString(&ns(""), mtm);
-    field.setPlaceholderString(Some(&ns(&tr("Folder name"))));
-    field.widthAnchor().constraintEqualToConstant(NAME_WIDTH).setActive(true);
+    field.setPlaceholderString(Some(&ns(placeholder)));
+    field.widthAnchor().constraintEqualToConstant(width).setActive(true);
     return field;
+}
+
+fn name_field(mtm: MainThreadMarker) -> Retained<NSTextField> {
+    return input(mtm, &tr("Folder name"), NAME_WIDTH);
 }
 
 fn stack(mtm: MainThreadMarker, views: &[&NSView], vertical: bool) -> Retained<NSStackView> {
@@ -187,6 +202,94 @@ pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
         if response == NSAlertFirstButtonReturn {
             let request = Request::FolderDelete { id: id.to_string() };
             submit(move |app| Some(app.dispatch(&request)));
+        }
+    });
+}
+
+pub fn add_files(mtm: MainThreadMarker) {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(true);
+    panel.setPrompt(Some(&ns(&tr("Add"))));
+    let types = unsafe { [UTTypeImage, UTTypeMovie, UTTypeGIF] };
+    panel.setAllowedContentTypes(&NSArray::from_slice(&types));
+    let chosen = panel.clone();
+    let finish = move |response: NSModalResponse| {
+        if response != NSModalResponseOK {
+            return;
+        }
+        let paths: Vec<String> = chosen
+            .URLs()
+            .iter()
+            .filter_map(|url| url.path())
+            .flat_map(|path| context::media_in(Path::new(&path.to_string())))
+            .collect();
+        later(move |ui, _| {
+            let folder = ui.filter.folder.filter(|index| !ui.library.sealed(*index));
+            context::import(ui, paths, folder);
+        });
+    };
+    match host() {
+        Some(window) => {
+            let block = RcBlock::new(finish);
+            panel.beginSheetModalForWindow_completionHandler(&window, &block);
+        }
+        None => finish(panel.runModal()),
+    }
+}
+
+pub fn download_sheet(mtm: MainThreadMarker) {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns(&tr("Add from Video Link")));
+    alert.setInformativeText(&ns(&tr(
+        "Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.",
+    )));
+    let field = input(mtm, "https://youtu.be/…", LINK_WIDTH);
+    let quality = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+    let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(&tr(title))).collect();
+    quality.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+    quality.selectItemAtIndex(DEFAULT_QUALITY);
+    quality.setEnabled(false);
+    let label = NSTextField::labelWithString(&ns(&tr("Quality")), mtm);
+    let options = stack(mtm, &[&label, &quality], false);
+    let accessory = stack(mtm, &[&field, &options], true);
+    accessory.setFrameSize(accessory.fittingSize());
+    alert.setAccessoryView(Some(&accessory));
+    alert.addButtonWithTitle(&ns(&tr("Download")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    alert.window().setInitialFirstResponder(Some(&field));
+    sheet(&alert, move |response| {
+        let url = field.stringValue().to_string().trim().to_string();
+        if response != NSAlertFirstButtonReturn || url.is_empty() {
+            return;
+        }
+        submit(move |app| {
+            app.submit(Request::Download { url, consent: false });
+            return None;
+        });
+    });
+}
+
+pub fn consent_sheet(url: String, message: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns(&tr("Install download tools?")));
+    alert.setInformativeText(&ns(&trf(
+        "%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.",
+        &[Arg::Text(message.to_string())],
+    )));
+    alert.addButtonWithTitle(&ns(&tr("Install and Download")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    sheet(&alert, move |response| {
+        if response == NSAlertFirstButtonReturn {
+            let request = Request::Download { url: url.clone(), consent: true };
+            submit(move |app| {
+                app.submit(request);
+                return None;
+            });
         }
     });
 }
