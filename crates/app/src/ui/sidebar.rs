@@ -4,10 +4,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSControlTextEditingDelegate, NSFont, NSImage, NSImageScaling, NSImageView, NSLayoutConstraintOrientation,
-    NSLineBreakMode, NSMenu, NSMenuDelegate, NSMenuItem, NSScrollView, NSTableCellView, NSTableColumn, NSTableView,
-    NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField, NSView, NSViewController, NSButton,
-    NSBezelStyle, NSControlSize, NSStackView, NSStackViewDistribution, NSUserInterfaceLayoutOrientation,
+    NSBezelStyle, NSButton, NSColor, NSControlSize, NSControlTextEditingDelegate, NSFont, NSImage, NSImageScaling,
+    NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenu, NSMenuDelegate, NSMenuItem, NSScrollView,
+    NSStackView, NSStackViewDistribution, NSTableCellView, NSTableColumn, NSTableView, NSTableViewDataSource,
+    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSTableViewDropOperation};
 use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObject, NSObjectProtocol};
@@ -47,11 +47,26 @@ struct SourceIvars {
     unlocked: Cell<bool>,
 }
 
+#[derive(Clone, Copy)]
+enum DropTarget {
+    Unfiled,
+    Folder(usize),
+}
+
+impl DropTarget {
+    fn folder(self) -> Option<usize> {
+        return match self {
+            Self::Unfiled => None,
+            Self::Folder(index) => Some(index),
+        };
+    }
+}
+
 impl SidebarSource {
-    fn drop_target(&self, row: isize) -> Option<Option<usize>> {
+    fn drop_target(&self, row: isize) -> Option<DropTarget> {
         return match self.row_at(row)? {
-            Row::All(_) => Some(None),
-            Row::Folder(folder) if !folder.sealed => Some(Some(folder.index)),
+            Row::All(_) => Some(DropTarget::Unfiled),
+            Row::Folder(folder) if !folder.sealed => Some(DropTarget::Folder(folder.index)),
             _ => None,
         };
     }
@@ -117,7 +132,8 @@ define_class!(
             _operation: NSTableViewDropOperation,
         ) -> bool {
             match self.drop_target(row) {
-                Some(folder) => {
+                Some(target) => {
+                    let folder = target.folder();
                     let items = context::dragged_items(info);
                     let files = if items.is_empty() { context::dragged_files(info) } else { Vec::new() };
                     let accepted = !items.is_empty() || !files.is_empty();
@@ -125,7 +141,7 @@ define_class!(
                         if items.is_empty() {
                             context::import(ui, files, folder);
                         } else {
-                            context::move_items(ui, items, folder);
+                            context::move_items(ui, &items, folder);
                         }
                     });
                     accepted
@@ -158,7 +174,7 @@ define_class!(
                 match self.row_at(ivars.table.selectedRow()) {
                     Some(Row::All(_)) => commit(|ui| ui.filter.folder = None),
                     Some(Row::Folder(row)) if row.sealed => {
-                        crate::app::with(|app| app.request_unlock());
+                        crate::app::with(crate::app::App::request_unlock);
                         commit(|_| {});
                     }
                     Some(Row::Folder(row)) => commit(|ui| ui.filter.folder = Some(row.index)),
@@ -352,7 +368,9 @@ fn item_cell(
     icon.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()).setActive(true);
     icon.heightAnchor().constraintEqualToAnchor(&text.heightAnchor()).setActive(true);
     icon.widthAnchor().constraintEqualToAnchor(&icon.heightAnchor()).setActive(true);
-    text.leadingAnchor().constraintEqualToSystemSpacingAfterAnchor_multiplier(&icon.trailingAnchor(), 1.0).setActive(true);
+    text.leadingAnchor()
+        .constraintEqualToSystemSpacingAfterAnchor_multiplier(&icon.trailingAnchor(), 1.0)
+        .setActive(true);
     text.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()).setActive(true);
     match count {
         Some(count) => {
@@ -373,14 +391,8 @@ fn item_cell(
     }
 }
 
-fn bar_button(
-    mtm: MainThreadMarker,
-    symbol: &str,
-    tip: &str,
-    target: &AnyObject,
-    action: Sel,
-) -> Retained<NSButton> {
-    let image = folders::symbol(symbol).unwrap_or_else(|| NSImage::new());
+fn bar_button(mtm: MainThreadMarker, symbol: &str, tip: &str, target: &AnyObject, action: Sel) -> Retained<NSButton> {
+    let image = folders::symbol(symbol).unwrap_or_default();
     let button = unsafe { NSButton::buttonWithImage_target_action(&image, Some(target), Some(action), mtm) };
     button.setBezelStyle(NSBezelStyle::Push);
     button.setControlSize(NSControlSize::Large);
@@ -435,10 +447,18 @@ impl Sidebar {
         scroll.topAnchor().constraintEqualToAnchor(&view.topAnchor()).setActive(true);
         scroll.leadingAnchor().constraintEqualToAnchor(&view.leadingAnchor()).setActive(true);
         scroll.trailingAnchor().constraintEqualToAnchor(&view.trailingAnchor()).setActive(true);
-        bar.topAnchor().constraintEqualToSystemSpacingBelowAnchor_multiplier(&scroll.bottomAnchor(), 1.0).setActive(true);
-        view.bottomAnchor().constraintEqualToSystemSpacingBelowAnchor_multiplier(&bar.bottomAnchor(), 1.0).setActive(true);
-        bar.leadingAnchor().constraintEqualToSystemSpacingAfterAnchor_multiplier(&view.leadingAnchor(), 1.0).setActive(true);
-        view.trailingAnchor().constraintEqualToSystemSpacingAfterAnchor_multiplier(&bar.trailingAnchor(), 1.0).setActive(true);
+        bar.topAnchor()
+            .constraintEqualToSystemSpacingBelowAnchor_multiplier(&scroll.bottomAnchor(), 1.0)
+            .setActive(true);
+        view.bottomAnchor()
+            .constraintEqualToSystemSpacingBelowAnchor_multiplier(&bar.bottomAnchor(), 1.0)
+            .setActive(true);
+        bar.leadingAnchor()
+            .constraintEqualToSystemSpacingAfterAnchor_multiplier(&view.leadingAnchor(), 1.0)
+            .setActive(true);
+        view.trailingAnchor()
+            .constraintEqualToSystemSpacingAfterAnchor_multiplier(&bar.trailingAnchor(), 1.0)
+            .setActive(true);
 
         let controller = NSViewController::new(mtm);
         controller.setView(&view);

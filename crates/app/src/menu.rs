@@ -77,6 +77,7 @@ impl MenuTarget {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MenuState {
     pub title: Option<String>,
     pub paused: bool,

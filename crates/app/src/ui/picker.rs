@@ -7,12 +7,14 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSButtonType, NSColor, NSColorPanel, NSColorPanelMode, NSColorWell, NSColorWellStyle,
-    NSLayoutAttribute, NSLayoutConstraintOrientation, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPopover, NSPopoverBehavior,
-    NSPopoverDelegate, NSStackView, NSStackViewDistribution, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
-    NSViewController,
+    NSLayoutAttribute, NSLayoutConstraintOrientation, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPopover,
+    NSPopoverBehavior, NSPopoverDelegate, NSStackView, NSStackViewDistribution, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSArray, NSCopying, NSEdgeInsets, NSNotification, NSObject, NSObjectProtocol, NSRectEdge, NSString};
+use objc2_foundation::{
+    NSArray, NSCopying, NSEdgeInsets, NSNotification, NSObject, NSObjectProtocol, NSRectEdge, NSString,
+};
 use proto::{Request, ResponseBody};
 use uuid::Uuid;
 
@@ -113,12 +115,12 @@ define_class!(
 
         #[unsafe(method(colorChanged:))]
         fn color_changed(&self, sender: &NSColorWell) {
-            self.from_well(&sender.color());
+            self.commit_well(&sender.color());
         }
 
         #[unsafe(method(hexEntered:))]
         fn hex_entered(&self, sender: &NSTextField) {
-            self.from_hex(&sender.stringValue().to_string());
+            self.commit_hex(&sender.stringValue().to_string());
         }
 
         #[unsafe(method(addImage:))]
@@ -203,7 +205,7 @@ fn fill_rows(grid: &NSStackView, rows: &[Retained<NSStackView>]) {
 fn choice(mtm: MainThreadMarker, image: &objc2_app_kit::NSImage, tip: &str, tag: usize) -> Retained<NSButton> {
     let button = unsafe { NSButton::buttonWithImage_target_action(image, None, Some(sel!(pickIcon:)), mtm) };
     button.setButtonType(NSButtonType::PushOnPushOff);
-    button.setBezelStyle(NSBezelStyle::TexturedRounded);
+    button.setBezelStyle(NSBezelStyle::Toolbar);
     button.setBordered(false);
     button.setToolTip(Some(&ns(tip)));
     button.setTag(isize::try_from(tag).unwrap_or(0));
@@ -271,14 +273,14 @@ impl FolderPicker {
         }
     }
 
-    fn from_well(&self, color: &NSColor) {
+    fn commit_well(&self, color: &NSColor) {
         if let Some(rgba) = folders::to_rgba(color) {
             *self.ivars().color.borrow_mut() = Some(rgba.to_hex());
             self.apply(false);
         }
     }
 
-    fn from_hex(&self, text: &str) {
+    fn commit_hex(&self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
             *self.ivars().color.borrow_mut() = None;
@@ -359,7 +361,7 @@ impl FolderPicker {
         let side = folders::symbol("folder.fill").map(|image| image.size());
         let mut choices = ivars.choices.borrow_mut();
         choices.retain(|(value, _)| value.starts_with(SYMBOL_PREFIX));
-        for view in ivars.images.arrangedSubviews().iter() {
+        for view in &ivars.images.arrangedSubviews() {
             view.removeFromSuperview();
         }
         let mut cells: Vec<Retained<NSView>> = Vec::new();
@@ -416,6 +418,7 @@ impl FolderPicker {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn show(mtm: MainThreadMarker, index: usize, anchor: &NSView, rect: CGRect) {
     let Some((folder, icon, color, icons_dir)) = UI.with_borrow(|ui| {
         let library = &ui.as_ref()?.library;
@@ -455,10 +458,8 @@ pub fn show(mtm: MainThreadMarker, index: usize, anchor: &NSView, rect: CGRect) 
     let mut tags: Vec<(Tag, Retained<NSButton>)> = Vec::new();
     let mut swatches: Vec<Retained<NSView>> = Vec::new();
     for tag in Tag::ALL {
-        let image = folders::symbol("circle.fill").unwrap_or_else(|| objc2_app_kit::NSImage::new());
-        let button = unsafe {
-            NSButton::buttonWithImage_target_action(&image, None, Some(sel!(pickTag:)), mtm)
-        };
+        let image = folders::symbol("circle.fill").unwrap_or_default();
+        let button = unsafe { NSButton::buttonWithImage_target_action(&image, None, Some(sel!(pickTag:)), mtm) };
         button.setBordered(false);
         button.setTag(isize::try_from(tags.len()).unwrap_or(0));
         button.setToolTip(Some(&ns(&tr(tag.title()))));
@@ -477,13 +478,19 @@ pub fn show(mtm: MainThreadMarker, index: usize, anchor: &NSView, rect: CGRect) 
     let reset = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Reset")), None, Some(sel!(reset:)), mtm) };
     let colors = stack(
         mtm,
-        &[Retained::into_super(Retained::into_super(Retained::into_super(well.clone()))), Retained::into_super(Retained::into_super(hex.clone())), up(reset.clone())],
+        &[
+            Retained::into_super(Retained::into_super(Retained::into_super(well.clone()))),
+            Retained::into_super(Retained::into_super(hex.clone())),
+            up(reset.clone()),
+        ],
         false,
     );
     colors.setDistribution(NSStackViewDistribution::Fill);
 
     let images = stack(mtm, &[], true);
-    let add = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Choose Image…")), None, Some(sel!(addImage:)), mtm) };
+    let add = unsafe {
+        NSButton::buttonWithTitle_target_action(&ns(&tr("Choose Image…")), None, Some(sel!(addImage:)), mtm)
+    };
 
     let arranged: [Retained<NSView>; 5] = [
         Retained::into_super(tag_row.clone()),

@@ -2,8 +2,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSEventModifierFlags, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuItemValidation, NSText,
-    NSWindow,
+    NSApplication, NSEventModifierFlags, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuItemValidation, NSText, NSWindow,
 };
 use objc2_foundation::{NSObject, NSObjectProtocol};
 use proto::HotkeyAction;
@@ -138,7 +137,9 @@ fn validate(ui: &Ui, mtm: MainThreadMarker, menu_item: &NSMenuItem) -> bool {
 fn validate_command(menu_item: &NSMenuItem) -> bool {
     let action = usize::try_from(menu_item.tag()).ok().and_then(|index| HotkeyAction::ALL.get(index)).copied();
     let title = match action {
-        Some(HotkeyAction::TogglePause) => app::with(|app| app.paused()).map(|paused| if paused { key("Resume") } else { key("Pause") }),
+        Some(HotkeyAction::TogglePause) => {
+            app::with(|app| app.paused()).map(|paused| if paused { key("Resume") } else { key("Pause") })
+        }
         Some(HotkeyAction::ToggleMute) => {
             app::with(|app| app.settings().muted).map(|muted| if muted { key("Unmute") } else { key("Mute") })
         }
@@ -252,7 +253,7 @@ define_class!(
                 let folder = usize::try_from(sender.tag()).ok();
                 update(move |ui, _| {
                     if let Some(id) = ui.selected {
-                        context::move_items(ui, vec![id], folder);
+                        context::move_items(ui, &[id], folder);
                     }
                 });
             }
@@ -295,14 +296,15 @@ impl MenuTarget {
 
 pub struct Menus {
     pub bar: Retained<NSMenu>,
-    _target: Retained<MenuTarget>,
+    target: Retained<MenuTarget>,
 }
 
 impl Menus {
     pub fn show_settings(&self, tab: isize) {
-        settings::show(self._target.mtm(), Some(tab));
+        settings::show(self.target.mtm(), Some(tab));
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn new(mtm: MainThreadMarker) -> Self {
         let command = NSEventModifierFlags::Command;
         let shift = command | NSEventModifierFlags::Shift;
@@ -440,6 +442,6 @@ impl Menus {
             ],
         );
         application.setWindowsMenu(Some(&window));
-        return Self { bar, _target: target };
+        return Self { bar, target };
     }
 }

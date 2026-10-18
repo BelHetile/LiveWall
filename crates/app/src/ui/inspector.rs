@@ -2,11 +2,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor, NSControl, NSControlSize, NSEvent,
-    NSEventType, NSFont, NSForegroundColorAttributeName, NSFontTextStyleHeadline, NSFontWeightRegular, NSGridCellPlacement, NSGridView, NSImageView,
-    NSControlStateValueOff, NSControlStateValueOn, NSLayoutAttribute, NSLayoutConstraintOrientation, NSMenu, NSSegmentDistribution, NSSegmentSwitchTracking, NSSegmentedControl, NSLineBreakMode, NSMenuItem, NSPopUpButton, NSScreen,
-    NSScrollView, NSSlider, NSStackView, NSStackViewDistribution, NSStackViewGravity, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSApplication, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor, NSControl, NSControlSize,
+    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventType, NSFont, NSFontTextStyleHeadline,
+    NSFontWeightRegular, NSForegroundColorAttributeName, NSGridCellPlacement, NSGridView, NSImageView,
+    NSLayoutAttribute, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton, NSScreen,
+    NSScrollView, NSSegmentDistribution, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider, NSStackView,
+    NSStackViewDistribution, NSStackViewGravity, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
+    NSView, NSViewController,
 };
 use objc2_av_foundation::{
     AVLayerVideoGravityResizeAspectFill, AVPlayerItem, AVPlayerLayer, AVPlayerLooper, AVQueuePlayer, AVURLAsset,
@@ -14,8 +16,8 @@ use objc2_av_foundation::{
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_core_media::CMTime;
 use objc2_foundation::{
-    NSAttributedString, NSAttributedStringKey,
-    NSArray, NSDictionary, NSNumberFormatter, NSNumberFormatterStyle, NSObject, NSObjectProtocol, NSString, NSTimer,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSNumberFormatter, NSNumberFormatterStyle,
+    NSObject, NSObjectProtocol, NSString, NSTimer,
 };
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspectFill};
 use proto::{ApplyTarget, FillMode, Geometry, Request};
@@ -68,7 +70,7 @@ define_class!(
             if let Some(host) = self.layer()
                 && let Some(layers) = unsafe { host.sublayers() }
             {
-                for layer in layers.iter() {
+                for layer in &layers {
                     layer.setFrame(host.bounds());
                 }
             }
@@ -148,17 +150,15 @@ define_class!(
             let tag = sender.tag();
             selected(move |ui, index| {
                 let chosen = &mut ui.inspector.desktops;
-                match usize::try_from(tag) {
-                    Ok(space) => match chosen.iter().position(|candidate| *candidate == space) {
-                        Some(position) => {
-                            chosen.remove(position);
-                        }
-                        None => {
-                            chosen.push(space);
-                            chosen.sort_unstable();
-                        }
-                    },
-                    Err(_) => chosen.clear(),
+                if let Ok(space) = usize::try_from(tag) {
+                    if let Some(position) = chosen.iter().position(|candidate| *candidate == space) {
+                        chosen.remove(position);
+                    } else {
+                        chosen.push(space);
+                        chosen.sort_unstable();
+                    }
+                } else {
+                    chosen.clear();
                 }
                 ui.inspector.sync(&ui.library, index);
             });
@@ -219,7 +219,7 @@ define_class!(
             let folder = usize::try_from(tag).ok();
             selected(move |ui, index| {
                 let id = ui.library.items[index].id;
-                context::move_items(ui, vec![id], folder);
+                context::move_items(ui, &[id], folder);
             });
         }
 
@@ -461,9 +461,8 @@ pub fn value_field(mtm: MainThreadMarker, prefix: &str, suffix: &str, digits: us
     let field = NSTextField::textFieldWithString(&ns(""), mtm);
     field.setFormatter(Some(&formatter));
     field.setControlSize(NSControlSize::Small);
-    let digits_font = NSFont::monospacedDigitSystemFontOfSize_weight(NSFont::smallSystemFontSize(), unsafe {
-        NSFontWeightRegular
-    });
+    let digits_font =
+        NSFont::monospacedDigitSystemFontOfSize_weight(NSFont::smallSystemFontSize(), unsafe { NSFontWeightRegular });
     field.setFont(Some(&digits_font));
     field.setAlignment(NSTextAlignment::Right);
     field.widthAnchor().constraintEqualToConstant(VALUE_WIDTH).setActive(true);
@@ -515,12 +514,8 @@ fn form(mtm: MainThreadMarker, rows: &[Row], fill: isize) -> Retained<NSGridView
 }
 
 fn section(mtm: MainThreadMarker, title: &str, body: &NSView) -> Retained<NSStackView> {
-    let header = label(
-        mtm,
-        title,
-        &NSFont::boldSystemFontOfSize(NSFont::smallSystemFontSize()),
-        &NSColor::labelColor(),
-    );
+    let header =
+        label(mtm, title, &NSFont::boldSystemFontOfSize(NSFont::smallSystemFontSize()), &NSColor::labelColor());
     let section = stack(mtm, &[&header, body], true);
     body.leadingAnchor().constraintEqualToAnchor(&section.leadingAnchor()).setActive(true);
     body.trailingAnchor().constraintEqualToAnchor(&section.trailingAnchor()).setActive(true);
@@ -618,7 +613,7 @@ impl Inspector {
 
     fn clear(&mut self) {
         let views = self.content.arrangedSubviews();
-        for view in views.iter() {
+        for view in &views {
             self.content.removeArrangedSubview(&view);
             view.removeFromSuperview();
         }
@@ -716,6 +711,7 @@ impl Inspector {
         }));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn build(&mut self, item: &Item) {
         let mtm = self.controller.mtm();
         self.clear();
@@ -724,7 +720,10 @@ impl Inspector {
         let secondary = NSColor::secondaryLabelColor();
 
         let preview = self.preview(mtm, item);
-        preview.heightAnchor().constraintEqualToAnchor_multiplier(&preview.widthAnchor(), PREVIEW_ASPECT).setActive(true);
+        preview
+            .heightAnchor()
+            .constraintEqualToAnchor_multiplier(&preview.widthAnchor(), PREVIEW_ASPECT)
+            .setActive(true);
 
         let target: &AnyObject = &self.target;
         let play = symbol_button(mtm, "pause.fill");
@@ -741,21 +740,24 @@ impl Inspector {
         time.widthAnchor().constraintEqualToConstant(VALUE_WIDTH).setActive(true);
         wire(&time, target, sel!(seekTo:));
         let length = label(mtm, &format!("/ {}", duration(item.duration)), &digits, &secondary);
-        length.setContentCompressionResistancePriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
+        length
+            .setContentCompressionResistancePriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
         let listen = symbol_button(mtm, "headphones");
         wire(&listen, target, sel!(listen:));
         let transport = stack(mtm, &[&play, &scrub, &time, &length, &listen], false);
 
-        let headline = unsafe {
-            NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new())
-        };
+        let headline =
+            unsafe { NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new()) };
         let title = label(mtm, &item.title, &headline, &NSColor::labelColor());
         title.setSelectable(true);
         let (primary, details) = facts(item);
         let primary = label(mtm, &primary, &small_font, &secondary);
         let details = label(mtm, &details, &small_font, &secondary);
         for text in [&title, &primary, &details] {
-            text.setContentCompressionResistancePriority_forOrientation(250.0, NSLayoutConstraintOrientation::Horizontal);
+            text.setContentCompressionResistancePriority_forOrientation(
+                250.0,
+                NSLayoutConstraintOrientation::Horizontal,
+            );
         }
         primary.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         details.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
@@ -824,10 +826,7 @@ impl Inspector {
         let blank = NSView::new(mtm);
         let playback = form(
             mtm,
-            &[
-                (&tr("Volume"), vec![&mute, &volume, &volume_value]),
-                (&tr("Speed"), vec![&blank, &speed, &speed_value]),
-            ],
+            &[(&tr("Volume"), vec![&mute, &volume, &volume_value]), (&tr("Speed"), vec![&blank, &speed, &speed_value])],
             2,
         );
 
@@ -875,7 +874,8 @@ impl Inspector {
         let library_form = folder.clone();
 
         let reset = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Reset to Defaults")), None, None, mtm) };
-        let remove = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Remove from Library")), None, None, mtm) };
+        let remove =
+            unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Remove from Library")), None, None, mtm) };
         remove.setHasDestructiveAction(true);
         wire(&reset, target, sel!(resetSettings:));
         wire(&remove, target, sel!(removeItem:));
@@ -910,9 +910,7 @@ impl Inspector {
         sections.push(up(&buttons));
         for view in &sections {
             self.content.addArrangedSubview(view);
-            view.leadingAnchor()
-                .constraintEqualToAnchor_constant(&self.content.leadingAnchor(), INSET)
-                .setActive(true);
+            view.leadingAnchor().constraintEqualToAnchor_constant(&self.content.leadingAnchor(), INSET).setActive(true);
             view.trailingAnchor()
                 .constraintEqualToAnchor_constant(&self.content.trailingAnchor(), -INSET)
                 .setActive(true);

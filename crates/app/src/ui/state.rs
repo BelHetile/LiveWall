@@ -2,19 +2,13 @@ use crate::i18n::{Arg, key, tr, trf};
 use crate::model::ItemKind;
 use crate::ui::view::{Library, Target};
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn duration(seconds: f64) -> String {
     let total = seconds.max(0.0).round() as u64;
     return format!("{}:{:02}", total / 60, total % 60);
 }
 
 pub const TAG_ALL: isize = -1;
-pub const TAG_NEW_FOLDER: isize = -2;
-pub const TAG_RESET: isize = -100;
-pub const TAG_LOCK_FOLDER: isize = 1;
-pub const TAG_HIDE_FOLDER: isize = 3;
-pub const TAG_RENAME_FOLDER: isize = 4;
-pub const TAG_DELETE_FOLDER: isize = 5;
-pub const TAG_STYLE_FOLDER: isize = 6;
 
 pub fn desktop_name(space: usize) -> String {
     return trf("Desktop %ld", &[Arg::Int(i64::try_from(space + 1).unwrap_or(0))]);
@@ -94,7 +88,10 @@ impl Layout {
     }
 
     pub fn from_index(index: isize) -> Self {
-        return usize::try_from(index).ok().and_then(|index| Self::ALL.get(index)).map_or(Layout::Large, |(layout, _, _)| *layout);
+        return usize::try_from(index)
+            .ok()
+            .and_then(|index| Self::ALL.get(index))
+            .map_or(Layout::Large, |(layout, _, _)| *layout);
     }
 }
 
@@ -134,8 +131,6 @@ impl Filter {
 
 pub struct Showing {
     pub main: Option<usize>,
-    pub others: usize,
-    pub desktops: Vec<(usize, Option<usize>)>,
 }
 
 pub fn showing(library: &Library, scope: Scope) -> Showing {
@@ -151,7 +146,7 @@ pub fn showing(library: &Library, scope: Scope) -> Showing {
         Some((_, top)) if top >= count => best,
         _ => Some((item, count)),
     });
-    return Showing { main: main.map(|(item, _)| item), others: counts.len().saturating_sub(1), desktops };
+    return Showing { main: main.map(|(item, _)| item) };
 }
 
 pub struct Marker {

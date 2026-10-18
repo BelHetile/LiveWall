@@ -94,11 +94,7 @@ pub fn set_appearance(mtm: MainThreadMarker, mode: AppearanceMode) {
     NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
 }
 
-pub fn panes(
-    sidebar: &NSViewController,
-    content: &NSViewController,
-    inspector: &NSViewController,
-) -> Panes {
+pub fn panes(sidebar: &NSViewController, content: &NSViewController, inspector: &NSViewController) -> Panes {
     let sidebar_item = NSSplitViewItem::sidebarWithViewController(sidebar);
     sidebar_item.setCanCollapse(true);
     sidebar_item.setMinimumThickness(SIDEBAR_MIN);

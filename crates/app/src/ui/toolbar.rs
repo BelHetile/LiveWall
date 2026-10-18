@@ -3,14 +3,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, available, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSToolbarItemVisibilityPriorityHigh, NSToolbarItemVisibilityPriorityLow,
     NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFont, NSImage, NSImageSymbolConfiguration,
     NSImageSymbolScale, NSImageView, NSLayoutAttribute, NSLineBreakMode, NSMenu, NSMenuItem, NSMenuToolbarItem,
-    NSPopUpButton, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView, NSTextField, NSTextFieldDelegate, NSTextView, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
-    NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier,
-    NSToolbarItemStyle, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarSpaceItemIdentifier,
+    NSPopUpButton, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView, NSTextField,
+    NSTextFieldDelegate, NSTextView, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarInspectorTrackingSeparatorItemIdentifier, NSToolbarItem,
+    NSToolbarItemGroup, NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
+    NSToolbarItemIdentifier, NSToolbarItemStyle, NSToolbarItemVisibilityPriorityHigh,
+    NSToolbarItemVisibilityPriorityLow, NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarSpaceItemIdentifier,
     NSToolbarToggleInspectorItemIdentifier, NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceLayoutOrientation,
     NSView,
 };
@@ -19,9 +19,9 @@ use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString}
 
 use crate::app::{PlayState, Sound};
 use crate::i18n::{self, Arg, tr, trf};
-use crate::ui::{dialogs, ns};
 use crate::ui::state::{Filter, KINDS, Layout, Scope, Sort, showing};
 use crate::ui::view::{Download, Library, Stage, Status};
+use crate::ui::{dialogs, ns};
 
 pub struct DelegateIvars {
     items: Vec<(Retained<NSString>, Retained<NSToolbarItem>)>,
@@ -158,6 +158,7 @@ pub struct Toolbar {
 }
 
 impl Toolbar {
+    #[allow(clippy::too_many_lines)]
     pub fn new(mtm: MainThreadMarker) -> Self {
         let (scope, popup) = scope_item(mtm);
         let sort = NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &ns("sort"));
@@ -182,12 +183,13 @@ impl Toolbar {
         add.setLabel(&ns(&tr("Add")));
         add.setPaletteLabel(&ns(&tr("Add")));
         add.setToolTip(Some(&ns(&tr("Add wallpapers from files, a folder or a video link"))));
-        let adds = [(tr("Add Files…"), sel!(addFiles:)), (tr("Download from URL…"), sel!(downloadURL:))]
-            .map(|(title, action)| {
+        let adds = [(tr("Add Files…"), sel!(addFiles:)), (tr("Download from URL…"), sel!(downloadURL:))].map(
+            |(title, action)| {
                 let item = menu_item(mtm, &title);
                 unsafe { item.setAction(Some(action)) };
                 return item;
-            });
+            },
+        );
         add.setMenu(&add_menu(mtm, &adds));
         if available!(macos = 26.0) {
             add.setStyle(NSToolbarItemStyle::Prominent);
@@ -363,18 +365,17 @@ fn glyph_and_thumbnail(symbol_name: &str, thumbnail: Option<Retained<NSImage>>) 
         );
         glyph.drawInRect(glyph_rect);
         let thumbnail_rect = CGRect::new(CGPoint::new(PREVIEW_GLYPH + PREVIEW_GAP, 0.0), PREVIEW_THUMBNAIL);
-        match &thumbnail {
-            Some(thumbnail) => thumbnail.drawInRect(thumbnail_rect),
-            None => {
-                let rect = CGRect::new(
-                    CGPoint::new(
-                        thumbnail_rect.origin.x + (PREVIEW_THUMBNAIL.width - PREVIEW_PLACEHOLDER) / 2.0,
-                        (size.height - PREVIEW_PLACEHOLDER) / 2.0,
-                    ),
-                    CGSize::new(PREVIEW_PLACEHOLDER, PREVIEW_PLACEHOLDER),
-                );
-                placeholder.drawInRect(rect);
-            }
+        if let Some(thumbnail) = &thumbnail {
+            thumbnail.drawInRect(thumbnail_rect);
+        } else {
+            let rect = CGRect::new(
+                CGPoint::new(
+                    thumbnail_rect.origin.x + (PREVIEW_THUMBNAIL.width - PREVIEW_PLACEHOLDER) / 2.0,
+                    (size.height - PREVIEW_PLACEHOLDER) / 2.0,
+                ),
+                CGSize::new(PREVIEW_PLACEHOLDER, PREVIEW_PLACEHOLDER),
+            );
+            placeholder.drawInRect(rect);
         }
         return Bool::YES;
     });
@@ -515,15 +516,12 @@ fn describe(status: &Status) -> (Light, String, Option<String>, String) {
     let full = reason.map_or_else(String::new, |(_, full)| full.clone());
     return match status.state {
         PlayState::Still => (Light::Green, tr("Image"), None, tr("This desktop shows a still image")),
-        PlayState::Playing => {
-            (Light::Green, tr("Playing"), None, tr("The wallpaper on this desktop is playing"))
-        }
+        PlayState::Playing => (Light::Green, tr("Playing"), None, tr("The wallpaper on this desktop is playing")),
         PlayState::Paused if full.is_empty() => (Light::Yellow, tr("Paused"), brief, tr("Paused")),
-        PlayState::Paused => {
-            (Light::Yellow, tr("Paused"), brief, trf("Paused: %@", &[Arg::Text(full)]))
-        }
+        PlayState::Paused => (Light::Yellow, tr("Paused"), brief, trf("Paused: %@", &[Arg::Text(full)])),
         PlayState::Unloaded => {
-            let lead = if full.is_empty() { String::new() } else { format!("{}. ", trf("Paused: %@", &[Arg::Text(full)])) };
+            let lead =
+                if full.is_empty() { String::new() } else { format!("{}. ", trf("Paused: %@", &[Arg::Text(full)])) };
             (
                 Light::Red,
                 tr("Unloaded"),
@@ -613,11 +611,7 @@ fn menu_item(mtm: MainThreadMarker, title: &str) -> Retained<NSMenuItem> {
     return item;
 }
 
-fn choices<'a>(
-    mtm: MainThreadMarker,
-    titles: impl Iterator<Item = &'a str>,
-    action: Sel,
-) -> Vec<Retained<NSMenuItem>> {
+fn choices<'a>(mtm: MainThreadMarker, titles: impl Iterator<Item = &'a str>, action: Sel) -> Vec<Retained<NSMenuItem>> {
     return titles
         .enumerate()
         .map(|(index, title)| {
@@ -629,7 +623,11 @@ fn choices<'a>(
         .collect();
 }
 
-fn sort_menu(mtm: MainThreadMarker, sorts: &[Retained<NSMenuItem>], kinds: &[Retained<NSMenuItem>]) -> Retained<NSMenu> {
+fn sort_menu(
+    mtm: MainThreadMarker,
+    sorts: &[Retained<NSMenuItem>],
+    kinds: &[Retained<NSMenuItem>],
+) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
     menu.addItem(&NSMenuItem::sectionHeaderWithTitle(&ns(&tr("Sort By")), mtm));
     for item in sorts {

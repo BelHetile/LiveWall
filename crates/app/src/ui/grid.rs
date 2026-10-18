@@ -1,32 +1,32 @@
 use std::cell::RefCell;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use block2::RcBlock;
 use objc2::runtime::{AnyObject, Bool};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::NSIndexPathNSCollectionViewAdditions;
 use objc2_app_kit::{
     NSBeep, NSBezierPath, NSCompositingOperation, NSControlSize, NSDraggingImageComponent,
     NSDraggingImageComponentIconKey, NSEventModifierFlags, NSFontTextStyleHeadline, NSImage, NSProgressIndicator,
     NSProgressIndicatorStyle,
 };
-use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSMenu, NSPasteboardWriting,
+    NSCollectionView, NSCollectionViewDataSource, NSCollectionViewDelegate, NSCollectionViewFlowLayout,
+    NSCollectionViewItem, NSColor, NSFont, NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSResponder,
+    NSScrollView, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_app_kit::{
-    NSTableCellView, NSTableColumn, NSTableView, NSTableViewColumnAutoresizingStyle, NSTableViewDataSource,
-    NSTableViewDelegate, NSTableViewStyle, NSControlTextEditingDelegate,
+    NSControlTextEditingDelegate, NSTableCellView, NSTableColumn, NSTableView, NSTableViewColumnAutoresizingStyle,
+    NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
 };
-use objc2_app_kit::{
-    NSCollectionView, NSCollectionViewDataSource, NSCollectionViewDelegate,
-    NSCollectionViewFlowLayout, NSCollectionViewItem, NSColor, NSFont, NSImageView,
-    NSLayoutConstraintOrientation, NSLineBreakMode, NSResponder, NSScrollView, NSStackView, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
-};
+use objc2_app_kit::{NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSMenu, NSPasteboardWriting};
 use objc2_core_foundation::{CGFloat, CGSize};
-use objc2_app_kit::NSIndexPathNSCollectionViewAdditions;
-use objc2_foundation::{NSCopying, NSArray, NSDictionary, NSEdgeInsets, NSIndexPath, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSSet};
+use objc2_core_foundation::{CGPoint, CGRect};
+use objc2_foundation::{
+    NSArray, NSCopying, NSDictionary, NSEdgeInsets, NSIndexPath, NSIndexSet, NSNotification, NSObject,
+    NSObjectProtocol, NSSet,
+};
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspectFill};
 
 use crate::i18n::{self, tr};
@@ -175,10 +175,8 @@ fn filled(image: Retained<NSImage>, size: CGSize, radius: CGFloat) -> Retained<N
         let source = image.size();
         let scale = (bounds.size.width / source.width).max(bounds.size.height / source.height);
         let crop = CGSize::new(bounds.size.width / scale, bounds.size.height / scale);
-        let from = CGRect::new(
-            CGPoint::new((source.width - crop.width) / 2.0, (source.height - crop.height) / 2.0),
-            crop,
-        );
+        let from =
+            CGRect::new(CGPoint::new((source.width - crop.width) / 2.0, (source.height - crop.height) / 2.0), crop);
         NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).addClip();
         image.drawInRect_fromRect_operation_fraction(bounds, from, NSCompositingOperation::SourceOver, 1.0);
         return Bool::YES;
@@ -202,7 +200,7 @@ define_class!(
             if let Some(host) = self.layer()
                 && let Some(layers) = unsafe { host.sublayers() }
             {
-                for layer in layers.iter() {
+                for layer in &layers {
                     layer.setFrame(host.bounds());
                 }
             }
@@ -324,7 +322,7 @@ impl Tile {
                     return Some(view);
                 })
                 .collect();
-            let refs: Vec<&NSView> = views.iter().map(|view| view.as_ref()).collect();
+            let refs: Vec<&NSView> = views.iter().map(AsRef::as_ref).collect();
             marks.setViews_inGravity(&NSArray::from_slice(&refs), objc2_app_kit::NSStackViewGravity::Trailing);
         }
         self.show_progress(cell.progress);
@@ -626,7 +624,8 @@ impl Collection {
     fn resize(&self, width: CGFloat) {
         let (text, minimum) = self.ivars().get();
         let tile = tile_size(width, minimum, text);
-        if let Some(layout) = self.collectionViewLayout().and_then(|layout| layout.downcast::<NSCollectionViewFlowLayout>().ok())
+        if let Some(layout) =
+            self.collectionViewLayout().and_then(|layout| layout.downcast::<NSCollectionViewFlowLayout>().ok())
             && layout.itemSize() != tile
         {
             layout.setItemSize(tile);
@@ -737,7 +736,10 @@ impl Grid {
         table.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
         table.setDraggingSourceOperationMask_forLocal(NSDragOperation::None, false);
         let root: Retained<Drop> = unsafe { msg_send![Drop::alloc(mtm), init] };
-        root.registerForDraggedTypes(&NSArray::from_retained_slice(&[unsafe { objc2_app_kit::NSPasteboardTypeFileURL }.copy()]));
+        root.registerForDraggedTypes(&NSArray::from_retained_slice(&[unsafe {
+            objc2_app_kit::NSPasteboardTypeFileURL
+        }
+        .copy()]));
         for pane in [&scroll, &list] {
             pane.setTranslatesAutoresizingMaskIntoConstraints(false);
             root.addSubview(pane);
@@ -746,15 +748,14 @@ impl Grid {
             pane.topAnchor().constraintEqualToAnchor(&root.topAnchor()).setActive(true);
             pane.bottomAnchor().constraintEqualToAnchor(&root.bottomAnchor()).setActive(true);
         }
-        let headline = unsafe { NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new()) };
+        let headline =
+            unsafe { NSFont::preferredFontForTextStyle_options(NSFontTextStyleHeadline, &NSDictionary::new()) };
         let secondary = NSColor::secondaryLabelColor();
         let heading = NSTextField::labelWithString(&ns(&tr("No Wallpapers")), mtm);
         heading.setFont(Some(&headline));
         heading.setTextColor(Some(&secondary));
-        let hint = NSTextField::labelWithString(
-            &ns(&tr("Add wallpapers, or try a different search, filter or folder.")),
-            mtm,
-        );
+        let hint =
+            NSTextField::labelWithString(&ns(&tr("Add wallpapers, or try a different search, filter or folder.")), mtm);
         hint.setTextColor(Some(&secondary));
         let empty = NSStackView::new(mtm);
         empty.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -773,7 +774,15 @@ impl Grid {
         }
         let controller = NSViewController::new(mtm);
         controller.setView(&root);
-        return Self { controller, source, collection, scroll, list, empty, actions: context::ContextActions::new(mtm) };
+        return Self {
+            controller,
+            source,
+            collection,
+            scroll,
+            list,
+            empty,
+            actions: context::ContextActions::new(mtm),
+        };
     }
 
     pub fn actions(&self) -> &objc2::runtime::AnyObject {
@@ -796,24 +805,25 @@ impl Grid {
         let ivars = self.source.ivars();
         let position = id.and_then(|id| ivars.ids.borrow().iter().position(|other| *other == id));
         ivars.syncing.set(true);
-        match position.and_then(|position| isize::try_from(position).ok().map(|item| (position, item))) {
-            Some((row, item)) => {
-                let path = NSIndexPath::indexPathForItem_inSection(item, 0);
-                ivars.view.setSelectionIndexPaths(&NSSet::from_slice(&[&*path]));
-                ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
-                if reveal {
-                    if let Some(attributes) =
-                        ivars.view.collectionViewLayout().and_then(|layout| layout.layoutAttributesForItemAtIndexPath(&path))
-                    {
-                        ivars.view.scrollRectToVisible(attributes.frame());
-                    }
-                    ivars.table.scrollRowToVisible(item);
+        if let Some((row, item)) =
+            position.and_then(|position| isize::try_from(position).ok().map(|item| (position, item)))
+        {
+            let path = NSIndexPath::indexPathForItem_inSection(item, 0);
+            ivars.view.setSelectionIndexPaths(&NSSet::from_slice(&[&*path]));
+            ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
+            if reveal {
+                if let Some(attributes) = ivars
+                    .view
+                    .collectionViewLayout()
+                    .and_then(|layout| layout.layoutAttributesForItemAtIndexPath(&path))
+                {
+                    ivars.view.scrollRectToVisible(attributes.frame());
                 }
+                ivars.table.scrollRowToVisible(item);
             }
-            None => {
-                ivars.view.setSelectionIndexPaths(&NSSet::new());
-                ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::new(), false);
-            }
+        } else {
+            ivars.view.setSelectionIndexPaths(&NSSet::new());
+            ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::new(), false);
         }
         ivars.syncing.set(false);
     }
@@ -893,8 +903,8 @@ impl Grid {
         let ids: Vec<ItemId> = visible.iter().map(|index| library.items[*index].id).collect();
         let position = selected.and_then(|id| ids.iter().position(|other| *other == id));
         let ivars = self.source.ivars();
-        let in_place = *ivars.ids.borrow() == ids
-            && ivars.cells.borrow().iter().zip(&cells).all(|(old, new)| old.same_shape(new));
+        let in_place =
+            *ivars.ids.borrow() == ids && ivars.cells.borrow().iter().zip(&cells).all(|(old, new)| old.same_shape(new));
         *ivars.cells.borrow_mut() = cells;
         *ivars.ids.borrow_mut() = ids;
         if in_place {

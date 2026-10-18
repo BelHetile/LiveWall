@@ -251,7 +251,12 @@ impl App {
                 launch_at_login: settings.launch_at_login,
                 unlocked,
                 has_private: library.folders.iter().any(|folder| folder.locked),
-                rotatable: library.items.iter().filter(|item| item.playable && (unlocked || !library.is_private(item))).count() > 1,
+                rotatable: library
+                    .items
+                    .iter()
+                    .filter(|item| item.playable && (unlocked || !library.is_private(item)))
+                    .count()
+                    > 1,
             },
         );
 

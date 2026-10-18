@@ -45,7 +45,7 @@ define_class!(
         #[unsafe(method(moveTo:))]
         fn move_to(&self, sender: &NSMenuItem) {
             let folder = usize::try_from(sender.tag()).ok();
-            selected(move |ui, id| move_items(ui, vec![id], folder));
+            selected(move |ui, id| move_items(ui, &[id], folder));
         }
 
         #[unsafe(method(delete:))]
@@ -95,7 +95,9 @@ pub fn reset() {
 }
 
 fn entry(mtm: MainThreadMarker, title: &str, action: Sel, tag: isize, target: &AnyObject) -> Retained<NSMenuItem> {
-    let item = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(title), Some(action), &ns("")) };
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(title), Some(action), &ns(""))
+    };
     item.setTag(tag);
     unsafe { item.setTarget(Some(target)) };
     return item;
@@ -183,7 +185,7 @@ pub fn confirm_delete(mtm: MainThreadMarker) {
     });
 }
 
-pub fn move_items(ui: &Ui, ids: Vec<ItemId>, folder: Option<usize>) {
+pub fn move_items(ui: &Ui, ids: &[ItemId], folder: Option<usize>) {
     let folder = match folder {
         Some(index) if ui.library.sealed(index) => return,
         Some(index) => match ui.library.folder_ids.get(index) {

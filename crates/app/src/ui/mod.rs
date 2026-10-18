@@ -16,15 +16,20 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dispatch2::DispatchQueue;
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSSplitViewItem, NSSplitViewController, NSWindow};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSSplitViewController, NSSplitViewItem, NSWindow};
 use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2_app_kit::{NSSplitViewDidResizeSubviewsNotification, NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState};
-use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString, NSTimer};
+use objc2_app_kit::{
+    NSSplitViewDidResizeSubviewsNotification, NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState,
+};
+use objc2_foundation::{
+    NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName,
+    NSObjectProtocol, NSString, NSTimer,
+};
 use proto::{ErrorCode, Request, Response, ResponseBody};
 
 use crate::app::{self, App};
@@ -50,11 +55,11 @@ struct Ui {
     window: Retained<NSWindow>,
     _split: Retained<NSSplitViewController>,
     _sidebar: Retained<NSSplitViewItem>,
-    _inspector: Retained<NSSplitViewItem>,
+    inspector_pane: Retained<NSSplitViewItem>,
     toolbar: toolbar::Toolbar,
     ticker: Option<Retained<NSTimer>>,
     _observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
-    _menus: menus::Menus,
+    menus: menus::Menus,
 }
 
 impl Ui {
@@ -102,7 +107,7 @@ impl Ui {
     }
 
     fn sync_visibility(&mut self, _mtm: MainThreadMarker) {
-        let visible = !self._inspector.isCollapsed()
+        let visible = !self.inspector_pane.isCollapsed()
             && self.window.isVisible()
             && self.window.occlusionState().contains(NSWindowOcclusionState::Visible);
         let selected = self.selected_index();
@@ -267,10 +272,7 @@ fn watch_visibility(
     let block = RcBlock::new(|_: NonNull<NSNotification>| later(Ui::sync_visibility));
     let split_view = split.splitView();
     let watched: [(&NSNotificationName, &AnyObject); 2] = unsafe {
-        [
-            (NSSplitViewDidResizeSubviewsNotification, &split_view),
-            (NSWindowDidChangeOcclusionStateNotification, window),
-        ]
+        [(NSSplitViewDidResizeSubviewsNotification, &split_view), (NSWindowDidChangeOcclusionStateNotification, window)]
     };
     return watched
         .into_iter()
@@ -292,9 +294,8 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let sidebar = sidebar::Sidebar::new(mtm);
     sidebar.reload(&library, filter.folder);
     let mut inspector = inspector::Inspector::new(mtm);
-    let selected = env("LW_UI_SELECT")
-        .and_then(|title| library.items.iter().find(|item| item.title == title))
-        .map(|item| item.id);
+    let selected =
+        env("LW_UI_SELECT").and_then(|title| library.items.iter().find(|item| item.title == title)).map(|item| item.id);
     inspector.show(&library, selected.and_then(|id| library.position(id)), filter.scope);
     let grid = grid::Grid::new(mtm);
     grid.set_layout(filter.layout);
@@ -324,11 +325,11 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
             window,
             _split: panes.split,
             _sidebar: panes.sidebar,
-            _inspector: panes.inspector,
+            inspector_pane: panes.inspector,
             toolbar,
             ticker: None,
             _observers: observers,
-            _menus: menus,
+            menus,
         });
     });
     return Ok(());
@@ -361,7 +362,7 @@ pub fn launched() {
             }
         });
         if let Some(tab) = settings_tab {
-            ui._menus.show_settings(tab);
+            ui.menus.show_settings(tab);
         }
         if let Some(path) = env("LW_UI_WINDOW_FILE")
             && let Err(error) = std::fs::write(&path, ui.window.windowNumber().to_string())

@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AllocAnyThread, DefinedClass, Message, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSColor, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
     NSEventModifierFlags, NSFont, NSForegroundColorAttributeName, NSGridCell, NSGridCellPlacement, NSGridRowAlignment,
@@ -71,14 +71,14 @@ const RELEASES: [(&str, u32); 5] = [
     (i18n::key("After 1 Minute"), 60),
     (i18n::key("After 5 Minutes"), 300),
 ];
-const STYLES: [(&str, &str); 4] =
-    [(i18n::key("Fade"), "fade"), (i18n::key("Wipe"), "wipe"), (i18n::key("Grow"), "grow"), (i18n::key("Wave"), "wave")];
-const INTERVALS: [(&str, u32); 4] = [
-    (i18n::key("5 Minutes"), 5),
-    (i18n::key("15 Minutes"), 15),
-    (i18n::key("1 Hour"), 60),
-    (i18n::key("Daily"), 1440),
+const STYLES: [(&str, &str); 4] = [
+    (i18n::key("Fade"), "fade"),
+    (i18n::key("Wipe"), "wipe"),
+    (i18n::key("Grow"), "grow"),
+    (i18n::key("Wave"), "wave"),
 ];
+const INTERVALS: [(&str, u32); 4] =
+    [(i18n::key("5 Minutes"), 5), (i18n::key("15 Minutes"), 15), (i18n::key("1 Hour"), 60), (i18n::key("Daily"), 1440)];
 const IDLE_MINUTES: [(&str, u32); 5] = [
     (i18n::key("1 Minute"), 1),
     (i18n::key("5 Minutes"), 5),
@@ -213,8 +213,9 @@ impl Recorder {
         let key: &NSAttributedStringKey = unsafe { NSForegroundColorAttributeName };
         let color = NSColor::systemRedColor();
         let attributes = NSDictionary::from_slices(&[key], &[&*color as &AnyObject]);
-        let title =
-            unsafe { NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(message), Some(&attributes)) };
+        let title = unsafe {
+            NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(message), Some(&attributes))
+        };
         self.setAttributedTitle(&title);
     }
 
@@ -402,7 +403,8 @@ impl Panel {
     fn sync(&self, values: &Value, hotkeys: &proto::Hotkeys) {
         let get = |path: &[&str]| path.iter().try_fold(values, |value, key| value.get(*key));
         let on = |path: &[&str]| get(path).and_then(Value::as_bool).unwrap_or(false);
-        let whole = |path: &[&str]| get(path).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(0);
+        let whole =
+            |path: &[&str]| get(path).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(0);
         let kind = get(&["transition", "kind"]).and_then(Value::as_str);
         let master = PAUSE_KEYS.iter().any(|key| on(&[key]));
         let animate = kind != Some("none");
@@ -436,14 +438,21 @@ impl Panel {
         for popup in &self.popups {
             match popup.tag() {
                 APPEARANCE => pick(popup, MODES.len(), MODES.iter().position(|(_, name, _)| *name == mode), ""),
-                FRAME_RATE => pick(popup, FRAME_RATES.len(), FRAME_RATES.iter().position(|value| *value == rate), &format!("{rate} fps")),
+                FRAME_RATE => pick(
+                    popup,
+                    FRAME_RATES.len(),
+                    FRAME_RATES.iter().position(|value| *value == rate),
+                    &format!("{rate} fps"),
+                ),
                 RELEASE => pick(
                     popup,
                     RELEASES.len(),
                     RELEASES.iter().position(|(_, value)| *value == release),
                     &trf("After %ld Seconds", &[Arg::Int(i64::from(release))]),
                 ),
-                STYLE => pick(popup, STYLES.len(), STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0)), ""),
+                STYLE => {
+                    pick(popup, STYLES.len(), STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0)), "");
+                }
                 EVERY => pick(
                     popup,
                     INTERVALS.len(),
@@ -463,7 +472,9 @@ impl Panel {
             let value = match slider.tag() {
                 VOLUME => get(&["volume"]).and_then(Value::as_f64).unwrap_or(1.0) * 100.0,
                 DURATION => {
-                    get(&["transition", "duration"]).and_then(Value::as_f64).unwrap_or(proto::Transition::DEFAULT_DURATION)
+                    get(&["transition", "duration"])
+                        .and_then(Value::as_f64)
+                        .unwrap_or(proto::Transition::DEFAULT_DURATION)
                         * 1000.0
                 }
                 _ => continue,
@@ -493,12 +504,11 @@ fn pick(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: &str) {
     while popup.numberOfItems() > base {
         popup.removeItemAtIndex(base);
     }
-    match index.and_then(|index| isize::try_from(index).ok()) {
-        Some(index) => popup.selectItemAtIndex(index),
-        None => {
-            popup.addItemWithTitle(&ns(extra));
-            popup.selectItemAtIndex(base);
-        }
+    if let Some(index) = index.and_then(|index| isize::try_from(index).ok()) {
+        popup.selectItemAtIndex(index);
+    } else {
+        popup.addItemWithTitle(&ns(extra));
+        popup.selectItemAtIndex(base);
     }
 }
 
@@ -556,7 +566,14 @@ impl Builder {
 
     fn knob(&mut self, min: f64, max: f64, suffix: &str, tag: isize) -> (Retained<NSView>, Vec<Retained<NSControl>>) {
         let slider = unsafe {
-            NSSlider::sliderWithValue_minValue_maxValue_target_action(min, min, max, Some(&self.target), Some(sel!(slide:)), self.mtm)
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(
+                min,
+                min,
+                max,
+                Some(&self.target),
+                Some(sel!(slide:)),
+                self.mtm,
+            )
         };
         slider.setTag(tag);
         slider.widthAnchor().constraintEqualToConstant(SLIDER_WIDTH).setActive(true);
@@ -699,7 +716,9 @@ fn general(build: &mut Builder, location: &str) -> Retained<NSTabViewItem> {
     let change = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Change…")), None, None, mtm) };
     change.setEnabled(false);
     form.section(&tr("Location"), &row(mtm, &[&place, &change]));
-    let copy = unsafe { NSButton::checkboxWithTitle_target_action(&ns(&tr("Copy Added Files into Library")), None, None, mtm) };
+    let copy = unsafe {
+        NSButton::checkboxWithTitle_target_action(&ns(&tr("Copy Added Files into Library")), None, None, mtm)
+    };
     copy.setState(NSControlStateValueOn);
     copy.setEnabled(false);
     form.line(&tr("Library"), &copy);
@@ -836,7 +855,10 @@ pub fn show(mtm: MainThreadMarker, tab: Option<isize>) {
         let mut panel = panel.borrow_mut();
         let panel = panel.get_or_insert_with(|| build(mtm));
         if let Some(tab) = tab
-            && let Some(tabs) = panel.window.contentViewController().and_then(|controller| controller.downcast::<NSTabViewController>().ok())
+            && let Some(tabs) = panel
+                .window
+                .contentViewController()
+                .and_then(|controller| controller.downcast::<NSTabViewController>().ok())
         {
             tabs.setSelectedTabViewItemIndex(tab);
         }
