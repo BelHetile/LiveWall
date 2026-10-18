@@ -1,19 +1,20 @@
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlSize, NSEvent, NSLayoutAttribute, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
-    NSScreen, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider, NSStackView, NSStackViewGravity,
-    NSTextAlignment, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSButton, NSColor, NSControlSize, NSEvent, NSLayoutAttribute,
+    NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton, NSScreen, NSScrollView, NSSegmentedControl, NSSlider,
+    NSStackView, NSStackViewGravity, NSTextAlignment, NSView, NSViewLayerContentsRedrawPolicy,
 };
 use objc2_av_foundation::{
     AVLayerVideoGravityResizeAspectFill, AVPlayerItem, AVPlayerLayer, AVPlayerLooper, AVQueuePlayer, AVURLAsset,
 };
-use objc2_core_foundation::{CGFloat, CGRect};
+use objc2_core_foundation::CGFloat;
 use objc2_core_media::CMTime;
-use objc2_foundation::{NSArray, NSString, NSTimer};
+use objc2_foundation::{NSArray, NSTimer};
 use objc2_quartz_core::{CAAutoresizingMask, CALayer, kCAGravityResizeAspectFill};
 
 use proto::{FillMode, Geometry};
@@ -28,11 +29,11 @@ use crate::style::Key;
 use crate::ui::folders;
 use crate::ui::metrics::{self, Text};
 use crate::ui::state::{Filter, Scope, TAG_ALL, TAG_RESET, markers};
-use crate::ui::theme::Theme;
+use crate::ui::theme::{self, Theme};
 use crate::ui::toolbar::scope_menu;
 use crate::ui::view::{Item, Library};
-use crate::ui::wall::{TILE_ASPECT, duration, kind_name, resolution};
-use crate::ui::widgets::{self, NumberField, Units};
+use crate::ui::wall::{TILE_ASPECT, chip_key, duration, kind_name, resolution};
+use crate::ui::widgets::{self, IconRole, NumberField, Slot, Units};
 
 const WIDTH: CGFloat = 340.0;
 const INSET: CGFloat = metrics::INSPECTOR_INSET;
@@ -60,18 +61,54 @@ fn shown_key(library: &Library, selected: Option<usize>) -> Option<Shown> {
 
 type Offset = (Retained<NSSlider>, Retained<NumberField>);
 
+struct PreviewIvars {
+    border: Retained<NSColor>,
+}
+
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = PreviewIvars]
     struct PreviewView;
 
     impl PreviewView {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
             crate::ui::toggle_play();
         }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            crate::ui::toggle_play();
+            true
+        }
+
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
     }
 );
+
+impl PreviewView {
+    fn colorize(&self) {
+        let Some(layer) = self.layer() else {
+            return;
+        };
+        let border = &self.ivars().border;
+        widgets::resolving(self, || layer.setBorderColor(Some(&border.CGColor())));
+    }
+}
 
 struct Controls {
     play: Retained<NSButton>,
@@ -88,20 +125,32 @@ struct Controls {
     destination: Retained<NSPopUpButton>,
     folder: Retained<NSPopUpButton>,
     reset: Retained<NSButton>,
-    listening: (Retained<NSColor>, Retained<NSColor>),
+    lit: Cell<bool>,
 }
 
 pub struct Inspector {
     pub scroll: Retained<NSScrollView>,
     pub target: Option<Scope>,
-    backdrop: Retained<objc2_app_kit::NSBox>,
+    theme: Theme,
     content: Retained<NSStackView>,
+    empty: Retained<NSStackView>,
     shown: Option<Shown>,
     player: Option<(Retained<AVQueuePlayer>, Retained<AVPlayerLooper>)>,
     timer: Option<Retained<NSTimer>>,
     playing: bool,
     listening: Option<ItemId>,
     controls: Option<Controls>,
+    markers_key: Vec<(&'static str, String, bool)>,
+    folders_key: Option<FoldersKey>,
+}
+
+#[derive(PartialEq)]
+struct FoldersKey {
+    names: Vec<String>,
+    icons: Vec<Option<String>>,
+    colors: Vec<Option<String>>,
+    sealed: Vec<bool>,
+    current: Option<usize>,
 }
 
 impl Inspector {
@@ -124,31 +173,35 @@ impl Inspector {
         document.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
         document.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
         document.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
+        let empty = empty_state(mtm, theme);
+        document.addSubview(&empty);
+        empty.setTranslatesAutoresizingMaskIntoConstraints(false);
+        empty.leadingAnchor().constraintEqualToAnchor(&document.leadingAnchor()).setActive(true);
+        empty.trailingAnchor().constraintEqualToAnchor(&document.trailingAnchor()).setActive(true);
+        empty.topAnchor().constraintEqualToAnchor_constant(&document.topAnchor(), metrics::EMPTY_TOP).setActive(true);
         let backdrop = widgets::card(mtm, &theme.color(Key::InspectorBackdrop), 0.0);
+        theme::register(&backdrop, Key::InspectorBackdrop, Slot::Fill);
         scroll.addSubview_positioned_relativeTo(&backdrop, objc2_app_kit::NSWindowOrderingMode::Below, None);
         widgets::pin(&backdrop, &scroll, 0.0);
         return Self {
             scroll,
             target: None,
-            backdrop,
+            theme: theme.clone(),
             content,
+            empty,
             shown: None,
             player: None,
             timer: None,
             playing: true,
             listening: None,
             controls: None,
+            markers_key: Vec::new(),
+            folders_key: None,
         };
     }
 
     pub fn width() -> CGFloat {
         return WIDTH;
-    }
-
-    pub fn restyle(&mut self, theme: &Theme) {
-        self.backdrop.setFillColor(&theme.color(Key::InspectorBackdrop));
-        self.shown = None;
-        self.controls = None;
     }
 
     pub fn refresh(
@@ -168,14 +221,15 @@ impl Inspector {
         let (Some(index), Some(controls)) = (selected, &self.controls) else {
             return;
         };
-        let views: Vec<Retained<NSView>> =
-            markers(library, index, filter.scope).iter().map(|marker| widgets::chip(mtm, marker, theme)).collect();
-        let refs: Vec<&NSView> = views.iter().map(|view| &**view).collect();
-        controls.markers.setViews_inGravity(&NSArray::from_slice(&refs), NSStackViewGravity::Leading);
-        if rebuilt {
+        let marker_list = markers(library, index, filter.scope);
+        let marker_key = chip_key(&marker_list);
+        if rebuilt || self.markers_key != marker_key {
+            let views: Vec<Retained<NSView>> =
+                marker_list.iter().map(|marker| widgets::chip(mtm, marker, theme)).collect();
+            let refs: Vec<&NSView> = views.iter().map(|view| &**view).collect();
+            controls.markers.setViews_inGravity(&NSArray::from_slice(&refs), NSStackViewGravity::Leading);
             controls.markers.setHidden(refs.is_empty());
-        } else {
-            widgets::reveal(&controls.markers, !refs.is_empty());
+            self.markers_key = marker_key;
         }
         let scope = self.target.unwrap_or(filter.scope);
         let title = trf("On %@", &[Arg::Text(scope.title())]);
@@ -186,7 +240,17 @@ impl Inspector {
         }
         controls.destination.setMenu(Some(&menu));
         widgets::alpha(&controls.destination, if self.target.is_some() { 1.0 } else { metrics::MUTED });
-        fill_folders(&controls.folder, library, library.items[index].folder);
+        let folders_key = FoldersKey {
+            names: library.folders.clone(),
+            icons: library.icons.clone(),
+            colors: library.colors.clone(),
+            sealed: (0..library.folders.len()).map(|folder| library.sealed(folder)).collect(),
+            current: library.items[index].folder,
+        };
+        if rebuilt || self.folders_key.as_ref() != Some(&folders_key) {
+            fill_folders(&controls.folder, library, library.items[index].folder);
+            self.folders_key = Some(folders_key);
+        }
         self.sync(&library.items[index]);
     }
 
@@ -230,12 +294,11 @@ impl Inspector {
 
     fn show(&mut self, library: &Library, theme: &Theme, selected: Option<usize>, target: &AnyObject) {
         let mtm = self.scroll.mtm();
-        widgets::fade(&self.content);
         self.clear();
         self.shown = shown_key(library, selected);
         self.target = None;
+        self.empty.setHidden(selected.is_some());
         let Some(index) = selected else {
-            self.empty(mtm, theme);
             return;
         };
         let item = &library.items[index];
@@ -245,8 +308,8 @@ impl Inspector {
         if video {
             unsafe { preview.setMenu(Some(&frame_menu(mtm, target))) };
         }
-        let quiet = theme.color(Key::TextSecondary);
-        let play = widgets::icon_button(mtm, "pause.fill", sel!(play:), target, &quiet);
+        let play = widgets::icon_button(mtm, "pause.fill", sel!(play:), target, Key::TextSecondary, theme);
+        widgets::describe(&play, &tr("Play / Pause"), &tr("Play / Pause"));
         let scrub = slider(mtm, 0.0, 0.0, item.duration.max(0.01), SCRUB, theme, target);
         let time = field(mtm, SCRUB, target, theme);
         let length = widgets::label(
@@ -260,7 +323,7 @@ impl Inspector {
             1000.0,
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
         );
-        let listen = widgets::icon_button(mtm, "headphones", sel!(listen:), target, &quiet);
+        let listen = widgets::icon_button(mtm, "headphones", sel!(listen:), target, Key::TextSecondary, theme);
         let transport = widgets::stack(mtm, &[&play, &scrub, &time, &length, &listen], false, metrics::SPACE_8);
         transport.setCustomSpacing_afterView(metrics::SPACE_4, &time);
         transport.setHidden(!video);
@@ -272,7 +335,6 @@ impl Inspector {
         let (placement, modes, offsets) = placement(mtm, theme, target);
         let (library_row, folder) = library_row(mtm, theme, target);
         let reset = reset_button(mtm, theme, target);
-        let hairline = theme.color(Key::Hairline);
 
         let mut sections: Vec<Retained<NSView>> = vec![preview.clone()];
         if video {
@@ -280,13 +342,13 @@ impl Inspector {
         }
         sections.extend([widgets::view(&header), widgets::view(&actions)]);
         if video {
-            sections.push(Retained::into_super(widgets::divider(mtm, &hairline)));
+            sections.push(Retained::into_super(widgets::divider(mtm, Key::Hairline, theme)));
             sections.push(widgets::view(&playback));
         }
         sections.extend([
-            Retained::into_super(widgets::divider(mtm, &hairline)),
+            Retained::into_super(widgets::divider(mtm, Key::Hairline, theme)),
             widgets::view(&placement),
-            Retained::into_super(widgets::divider(mtm, &hairline)),
+            Retained::into_super(widgets::divider(mtm, Key::Hairline, theme)),
             widgets::view(&library_row),
             widgets::view(&reset),
         ]);
@@ -321,7 +383,7 @@ impl Inspector {
             destination,
             folder,
             reset,
-            listening: (theme.color(Key::Selection), quiet),
+            lit: Cell::new(false),
         });
     }
 
@@ -349,14 +411,17 @@ impl Inspector {
         widgets::set_icon(&controls.mute, if silent { "speaker.slash.fill" } else { "speaker.wave.2.fill" });
         widgets::set_icon(&controls.play, if self.playing { "pause.fill" } else { "play.fill" });
         let listening = self.listening.is_some();
-        let tint = if listening { &controls.listening.0 } else { &controls.listening.1 };
-        controls.listen.setContentTintColor(Some(tint));
+        if controls.lit.replace(listening) != listening {
+            widgets::retint(&controls.listen, if listening { Key::Selection } else { Key::TextSecondary }, &self.theme);
+        }
         let tip = if listening {
             tr("Stop listening; the desktop plays its own sound again")
         } else {
             tr("Listen to the preview; the desktop copy is muted meanwhile")
         };
-        controls.listen.setToolTip(Some(&widgets::ns(&tip)));
+        widgets::describe(&controls.listen, &tip, &tip);
+        let mute = tr(if silent { i18n::key("Unmute") } else { i18n::key("Mute") });
+        widgets::describe(&controls.mute, &mute, &mute);
         let volume = if settings.muted { 0.0 } else { settings.volume * 100.0 };
         controls.volume.setDoubleValue(volume);
         controls.volume_value.show(volume);
@@ -446,31 +511,9 @@ impl Inspector {
         }
     }
 
-    fn empty(&self, mtm: MainThreadMarker, theme: &Theme) {
-        let faint = theme.color(Key::TextTertiary);
-        let icon = widgets::symbol_view(mtm, "sparkles.rectangle.stack", metrics::ICON_HERO, &faint);
-        let title = widgets::label(mtm, &tr("No Selection"), Text::Title3, &theme.color(Key::TextSecondary));
-        let hint = widgets::label(
-            mtm,
-            &tr("Select a wallpaper to preview it and\nchange how it plays."),
-            Text::Callout,
-            &faint,
-        );
-        hint.setMaximumNumberOfLines(2);
-        hint.setAlignment(NSTextAlignment::Center);
-        let stack = widgets::stack(mtm, &[&icon, &title, &hint], true, metrics::SPACE_8);
-        stack.setAlignment(NSLayoutAttribute::CenterX);
-        self.content.addArrangedSubview(&stack);
-        stack.leadingAnchor().constraintEqualToAnchor(&self.content.leadingAnchor()).setActive(true);
-        stack.trailingAnchor().constraintEqualToAnchor(&self.content.trailingAnchor()).setActive(true);
-        stack
-            .topAnchor()
-            .constraintEqualToAnchor_constant(&self.content.topAnchor(), metrics::EMPTY_TOP)
-            .setActive(true);
-    }
-
     fn preview(&mut self, mtm: MainThreadMarker, item: &Item, theme: &Theme) -> Retained<NSView> {
-        let view: Retained<PreviewView> = unsafe { msg_send![PreviewView::alloc(mtm), init] };
+        let view = PreviewView::alloc(mtm).set_ivars(PreviewIvars { border: theme.color(Key::InspectorPreviewBorder) });
+        let view: Retained<PreviewView> = unsafe { msg_send![super(view), init] };
         let layer: Retained<CALayer> = if item.kind == ItemKind::Video {
             let url = file_url(&item.path);
             let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
@@ -497,15 +540,35 @@ impl Inspector {
         };
         layer.setAutoresizingMask(CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable);
         view.setWantsLayer(true);
+        view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
+        if item.kind == ItemKind::Video {
+            widgets::describe(&view, &tr("Play / Pause"), &tr("Play / Pause"));
+            view.setAccessibilityElement(true);
+            view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        }
         if let Some(host) = view.layer() {
-            host.setCornerRadius(metrics::RADIUS_CARD);
+            host.setCornerRadius(metrics::RADIUS_TILE);
             host.setMasksToBounds(true);
             host.setBorderWidth(metrics::BORDER_HAIRLINE);
-            host.setBorderColor(Some(&widgets::cg(&view, &theme.color(Key::InspectorPreviewBorder))));
             host.addSublayer(&layer);
         }
+        view.setNeedsDisplay(true);
         return Retained::into_super(view);
     }
+}
+
+fn empty_state(mtm: MainThreadMarker, theme: &Theme) -> Retained<NSStackView> {
+    let faint = theme.color(Key::TextTertiary);
+    let icon = widgets::symbol_view(mtm, "sparkles.rectangle.stack", IconRole::Hero, &faint);
+    theme::register(&icon, Key::TextTertiary, Slot::Tint);
+    let title = widgets::label(mtm, &tr("No Selection"), Text::Title3, &theme.color(Key::TextSecondary));
+    let hint =
+        widgets::label(mtm, &tr("Select a wallpaper to preview it and\nchange how it plays."), Text::Callout, &faint);
+    hint.setMaximumNumberOfLines(2);
+    hint.setAlignment(NSTextAlignment::Center);
+    let stack = widgets::stack(mtm, &[&icon, &title, &hint], true, metrics::SPACE_8);
+    stack.setAlignment(NSLayoutAttribute::CenterX);
+    return stack;
 }
 
 fn header(mtm: MainThreadMarker, item: &Item, theme: &Theme) -> (Retained<NSStackView>, Retained<NSStackView>) {
@@ -544,21 +607,24 @@ fn actions(
         (false, None) => (tr("Optimize"), "wand.and.sparkles", sel!(optimize:)),
         (false, Some(_)) => (tr("Optimizing…"), "wand.and.sparkles", sel!(optimize:)),
     };
-    let wallpaper = widgets::button(mtm, &title, Some(icon), action, target);
-    widgets::prominent(&wallpaper, theme);
+    let wallpaper = widgets::primary(mtm, &title, Some((icon, IconRole::Inline)), action, target, theme);
     wallpaper.setKeyEquivalent(&widgets::ns("\r"));
     wallpaper.setEnabled(item.playable || item.progress.is_none());
-    let quiet = theme.color(Key::TextSecondary);
-    let lock = widgets::button(mtm, &tr("Lock Screen"), Some("lock"), sel!(setLock:), target);
+    let lock = widgets::secondary(
+        mtm,
+        &tr("Lock Screen"),
+        Some(("lock", IconRole::Inline)),
+        sel!(setLock:),
+        target,
+        theme,
+    );
     lock.setToolTip(Some(&widgets::ns(&tr("Set as Lock Screen"))));
-    widgets::quiet(&lock, &tr("Lock Screen"), &quiet);
     lock.widthAnchor().constraintEqualToConstant(LOCK_WIDTH).setActive(true);
     wallpaper.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
     let buttons = widgets::stack(mtm, &[&wallpaper, &lock], false, metrics::SPACE_8);
     buttons.setDistribution(objc2_app_kit::NSStackViewDistribution::Fill);
     lock.heightAnchor().constraintEqualToAnchor(&wallpaper.heightAnchor()).setActive(true);
-    let destination = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
-    widgets::secondary(&destination, theme);
+    let destination = widgets::popup(mtm, true, theme);
     destination.setToolTip(Some(&widgets::ns(&tr("Choose a specific desktop"))));
     let stack = widgets::stack(mtm, &[&buttons, &destination], true, metrics::SPACE_8);
     stack.setAlignment(NSLayoutAttribute::Leading);
@@ -567,12 +633,15 @@ fn actions(
     destination.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
     destination.trailingAnchor().constraintEqualToAnchor(&wallpaper.trailingAnchor()).setActive(true);
     if video {
-        let frame = widgets::button(mtm, &tr("Use This Frame"), None, sel!(lockFrame:), target);
-        widgets::secondary(&frame, theme);
-        widgets::quiet(&frame, &tr("Use This Frame"), &quiet);
+        let frame = widgets::secondary(
+            mtm,
+            &tr("Use This Frame"),
+            Some(("film", IconRole::Inline)),
+            sel!(lockFrame:),
+            target,
+            theme,
+        );
         frame.setToolTip(Some(&widgets::ns(&tr(FRAME_TO_LOCK))));
-        frame.setImage(widgets::symbol("film", metrics::ICON_SMALL).as_deref());
-        frame.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
         frame.setTranslatesAutoresizingMaskIntoConstraints(false);
         stack.addSubview(&frame);
         frame.leadingAnchor().constraintEqualToAnchor(&lock.leadingAnchor()).setActive(true);
@@ -592,7 +661,7 @@ type Playback = (
 );
 
 fn playback(mtm: MainThreadMarker, theme: &Theme, target: &AnyObject) -> Playback {
-    let mute = widgets::icon_button(mtm, "speaker.wave.2.fill", sel!(mute:), target, &theme.color(Key::TextSecondary));
+    let mute = widgets::icon_button(mtm, "speaker.wave.2.fill", sel!(mute:), target, Key::TextSecondary, theme);
     let volume = slider(mtm, 0.0, 0.0, 100.0, VOLUME, theme, target);
     volume.widthAnchor().constraintEqualToConstant(VOLUME_WIDTH).setActive(true);
     let volume_value = field(mtm, VOLUME, target, theme);
@@ -612,19 +681,9 @@ fn placement(
     theme: &Theme,
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSSegmentedControl>, [Offset; 3]) {
-    let labels: Vec<Retained<NSString>> = MODES.iter().map(|text| widgets::ns(&tr(text))).collect();
-    let modes = unsafe {
-        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
-            &NSArray::from_retained_slice(&labels),
-            NSSegmentSwitchTracking::SelectOne,
-            Some(target),
-            Some(sel!(fill:)),
-            mtm,
-        )
-    };
-    modes.setSelectedSegmentBezelColor(Some(&theme.color(Key::InspectorSegment)));
-    modes.setSegmentDistribution(objc2_app_kit::NSSegmentDistribution::FillEqually);
-    modes.setControlSize(NSControlSize::Small);
+    let labels: Vec<String> = MODES.iter().map(|text| tr(text)).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let modes = widgets::segmented(mtm, &refs, sel!(fill:), target, Key::InspectorSegment, theme);
     let offsets = [
         (slider(mtm, 0.0, -100.0, 100.0, HORIZONTAL, theme, target), field(mtm, HORIZONTAL, target, theme)),
         (slider(mtm, 0.0, -100.0, 100.0, VERTICAL, theme, target), field(mtm, VERTICAL, target, theme)),
@@ -647,10 +706,20 @@ fn placement(
 }
 
 fn reset_button(mtm: MainThreadMarker, theme: &Theme, target: &AnyObject) -> Retained<NSButton> {
-    let reset = widgets::button(mtm, "", Some("arrow.counterclockwise"), sel!(resetSettings:), target);
-    widgets::quiet(&reset, &tr("Reset to Defaults"), &theme.color(Key::Destructive));
-    reset.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
-    reset.setToolTip(Some(&widgets::ns(&tr("Reset playback and placement for this wallpaper"))));
+    let reset = widgets::secondary(
+        mtm,
+        "",
+        Some(("arrow.counterclockwise", IconRole::Inline)),
+        sel!(resetSettings:),
+        target,
+        theme,
+    );
+    widgets::quiet(&reset, Key::Destructive, theme);
+    widgets::describe(
+        &reset,
+        &tr("Reset playback and placement for this wallpaper"),
+        &tr("Reset to Defaults"),
+    );
     return reset;
 }
 
@@ -659,7 +728,7 @@ fn library_row(
     theme: &Theme,
     target: &AnyObject,
 ) -> (Retained<NSStackView>, Retained<NSPopUpButton>) {
-    let folder = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+    let folder = widgets::popup(mtm, false, theme);
     unsafe {
         folder.setTarget(Some(target));
         folder.setAction(Some(sel!(moveFolder:)));
@@ -667,18 +736,17 @@ fn library_row(
     if let Some(menu) = folder.menu() {
         menu.setAutoenablesItems(false);
     }
-    folder.setControlSize(NSControlSize::Small);
-    folder.setFont(Some(&metrics::font(Text::Callout)));
     folder.setContentHuggingPriority_forOrientation(1.0, objc2_app_kit::NSLayoutConstraintOrientation::Horizontal);
-    let icon = widgets::symbol_view(mtm, "folder", metrics::ICON_SMALL, &theme.color(Key::TextSecondary));
+    let icon = widgets::symbol_view(mtm, "folder", IconRole::Small, &theme.color(Key::TextSecondary));
+    theme::register(&icon, Key::TextSecondary, Slot::Tint);
     icon.setContentCompressionResistancePriority_forOrientation(
         1000.0,
         objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
     );
-    let delete = widgets::icon_button(mtm, "trash", sel!(delete:), target, &theme.color(Key::Destructive));
-    delete.setToolTip(Some(&widgets::ns(&tr("Remove from Library"))));
+    let delete = widgets::icon_button(mtm, "trash", sel!(delete:), target, Key::Destructive, theme);
+    widgets::describe(&delete, &tr("Remove from Library"), &tr("Remove from Library"));
     let row = widgets::stack(mtm, &[&icon, &folder, &delete], false, metrics::SPACE_8);
-    row.heightAnchor().constraintEqualToConstant(metrics::CONTROL_HEIGHT).setActive(true);
+    row.heightAnchor().constraintEqualToConstant(metrics::BUTTON_HEIGHT).setActive(true);
     return (row, folder);
 }
 
@@ -749,7 +817,11 @@ fn field(mtm: MainThreadMarker, tag: isize, target: &AnyObject, theme: &Theme) -
         _ => (0.05, |value| format!("{value:.2}×")),
     };
     let parse: fn(&str) -> Option<f64> = if tag == SCRUB { seconds } else { widgets::number };
-    return NumberField::new(mtm, Units { step, format, parse }, tag, VALUE_WIDTH, sel!(typed:), target, theme);
+    let field = NumberField::new(mtm, Units { step, format, parse }, tag, VALUE_WIDTH, sel!(typed:), target, theme);
+    if let Some(title) = knob_title(tag) {
+        field.setAccessibilityLabel(Some(&widgets::ns(&title)));
+    }
+    return field;
 }
 
 fn seconds(text: &str) -> Option<f64> {
@@ -792,7 +864,23 @@ fn slider(
         NSSlider::sliderWithValue_minValue_maxValue_target_action(value, min, max, Some(target), Some(action), mtm)
     };
     slider.setTrackFillColor(Some(&theme.color(Key::InspectorSlider)));
+    theme::register(&slider, Key::InspectorSlider, Slot::Track);
     slider.setControlSize(NSControlSize::Small);
     slider.setTag(tag);
+    if let Some(title) = knob_title(tag) {
+        slider.setAccessibilityLabel(Some(&widgets::ns(&title)));
+    }
     return slider;
+}
+
+fn knob_title(tag: isize) -> Option<String> {
+    let title = match tag {
+        VOLUME => i18n::key("Volume"),
+        SPEED => i18n::key("Speed"),
+        HORIZONTAL => i18n::key("Horizontal"),
+        VERTICAL => i18n::key("Vertical"),
+        ZOOM => i18n::key("Zoom"),
+        _ => return None,
+    };
+    return Some(tr(title));
 }

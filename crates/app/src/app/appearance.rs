@@ -44,7 +44,7 @@ impl App {
     fn activate(&mut self, name: &str) {
         if self.settings.appearance.style != name {
             self.settings.appearance.style = name.to_string();
-            self.persist_settings();
+            self.save_settings();
         }
     }
 
@@ -79,7 +79,7 @@ impl App {
     pub fn style_apply(&mut self, name: &str) -> Result<String, StyleError> {
         let found = self.styles.style(name).ok_or_else(|| StyleError::Missing(name.to_string()))?;
         self.activate(&found.name);
-        crate::ui::changed();
+        crate::ui::restyled();
         return Ok(found.name);
     }
 
@@ -97,7 +97,7 @@ impl App {
     pub fn style_import(&mut self, text: &str) -> Result<String, StyleError> {
         let name = self.styles.import(text)?;
         self.save_styles();
-        crate::ui::changed();
+        crate::ui::restyled();
         return Ok(name);
     }
 
@@ -107,7 +107,7 @@ impl App {
         if removed.name.eq_ignore_ascii_case(&self.settings.appearance.style) {
             self.activate(style::SYSTEM);
         }
-        crate::ui::changed();
+        crate::ui::restyled();
         return Ok(removed.name);
     }
 
@@ -117,7 +117,7 @@ impl App {
         if name.trim().eq_ignore_ascii_case(&self.settings.appearance.style) {
             self.activate(&renamed);
         }
-        crate::ui::changed();
+        crate::ui::restyled();
         return Ok(renamed);
     }
 
@@ -130,7 +130,7 @@ impl App {
             let name = self.styles.add(fork);
             self.save_styles();
             self.activate(&name);
-            crate::ui::changed();
+            crate::ui::restyled();
             return Ok(name);
         }
         let Some(style) = self.styles.find_mut(&active.name) else {
@@ -140,7 +140,7 @@ impl App {
         let name = style.name.clone();
         self.save_styles();
         self.activate(&name);
-        crate::ui::changed();
+        crate::ui::restyled();
         return Ok(name);
     }
 

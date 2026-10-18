@@ -1,41 +1,41 @@
-use std::cell::RefCell;
-
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSApplication, NSBeep, NSButton, NSColorWell, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
-    NSPopUpButton, NSSearchField, NSSegmentedControl, NSSlider, NSSwitch, NSWindow, NSWindowDelegate,
-};
-use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol, NSTimer};
-use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
-use serde_json::json;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use crate::app::{self, Event, post};
 use crate::i18n::{key, tr};
 use crate::model::ItemId;
-use crate::platform::{cancel_timer, schedule_block};
-use crate::style::{ACCENT, Accent, Key, Pair, Rgba, TINT, Variant};
-use crate::ui::settings::{self, Change, Input};
+use crate::style::{ACCENT, Accent, Key, Pair, Rgba, Style, TINT, TINT_STRENGTH, Variant};
+use crate::ui::controls::Switch;
+use crate::ui::settings::{self, Change, Input, TabButton};
 use crate::ui::state::{
     KINDS, Scope, Sort, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER,
     TAG_RESET, TAG_STYLE_FOLDER, privacy_title,
 };
-use crate::ui::theme;
+use crate::ui::swatches::{self, Pick};
 use crate::ui::widgets::{NumberField, ns};
 use crate::ui::{
     UI, Ui, busy, commit, dialogs, inspector, later, patch, report, reveal, selected_id, selected_index, send, submit,
     sync_inspector, toolbar, update, view,
 };
+use dispatch2::DispatchQueue;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2_app_kit::{
+    NSApplication, NSBeep, NSButton, NSControlStateValueOn, NSEventType, NSMenuItem, NSMenuItemValidation,
+    NSPopUpButton, NSSearchField, NSSegmentedControl, NSSlider, NSView, NSWindow, NSWindowDelegate,
+};
+use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol};
+use proto::{ApplyTarget, Geometry, HotkeyAction, Request};
+use serde_json::json;
 
 const VOLUME_ON: f64 = 0.6;
-const WELL_DELAY: f64 = 0.12;
 
 type ColorEdit = (&'static str, String, Option<String>);
 
 thread_local! {
-    static EDIT: RefCell<Option<ColorEdit>> = const { RefCell::new(None) };
-    static EDIT_TIMER: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
+    static EDITS: RefCell<Vec<ColorEdit>> = const { RefCell::new(Vec::new()) };
+    static EDITING: Cell<bool> = const { Cell::new(false) };
 }
 const MODE_NAMES: [&str; 3] = ["system", "light", "dark"];
 pub const PRIVACY_KEY: &str = "x";
@@ -97,19 +97,13 @@ define_class!(
         }
 
         #[unsafe(method(layout:))]
-        fn layout(&self, _sender: Option<&AnyObject>) {
-            let list = UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.toolbar.layout.selectedIndex() == 1));
+        fn layout(&self, sender: Option<&AnyObject>) {
+            let item = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>());
+            let list = match item {
+                Some(item) => item.tag() == 1,
+                None => UI.with_borrow(|ui| ui.as_ref().is_some_and(|ui| ui.toolbar.layout.selectedIndex() == 1)),
+            };
             patch(json!({ "appearance": { "list": list } }));
-        }
-
-        #[unsafe(method(showGrid:))]
-        fn show_grid(&self, _sender: Option<&AnyObject>) {
-            patch(json!({ "appearance": { "list": false } }));
-        }
-
-        #[unsafe(method(showList:))]
-        fn show_list(&self, _sender: Option<&AnyObject>) {
-            patch(json!({ "appearance": { "list": true } }));
         }
 
         #[unsafe(method(find:))]
@@ -186,6 +180,16 @@ define_class!(
             update(|ui, mtm| ui.show_settings(mtm, None));
         }
 
+        #[unsafe(method(selectTab:))]
+        fn select_tab(&self, sender: &TabButton) {
+            let index = usize::try_from(sender.tag()).unwrap_or(0);
+            update(|ui, _| {
+                if let Some(settings) = &ui.settings {
+                    settings.select(index);
+                }
+            });
+        }
+
         #[unsafe(method(closeSettings:))]
         fn close_settings(&self, _sender: Option<&AnyObject>) {
             later(|ui, _| {
@@ -217,9 +221,12 @@ define_class!(
         #[unsafe(method(settingSlide:))]
         fn setting_slide(&self, sender: &NSSlider) {
             let (tag, value, live) = (sender.tag(), sender.doubleValue(), dragging(self.mtm()));
+            if tag == settings::STRENGTH {
+                queue(TINT_STRENGTH, format!("{:.0}", value.round().clamp(0.0, 100.0)), None);
+            }
             later(move |ui, mtm| {
                 ui.settings(mtm).slid(tag, value);
-                if !live {
+                if !live && tag != settings::STRENGTH {
                     configure(tag, &Input::Number(value.round()));
                 }
             });
@@ -251,7 +258,7 @@ define_class!(
         }
 
         #[unsafe(method(toggle:))]
-        fn toggle(&self, sender: &NSSwitch) {
+        fn toggle(&self, sender: &Switch) {
             configure(sender.tag(), &Input::Flag(sender.state() == NSControlStateValueOn));
         }
 
@@ -261,44 +268,27 @@ define_class!(
             configure(sender.tag(), &Input::Index(index));
         }
 
-        #[unsafe(method(styleColor:))]
-        fn style_color(&self, sender: &NSColorWell) {
-            let tag = sender.tag();
-            if let Some(value) = theme::rgba(&sender.color()) {
-                later(move |ui, _| edit_color(ui, tag, value));
-            }
-        }
-
         #[unsafe(method(styleReset:))]
         fn style_reset(&self, sender: &NSButton) {
-            if let Some((field, _)) = settings::style_field(sender.tag()) {
-                crate::ui::style(move |app| app.style_reset(field));
+            if let Some(field) = settings::style_field(sender.tag()) {
+                reset(field);
             }
-        }
-
-        #[unsafe(method(accentMode:))]
-        fn accent_mode(&self, sender: &NSSegmentedControl) {
-            let custom = sender.selectedSegment() == 1;
-            later(move |ui, _| {
-                if matches!(ui.look.style().accent, Accent::Fixed(_)) == custom {
-                    return;
-                }
-                let light = ui.look.theme.accent_value(Variant::Light).to_hex();
-                let dark = ui.look.theme.accent_value(Variant::Dark).to_hex();
-                crate::ui::style(move |app| {
-                    if custom {
-                        return app.style_set(ACCENT, &light, Some(&dark));
-                    }
-                    return app.style_set(ACCENT, "system", None);
-                });
-            });
         }
 
         #[unsafe(method(toggleAdvanced:))]
         fn toggle_advanced(&self, _sender: Option<&AnyObject>) {
-            later(|ui, _| {
+            later(|ui, mtm| {
                 if let Some(settings) = &ui.settings {
-                    settings.toggle_advanced();
+                    settings.toggle_advanced(mtm, &ui.look, &ui.actions);
+                }
+            });
+        }
+
+        #[unsafe(method(flipAdvanced:))]
+        fn flip_advanced(&self, _sender: Option<&AnyObject>) {
+            later(|ui, mtm| {
+                if let Some(settings) = &ui.settings {
+                    settings.flip_advanced(mtm, &ui.look, &ui.actions);
                 }
             });
         }
@@ -598,10 +588,12 @@ pub fn open_folder(folder: Option<usize>) {
 }
 
 pub fn move_items(ids: Vec<String>, folder: Option<usize>) {
-    later(move |ui, _| {
-        let folder = folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
-        send(&Request::LibraryMove { ids, folder });
-    });
+    later(move |ui, _| move_to(ui, ids, folder));
+}
+
+fn move_to(ui: &Ui, ids: Vec<String>, folder: Option<usize>) {
+    let folder = folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
+    send(&Request::LibraryMove { ids, folder });
 }
 
 pub fn import(paths: &[String], folder: Option<usize>) {
@@ -613,11 +605,15 @@ pub fn import_here(paths: &[String]) -> bool {
 }
 
 fn add_media(paths: &[String], folder: impl FnOnce(&Ui) -> Option<uuid::Uuid> + Send + 'static) -> bool {
-    let files: Vec<String> = paths.iter().flat_map(|path| dialogs::media_in(std::path::Path::new(path))).collect();
-    if files.is_empty() {
+    if !paths.iter().any(|path| dialogs::media(std::path::Path::new(path))) {
         return false;
     }
+    let paths = paths.to_vec();
     later(move |ui, _| {
+        let files: Vec<String> = paths.iter().flat_map(|path| dialogs::media_in(std::path::Path::new(path))).collect();
+        if files.is_empty() {
+            return;
+        }
         ui.awaiting = true;
         let folder = folder(ui).map(|id| id.to_string());
         app::with(|app| app.submit(Request::LibraryAdd { paths: files, folder }));
@@ -641,7 +637,7 @@ fn tag_index(sender: &NSMenuItem) -> usize {
     return usize::try_from(sender.tag()).unwrap_or(0);
 }
 
-fn dragging(mtm: MainThreadMarker) -> bool {
+pub fn dragging(mtm: MainThreadMarker) -> bool {
     let event = NSApplication::sharedApplication(mtm).currentEvent();
     return event
         .is_some_and(|event| matches!(event.r#type(), NSEventType::LeftMouseDown | NSEventType::LeftMouseDragged));
@@ -747,11 +743,10 @@ fn lock(frame: bool) {
 
 fn move_selected(folder: Option<usize>) {
     update(|ui, _| {
-        let Some(item) = ui.selected.and_then(|index| ui.library.items.get(index)) else {
+        let Some(id) = ui.selected.and_then(|index| ui.library.items.get(index)).map(|item| item.id.to_string()) else {
             return;
         };
-        let folder = folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
-        send(&Request::LibraryMove { ids: vec![item.id.to_string()], folder });
+        move_to(ui, vec![id], folder);
     });
 }
 
@@ -787,44 +782,88 @@ pub fn apply(index: usize) {
     update(|ui, _| assign(ui, ui.filter.scope, index));
 }
 
-fn edit_color(ui: &Ui, tag: isize, value: Rgba) {
-    let Some((field, dark)) = settings::style_field(tag) else {
-        return;
-    };
-    let style = ui.look.style();
-    let theme = &ui.look.theme;
-    let key = Key::from_id(field);
-    let current = match field {
+fn current_pair(style: &Style, field: &str) -> Option<Pair> {
+    return match field {
         ACCENT => match style.accent {
             Accent::Fixed(pair) => Some(pair),
             Accent::System => None,
         },
         TINT => style.tint,
-        _ => key.and_then(|key| style.pair(key)),
+        _ => Key::from_id(field).and_then(|key| style.pair(key)),
     };
+}
+
+fn pending(field: &str) -> Option<Pair> {
+    return EDITS.with_borrow(|edits| {
+        let (_, light, dark) = edits.iter().find(|(other, _, _)| *other == field)?;
+        return Some(Pair { light: Rgba::parse(light)?, dark: dark.as_deref().and_then(Rgba::parse) });
+    });
+}
+
+fn queue(field: &'static str, light: String, dark: Option<String>) {
+    EDITS.with_borrow_mut(|edits| {
+        edits.retain(|(other, _, _)| *other != field);
+        edits.push((field, light, dark));
+    });
+    if EDITING.replace(true) {
+        return;
+    }
+    DispatchQueue::main().exec_async(|| {
+        EDITING.set(false);
+        for (field, light, dark) in EDITS.take() {
+            crate::ui::style(move |app| app.style_set(field, &light, dark.as_deref()));
+        }
+    });
+}
+
+fn reset(field: &'static str) {
+    EDITS.with_borrow_mut(|edits| edits.retain(|(other, _, _)| *other != field));
+    crate::ui::style(move |app| app.style_reset(field));
+}
+
+pub fn choose_color(anchor: &NSView, field: &'static str, dark: bool) {
+    let anchor = anchor.retain();
+    update(move |ui, mtm| {
+        let pair = pending(field).or_else(|| current_pair(ui.look.style(), field));
+        let current = pair.and_then(|pair| if dark { pair.dark } else { Some(pair.light) }).map(Pick::Hex);
+        let title = match (field, dark) {
+            (_, true) => tr("Auto"),
+            (ACCENT, false) => tr("Automatic"),
+            (TINT, false) => tr("None"),
+            _ => tr("Reset"),
+        };
+        let handler = Rc::new(move |pick: Option<Pick>| pick_color(field, dark, pick));
+        swatches::choose(mtm, &anchor, &ui.look.theme, current, dark, Some(&title), handler);
+    });
+}
+
+fn pick_color(field: &'static str, dark: bool, pick: Option<Pick>) {
+    let value = pick.map(|pick| pick.rgba(dark));
+    if value.is_none() && !dark {
+        reset(field);
+        return;
+    }
+    later(move |ui, _| edit_color(ui, field, dark, value));
+}
+
+fn edit_color(ui: &Ui, field: &'static str, dark: bool, value: Option<Rgba>) {
+    let style = ui.look.style();
+    let theme = &ui.look.theme;
+    let key = Key::from_id(field);
+    let current = pending(field).or_else(|| current_pair(style, field));
     let shown = match (field, key) {
         (ACCENT, _) => theme.accent_value(Variant::Light),
         (_, Some(key)) => theme.value(key, Variant::Light),
         _ => theme.value(Key::Chrome, Variant::Light),
     };
     let light = current.map_or(shown, |pair| pair.light);
-    let next = if dark {
-        Pair { light, dark: Some(value) }
-    } else {
-        Pair { light: value, dark: current.and_then(|pair| pair.dark) }
+    let next = match (dark, value) {
+        (false, Some(value)) => Pair { light: value, dark: current.and_then(|pair| pair.dark) },
+        (true, value) => Pair { light, dark: value },
+        (false, None) => return,
     };
-    if current == Some(next) {
+    if current == Some(next) || (current.is_none() && value.is_none()) {
         return;
     }
-    EDIT.with_borrow_mut(|slot| *slot = Some((field, next.light.to_hex(), next.dark.map(Rgba::to_hex))));
-    if EDIT_TIMER.with_borrow(Option::is_some) {
-        return;
-    }
-    let timer = schedule_block(WELL_DELAY, false, || {
-        cancel_timer(EDIT_TIMER.take());
-        if let Some((field, light, dark)) = EDIT.take() {
-            crate::ui::style(move |app| app.style_set(field, &light, dark.as_deref()));
-        }
-    });
-    EDIT_TIMER.with_borrow_mut(|slot| *slot = Some(timer));
+    queue(field, next.light.to_hex(), next.dark.map(Rgba::to_hex));
 }

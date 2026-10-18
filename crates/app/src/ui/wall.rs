@@ -7,27 +7,28 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSColor, NSDragOperation, NSDraggingContext,
-    NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
-    NSEventModifierFlags, NSMenu, NSPasteboardItem, NSPasteboardTypeFileURL, NSScrollView, NSStackView,
-    NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSAnimatablePropertyContainer, NSAnimationContext, NSColor,
+    NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
+    NSDraggingSource, NSEvent, NSEventModifierFlags, NSMenu, NSPasteboardItem, NSPasteboardTypeFileURL, NSScrollView,
+    NSStackView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSViewLayerContentsRedrawPolicy,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
-use objc2_foundation::{NSArray, NSCopying, NSNumber, NSObjectProtocol};
+use objc2_foundation::{NSArray, NSCopying, NSNumber, NSObjectProtocol, NSURL};
 use objc2_quartz_core::{
-    CAGradientLayer, CALayer, CAMediaTiming, CATransaction, CATransform3D, CATransform3DIdentity, CATransition,
-    kCAGravityResizeAspectFill, kCATransitionFade,
+    CAGradientLayer, CALayer, CATransaction, CATransform3D, CATransform3DIdentity, kCAGravityResizeAspectFill,
 };
 
 use crate::i18n::{Arg, tr, trf};
 use crate::model::{ItemId, ItemKind};
 use crate::style::Key;
-use crate::ui::metrics::{self, Surface, Text, ease_in, ease_in_out, ease_out};
+use crate::ui::controls;
+use crate::ui::metrics::{self, Surface, Text, ease_in_out, ease_out};
 use crate::ui::state::{Marker, Scope, markers};
 use crate::ui::theme::Theme;
 use crate::ui::view::{Download, Item, Library, Stage};
-use crate::ui::widgets::{self, Paint, Slot};
+use crate::ui::widgets::{self, IconRole, Paint, Slot};
 use crate::ui::{actions, menus, sidebar};
 
 pub const TILE_ASPECT: CGFloat = 10.0 / 16.0;
@@ -47,7 +48,7 @@ thread_local! {
     static DRAGGED: RefCell<Option<Retained<TileView>>> = const { RefCell::new(None) };
 }
 
-fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
+pub fn chip_key(markers: &[Marker]) -> Vec<(&'static str, String, bool)> {
     return markers.iter().map(|marker| (marker.icon, marker.text.clone(), marker.active)).collect();
 }
 
@@ -91,6 +92,7 @@ fn clock(seconds: f64) -> String {
 pub struct TileIvars {
     index: Cell<usize>,
     ident: ItemId,
+    path: String,
     plate: Retained<CALayer>,
     clip: Retained<CALayer>,
     image: Retained<CALayer>,
@@ -102,15 +104,46 @@ pub struct TileIvars {
     chip_views: RefCell<Vec<Retained<NSView>>>,
     name: Retained<NSTextField>,
     meta: Retained<NSTextField>,
-    titles: RefCell<(Retained<NSColor>, Retained<NSColor>)>,
+    titles: (Retained<NSColor>, Retained<NSColor>),
+    theme: Theme,
     chips_key: RefCell<Vec<(&'static str, String, bool)>>,
     selected: Cell<bool>,
-    painted: Cell<bool>,
+    look: Cell<Option<(bool, bool, bool)>>,
+    chips_size: Cell<Option<CGSize>>,
+    placed: Cell<Option<(CGRect, bool)>>,
+    facts: RefCell<(String, String)>,
+    art: Cell<usize>,
     hovered: Cell<bool>,
     list: Cell<bool>,
     fresh: Cell<bool>,
-    stale: Cell<bool>,
     dragging: Cell<bool>,
+}
+
+fn art_stamp(item: &Item) -> usize {
+    return item.image.as_deref().map_or(0, |image| std::ptr::from_ref(image) as usize);
+}
+
+fn layered(body: impl FnOnce()) {
+    let context = NSAnimationContext::currentContext();
+    let duration = context.duration();
+    CATransaction::begin();
+    if context.allowsImplicitAnimation() && duration > 0.0 {
+        CATransaction::setAnimationDuration(duration);
+        CATransaction::setAnimationTimingFunction(context.timingFunction().as_deref());
+    } else {
+        CATransaction::setDisableActions(true);
+    }
+    body();
+    CATransaction::commit();
+}
+
+fn still(body: impl FnOnce()) {
+    NSAnimationContext::beginGrouping();
+    let context = NSAnimationContext::currentContext();
+    context.setAllowsImplicitAnimation(false);
+    context.setDuration(0.0);
+    body();
+    NSAnimationContext::endGrouping();
 }
 
 define_class!(
@@ -125,6 +158,16 @@ define_class!(
             true
         }
 
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let index = self.ivars().index.get();
@@ -134,6 +177,12 @@ define_class!(
             if event.clickCount() >= 2 {
                 actions::apply(index);
             }
+        }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            crate::ui::select(Some(self.ivars().index.get()));
+            true
         }
 
         #[unsafe(method_id(menuForEvent:))]
@@ -164,7 +213,11 @@ define_class!(
     unsafe impl NSDraggingSource for TileView {
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
         fn drag_mask(&self, _session: &NSDraggingSession, context: NSDraggingContext) -> NSDragOperation {
-            if context == NSDraggingContext::WithinApplication { NSDragOperation::Move } else { NSDragOperation::None }
+            return if context == NSDraggingContext::WithinApplication {
+                NSDragOperation::Move
+            } else {
+                NSDragOperation::Copy
+            };
         }
 
         #[unsafe(method(draggingSession:endedAtPoint:operation:))]
@@ -184,6 +237,9 @@ impl TileView {
         let image = crate::ui::item_image(index);
         let item = NSPasteboardItem::new();
         item.setString_forType(&widgets::ns(&ivars.ident.to_string()), &widgets::ns(sidebar::ITEM_TYPE));
+        if let Some(url) = NSURL::fileURLWithPath(&widgets::ns(&ivars.path)).absoluteString() {
+            item.setString_forType(&url, unsafe { NSPasteboardTypeFileURL });
+        }
         let dragged =
             NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), ProtocolObject::from_ref(&*item));
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
@@ -219,7 +275,7 @@ impl TileView {
         let ring = CALayer::new();
         ring.setOpacity(0.0);
         let highlight = CALayer::new();
-        highlight.setCornerRadius(metrics::RADIUS_CARD);
+        highlight.setCornerRadius(metrics::RADIUS_TILE);
         highlight.setOpacity(0.0);
 
         let marker_list = markers(library, index, scope);
@@ -235,6 +291,7 @@ impl TileView {
         let this = Self::alloc(mtm).set_ivars(TileIvars {
             index: Cell::new(index),
             ident: item.id,
+            path: item.path.to_string_lossy().into_owned(),
             plate,
             clip,
             image,
@@ -246,18 +303,23 @@ impl TileView {
             chip_views: RefCell::new(chip_views),
             name,
             meta,
-            titles: RefCell::new((theme.color(Key::GridTitle), theme.color(Key::GridTitleSelected))),
+            titles: (theme.color(Key::GridTitle), theme.color(Key::GridTitleSelected)),
+            theme: theme.clone(),
             chips_key: RefCell::new(chip_key(&marker_list)),
             selected: Cell::new(false),
-            painted: Cell::new(false),
+            look: Cell::new(None),
+            chips_size: Cell::new(None),
+            placed: Cell::new(None),
+            facts: RefCell::new((item.title.clone(), meta_line(item))),
+            art: Cell::new(art_stamp(item)),
             hovered: Cell::new(false),
             list: Cell::new(false),
             fresh: Cell::new(true),
-            stale: Cell::new(false),
             dragging: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
         let ivars = this.ivars();
         if let Some(layer) = this.layer() {
             layer.addSublayer(&ivars.highlight);
@@ -267,57 +329,54 @@ impl TileView {
         this.addSubview(&ivars.chips);
         this.addSubview(&ivars.name);
         this.addSubview(&ivars.meta);
-        let options = NSTrackingAreaOptions::MouseEnteredAndExited
-            | NSTrackingAreaOptions::ActiveInKeyWindow
-            | NSTrackingAreaOptions::InVisibleRect;
-        let area = unsafe {
-            NSTrackingArea::initWithRect_options_owner_userInfo(
-                NSTrackingArea::alloc(),
-                CGRect::ZERO,
-                options,
-                Some(&this),
-                None,
-            )
-        };
-        this.addTrackingArea(&area);
-        let types = [unsafe { NSPasteboardTypeFileURL }.copy()];
-        this.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
-        this.paint(theme);
-        ivars.stale.set(false);
+        controls::track(&this, &this);
+        this.setAccessibilityElement(true);
+        this.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        widgets::describe(&this, &item.title, &item.title);
+        this.paint_selection();
+        this.setNeedsDisplay(true);
         return this;
     }
 
-    fn paint(&self, theme: &Theme) {
+    fn colorize(&self) {
         let ivars = self.ivars();
-        let color = |key: Key| widgets::cg(self, &theme.color(key));
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
-        ivars.plate.setShadowColor(Some(&color(Key::GridShadow)));
-        ivars.plate.setBackgroundColor(Some(&color(Key::GridTile)));
-        ivars.clip.setBorderColor(Some(&color(Key::GridTileBorder)));
-        ivars.clip.setBackgroundColor(Some(&color(Key::GridTile)));
-        ivars.bar.setBackgroundColor(Some(&color(Key::GridProgress)));
-        ivars.ring.setBorderColor(Some(&color(Key::GridRing)));
-        ivars.highlight.setBackgroundColor(Some(&color(Key::GridHighlight)));
-        CATransaction::commit();
-        *ivars.titles.borrow_mut() = (theme.color(Key::GridTitle), theme.color(Key::GridTitleSelected));
-        ivars.meta.setTextColor(Some(&theme.color(Key::GridMeta)));
-        ivars.stale.set(true);
-        self.paint_selection();
+        let theme = &ivars.theme;
+        widgets::resolving(self, || {
+            let color = |key: Key| theme.color(key).CGColor();
+            ivars.plate.setShadowColor(Some(&color(Key::GridShadow)));
+            ivars.plate.setBackgroundColor(Some(&color(Key::GridTile)));
+            ivars.clip.setBorderColor(Some(&color(Key::GridTileBorder)));
+            ivars.clip.setBackgroundColor(Some(&color(Key::GridTile)));
+            ivars.bar.setBackgroundColor(Some(&color(Key::GridProgress)));
+            ivars.ring.setBorderColor(Some(&color(Key::GridRing)));
+            ivars.highlight.setBackgroundColor(Some(&color(Key::GridHighlight)));
+        });
     }
 
-    fn place(&self, frame: CGRect, list: bool, animate: bool) {
+    fn place(&self, frame: CGRect, list: bool) {
+        if self.ivars().fresh.replace(false) {
+            still(|| self.settle(frame, list));
+            return;
+        }
+        self.settle(frame, list);
+    }
+
+    fn settle(&self, frame: CGRect, list: bool) {
         let ivars = self.ivars();
         ivars.list.set(list);
-        let animate = animate && !ivars.fresh.replace(false) && !metrics::reduce_motion();
+        ivars.placed.set(Some((frame, list)));
         let width = frame.size.width;
-        let chips = ivars.chips.fittingSize();
+        let chips = ivars.chips_size.get().unwrap_or_else(|| {
+            let size = ivars.chips.fittingSize();
+            ivars.chips_size.set(Some(size));
+            return size;
+        });
         let art_height = ROW_ART * TILE_ASPECT;
         let (art, radius) = if list {
             let origin = CGPoint::new(metrics::SPACE_12, (ROW_HEIGHT - art_height) / 2.0);
             (CGRect::new(origin, CGSize::new(ROW_ART, art_height)), metrics::RADIUS_SMALL)
         } else {
-            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * TILE_ASPECT)), metrics::RADIUS_CARD)
+            (CGRect::new(CGPoint::ZERO, CGSize::new(width, width * TILE_ASPECT)), metrics::RADIUS_TILE)
         };
         let gap = metrics::RING_GAP;
         let ring = CGRect::new(
@@ -347,55 +406,21 @@ impl TileView {
                 CGRect::new(CGPoint::new(metrics::SPACE_8, metrics::SPACE_8), chips),
             )
         };
-        let layers = {
-            let plate = ivars.plate.clone();
-            let clip = ivars.clip.clone();
-            let image = ivars.image.clone();
-            let ring_layer = ivars.ring.clone();
-            let highlight_layer = ivars.highlight.clone();
-            move || {
-                plate.setFrame(art);
-                plate.setCornerRadius(radius);
-                clip.setFrame(CGRect::new(CGPoint::ZERO, art.size));
-                clip.setCornerRadius(radius);
-                put(&image, CGRect::new(CGPoint::ZERO, art.size));
-                put(&ring_layer, ring);
-                ring_layer.setCornerRadius(metrics::ring_radius(radius));
-                ring_layer.setBorderWidth(border);
-                highlight_layer.setFrame(highlight);
-            }
-        };
-        if animate {
-            let this = self.retain();
-            let chips_view = ivars.chips.clone();
-            let name_view = ivars.name.clone();
-            let meta_view = ivars.meta.clone();
-            let group = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
-                let context = unsafe { context.as_ref() };
-                context.setDuration(metrics::MOTION_EMPHASIZED);
-                context.setTimingFunction(Some(&ease_in_out()));
-                context.setAllowsImplicitAnimation(true);
-                this.animator().setFrame(frame);
-                chips_view.setFrame(chip_frame);
-                name_view.setFrame(name);
-                meta_view.setFrame(meta);
-                CATransaction::begin();
-                CATransaction::setAnimationDuration(metrics::MOTION_EMPHASIZED);
-                CATransaction::setAnimationTimingFunction(Some(&ease_in_out()));
-                layers();
-                CATransaction::commit();
-            });
-            NSAnimationContext::runAnimationGroup(&group);
-        } else {
-            self.setFrame(frame);
-            ivars.chips.setFrame(chip_frame);
-            ivars.name.setFrame(name);
-            ivars.meta.setFrame(meta);
-            CATransaction::begin();
-            CATransaction::setDisableActions(true);
-            layers();
-            CATransaction::commit();
-        }
+        self.setFrame(frame);
+        ivars.chips.setFrame(chip_frame);
+        ivars.name.setFrame(name);
+        ivars.meta.setFrame(meta);
+        layered(|| {
+            ivars.plate.setFrame(art);
+            ivars.plate.setCornerRadius(radius);
+            ivars.clip.setFrame(CGRect::new(CGPoint::ZERO, art.size));
+            ivars.clip.setCornerRadius(radius);
+            put(&ivars.image, CGRect::new(CGPoint::ZERO, art.size));
+            put(&ivars.ring, ring);
+            ivars.ring.setCornerRadius(metrics::ring_radius(radius));
+            ivars.ring.setBorderWidth(border);
+            ivars.highlight.setFrame(highlight);
+        });
         self.paint_selection();
         self.paint_progress();
     }
@@ -407,11 +432,8 @@ impl TileView {
             return;
         };
         let width = ivars.clip.bounds().size.width * fraction.clamp(0.0, 1.0);
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
         ivars.bar.setHidden(false);
-        ivars.bar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
-        CATransaction::commit();
+        layered(|| ivars.bar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR))));
     }
 
     fn hover(&self, on: bool) {
@@ -436,6 +458,7 @@ impl TileView {
 
     fn set_selected(&self, selected: bool) {
         self.ivars().selected.set(selected);
+        self.setAccessibilitySelected(selected);
         self.paint_selection();
     }
 
@@ -443,26 +466,26 @@ impl TileView {
         let ivars = self.ivars();
         ivars.index.set(index);
         let item = &library.items[index];
-        if let Some(thumb) = &item.image {
+        if let Some(thumb) = &item.image
+            && ivars.art.replace(art_stamp(item)) != art_stamp(item)
+        {
             unsafe { ivars.image.setContents(Some(thumb)) };
         }
-        ivars.name.setStringValue(&widgets::ns(&item.title));
-        ivars.meta.setStringValue(&widgets::ns(&meta_line(item)));
+        let facts = (item.title.clone(), meta_line(item));
+        if *ivars.facts.borrow() != facts {
+            ivars.name.setStringValue(&widgets::ns(&facts.0));
+            ivars.meta.setStringValue(&widgets::ns(&facts.1));
+            widgets::describe(self, &facts.0, &facts.0);
+            *ivars.facts.borrow_mut() = facts;
+        }
         ivars.progress.set(item.progress);
         self.paint_progress();
         let marker_list = markers(library, index, scope);
         let key = chip_key(&marker_list);
-        if !ivars.stale.replace(false) && *ivars.chips_key.borrow() == key {
+        if *ivars.chips_key.borrow() == key {
             return;
         }
         *ivars.chips_key.borrow_mut() = key;
-        if let Some(layer) = ivars.chips.layer() {
-            let fade = CATransition::animation();
-            fade.setType(unsafe { kCATransitionFade });
-            fade.setDuration(metrics::MOTION_STANDARD);
-            fade.setTimingFunction(Some(&ease_in_out()));
-            layer.addAnimation_forKey(&fade, Some(&widgets::ns("chips")));
-        }
         for view in ivars.chip_views.borrow_mut().drain(..) {
             ivars.chips.removeArrangedSubview(&view);
             view.removeFromSuperview();
@@ -472,37 +495,25 @@ impl TileView {
             ivars.chips.addArrangedSubview(&chip);
             ivars.chip_views.borrow_mut().push(chip);
         }
-        self.paint_selection();
-    }
-
-    fn fade(&self, entering: bool) {
-        let context = if entering { ease_out() } else { ease_in() };
-        let duration = metrics::MOTION_STANDARD;
-        let target = if entering { 1.0 } else { 0.0 };
-        let this = self.retain();
-        let next = this.clone();
-        let go = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
-            let animation = unsafe { animation.as_ref() };
-            animation.setDuration(duration);
-            animation.setTimingFunction(Some(&context));
-            this.animator().setAlphaValue(target);
-        });
-        if entering {
-            NSAnimationContext::runAnimationGroup(&go);
-            return;
+        ivars.chips_size.set(None);
+        if let Some((frame, list)) = ivars.placed.get() {
+            self.settle(frame, list);
         }
-        let done = RcBlock::new(move || next.removeFromSuperview());
-        NSAnimationContext::runAnimationGroup_completionHandler(&go, Some(&done));
+        self.paint_selection();
     }
 
     fn paint_selection(&self) {
         let ivars = self.ivars();
         let selected = ivars.selected.get();
         let list = ivars.list.get();
+        let look = Some((selected, list, list && ivars.hovered.get()));
+        if ivars.look.replace(look) == look {
+            return;
+        }
         let scale = if selected { 1.0 } else { metrics::scale(metrics::SELECT_SCALE) };
         CATransaction::begin();
-        CATransaction::setAnimationDuration(metrics::MOTION_STANDARD);
-        CATransaction::setAnimationTimingFunction(Some(&ease_out()));
+        CATransaction::setAnimationDuration(metrics::MOTION_STATE);
+        CATransaction::setAnimationTimingFunction(Some(&ease_in_out()));
         ivars.ring.setOpacity(if selected && !list { 1.0 } else { 0.0 });
         ivars.ring.setTransform(CATransform3D {
             m11: scale,
@@ -518,16 +529,7 @@ impl TileView {
         };
         ivars.highlight.setOpacity(if list { row } else { 0.0 });
         CATransaction::commit();
-        if ivars.painted.replace(selected) != selected
-            && let Some(layer) = ivars.name.layer()
-        {
-            let fade = CATransition::animation();
-            fade.setType(unsafe { kCATransitionFade });
-            fade.setDuration(metrics::MOTION_STANDARD);
-            fade.setTimingFunction(Some(&ease_out()));
-            layer.addAnimation_forKey(&fade, Some(&widgets::ns("tint")));
-        }
-        let titles = ivars.titles.borrow();
+        let titles = &ivars.titles;
         ivars.name.setTextColor(Some(if selected { &titles.1 } else { &titles.0 }));
     }
 }
@@ -591,9 +593,15 @@ define_class!(
     }
 );
 
+struct ShadeIvars {
+    fade: Retained<CAGradientLayer>,
+    theme: Theme,
+}
+
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = ShadeIvars]
     struct ShadeView;
 
     impl ShadeView {
@@ -601,24 +609,185 @@ define_class!(
         fn hit_test(&self, _point: CGPoint) -> Option<Retained<NSView>> {
             None
         }
+
+        #[unsafe(method_id(makeBackingLayer))]
+        fn make_backing_layer(&self) -> Retained<CALayer> {
+            Retained::into_super(self.ivars().fade.clone())
+        }
+
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
     }
 );
 
+impl ShadeView {
+    fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
+        let fade = CAGradientLayer::new();
+        fade.setStartPoint(CGPoint::new(0.5, 1.0));
+        fade.setEndPoint(CGPoint::new(0.5, 0.0));
+        let locations: Vec<Retained<NSNumber>> =
+            [0.0, 0.7, 1.0].iter().map(|location| NSNumber::new_f64(*location)).collect();
+        fade.setLocations(Some(&NSArray::from_retained_slice(&locations)));
+        let this = Self::alloc(mtm).set_ivars(ShadeIvars { fade, theme: theme.clone() });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
+        this.setNeedsDisplay(true);
+        return this;
+    }
+
+    fn colorize(&self) {
+        let ivars = self.ivars();
+        widgets::resolving(self, || {
+            let shade = ivars.theme.color(Key::GridShade);
+            let colors: Vec<Retained<CGColor>> =
+                [0.4, 0.34, 0.0].iter().map(|alpha| shade.colorWithAlphaComponent(*alpha).CGColor()).collect();
+            let objects: Vec<&AnyObject> = colors
+                .iter()
+                .map(|color| unsafe { &*std::ptr::from_ref::<CGColor>(color).cast::<AnyObject>() })
+                .collect();
+            unsafe { ivars.fade.setColors(Some(&NSArray::from_slice(&objects))) };
+        });
+    }
+}
+
+struct TrackIvars {
+    fill: Retained<CALayer>,
+    theme: Theme,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = TrackIvars]
+    struct TrackView;
+
+    impl TrackView {
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
+    }
+);
+
+impl TrackView {
+    fn new(mtm: MainThreadMarker, fill: &CALayer, theme: &Theme) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TrackIvars { fill: fill.retain(), theme: theme.clone() });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
+        if let Some(layer) = this.layer() {
+            layer.setCornerRadius(metrics::capsule(STATUS_BAR));
+            layer.setMasksToBounds(true);
+            layer.addSublayer(fill);
+        }
+        this.setNeedsDisplay(true);
+        return this;
+    }
+
+    fn colorize(&self) {
+        let ivars = self.ivars();
+        widgets::resolving(self, || {
+            ivars.fill.setBackgroundColor(Some(&ivars.theme.color(Key::PillBar).CGColor()));
+            if let Some(layer) = self.layer() {
+                layer.setBackgroundColor(Some(&ivars.theme.color(Key::PillTrack).CGColor()));
+            }
+        });
+    }
+}
+
+struct DropIvars {
+    theme: Theme,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DropIvars]
+    struct DropView;
+
+    impl DropView {
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: CGPoint) -> Option<Retained<NSView>> {
+            None
+        }
+
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
+    }
+);
+
+impl DropView {
+    fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DropIvars { theme: theme.clone() });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
+        if let Some(layer) = this.layer() {
+            layer.setBorderWidth(metrics::BORDER_RING);
+            layer.setCornerRadius(metrics::RADIUS_TILE);
+            layer.setOpacity(0.0);
+        }
+        this.setNeedsDisplay(true);
+        return this;
+    }
+
+    fn colorize(&self) {
+        let ivars = self.ivars();
+        widgets::resolving(self, || {
+            if let Some(layer) = self.layer() {
+                layer.setBorderColor(Some(&ivars.theme.accent().CGColor()));
+                layer.setBackgroundColor(Some(&ivars.theme.color(Key::SelectionSoft).CGColor()));
+            }
+        });
+    }
+
+    fn show(&self, on: bool) {
+        let Some(layer) = self.layer() else {
+            return;
+        };
+        if (layer.opacity() > 0.0) == on {
+            return;
+        }
+        CATransaction::begin();
+        CATransaction::setAnimationDuration(metrics::transform(metrics::MOTION_QUICK));
+        CATransaction::setAnimationTimingFunction(Some(&ease_out()));
+        layer.setOpacity(if on { 1.0 } else { 0.0 });
+        CATransaction::commit();
+    }
+}
+
 pub struct WallIvars {
-    canvas: Retained<objc2_app_kit::NSBox>,
     shade: Retained<ShadeView>,
-    fade: Retained<CAGradientLayer>,
+    drop: Retained<DropView>,
     scroll: Retained<NSScrollView>,
     document: Retained<DocumentView>,
     empty: Retained<NSView>,
     status: Surface,
     status_text: Retained<NSTextField>,
-    status_track: Retained<NSView>,
+    status_track: Retained<TrackView>,
     status_fill: Retained<CALayer>,
-    paint: Paint,
     tiles: RefCell<Vec<Retained<TileView>>>,
     shown: RefCell<(Vec<ItemId>, bool)>,
-    unlocked: Cell<bool>,
     list: Cell<bool>,
     columns: Cell<usize>,
     keyboard: Cell<bool>,
@@ -636,7 +805,7 @@ define_class!(
         fn layout(&self) {
             let () = unsafe { msg_send![super(self), layout] };
             self.place_shade();
-            self.relayout(false, false);
+            self.relayout(false);
         }
 
         #[unsafe(method(acceptsFirstResponder))]
@@ -647,7 +816,14 @@ define_class!(
         #[unsafe(method(viewDidChangeEffectiveAppearance))]
         fn appearance_changed(&self) {
             let () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
-            crate::ui::appearance_changed();
+            let ivars = self.ivars();
+            self.setNeedsDisplay(true);
+            ivars.shade.setNeedsDisplay(true);
+            ivars.drop.setNeedsDisplay(true);
+            ivars.status_track.setNeedsDisplay(true);
+            for tile in ivars.tiles.borrow().iter() {
+                tile.setNeedsDisplay(true);
+            }
         }
 
         #[unsafe(method(keyDown:))]
@@ -670,12 +846,30 @@ define_class!(
     unsafe impl NSDraggingDestination for WallView {
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            if sidebar::dropped_files(info).is_empty() { NSDragOperation::None } else { NSDragOperation::Copy }
+            return self.drop_target(info);
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            return self.drop_target(info);
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            self.ivars().drop.show(false);
         }
 
         #[unsafe(method(performDragOperation:))]
         fn perform_drag(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-            actions::import_here(&sidebar::dropped_files(info))
+            let files = sidebar::droppable(info);
+            let accepted = !files.is_empty() && actions::import_here(&files);
+            self.ivars().drop.show(false);
+            return accepted.into();
+        }
+
+        #[unsafe(method(concludeDragOperation:))]
+        fn conclude_drag(&self, _info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            self.ivars().drop.show(false);
         }
     }
 );
@@ -699,37 +893,32 @@ mod keys {
 struct Pill {
     surface: Surface,
     text: Retained<NSTextField>,
-    track: Retained<NSView>,
+    track: Retained<TrackView>,
     fill: Retained<CALayer>,
 }
 
 fn download_pill(mtm: MainThreadMarker, theme: &Theme, paint: &mut Paint) -> Pill {
-    let icon = widgets::symbol_view(mtm, "arrow.down.circle", metrics::ICON_REGULAR, &theme.color(Key::TextSecondary));
+    let icon = widgets::symbol_view(mtm, "arrow.down.circle", IconRole::Inline, &theme.color(Key::TextSecondary));
     paint.add(&icon, Key::TextSecondary, Slot::Tint);
     let text = paint.label(mtm, "", Text::CalloutMedium, Key::Text, theme);
     let row = widgets::stack(mtm, &[&icon, &text], false, metrics::SPACE_8);
-    let track = NSView::new(mtm);
-    track.setWantsLayer(true);
-    track.widthAnchor().constraintEqualToConstant(STATUS_WIDTH).setActive(true);
-    track.heightAnchor().constraintEqualToConstant(STATUS_BAR).setActive(true);
     let fill = CALayer::new();
     fill.setCornerRadius(metrics::capsule(STATUS_BAR));
-    if let Some(layer) = track.layer() {
-        layer.setCornerRadius(metrics::capsule(STATUS_BAR));
-        layer.setMasksToBounds(true);
-        layer.addSublayer(&fill);
-    }
+    let track = TrackView::new(mtm, &fill, theme);
+    track.widthAnchor().constraintEqualToConstant(STATUS_WIDTH).setActive(true);
+    track.heightAnchor().constraintEqualToConstant(STATUS_BAR).setActive(true);
     let body = widgets::stack(mtm, &[&row, &track], true, metrics::SPACE_8);
     body.setAlignment(objc2_app_kit::NSLayoutAttribute::Leading);
     body.setEdgeInsets(widgets::insets(metrics::SPACE_8, metrics::SPACE_12, metrics::SPACE_12, metrics::SPACE_12));
-    let surface = Surface::mount(mtm, &body, metrics::RADIUS_CARD, None, &theme.color(Key::PillFill));
+    let surface = Surface::mount(mtm, &body, metrics::RADIUS_TILE, None, Key::PillFill, theme);
     surface.view().setHidden(true);
     return Pill { surface, text, track, fill };
 }
 
 impl WallView {
     pub fn new(mtm: MainThreadMarker, theme: &Theme) -> Retained<Self> {
-        let canvas = widgets::card(mtm, &theme.color(Key::WindowCanvas), 0.0);
+        let mut paint = Paint::new();
+        let canvas = paint.fill(mtm, Key::WindowCanvas, 0.0, theme);
         let scroll = NSScrollView::new(mtm);
         scroll.setDrawsBackground(false);
         scroll.setHasVerticalScroller(true);
@@ -738,9 +927,7 @@ impl WallView {
         let document: Retained<DocumentView> = unsafe { msg_send![DocumentView::alloc(mtm), init] };
         document.setWantsLayer(true);
         scroll.setDocumentView(Some(&document));
-        let mut paint = Paint::new();
-        let icon =
-            widgets::symbol_view(mtm, "photo.on.rectangle.angled", metrics::ICON_HERO, &theme.color(Key::GridEmpty));
+        let icon = widgets::symbol_view(mtm, "photo.on.rectangle.angled", IconRole::Hero, &theme.color(Key::GridEmpty));
         paint.add(&icon, Key::GridEmpty, Slot::Tint);
         let title = paint.label(mtm, &tr("No Wallpapers"), Text::Title2, Key::TextSecondary, theme);
         let hint = paint.label(
@@ -753,19 +940,13 @@ impl WallView {
         hint.setAlignment(NSTextAlignment::Center);
         let empty = widgets::stack(mtm, &[&icon, &title, &hint], true, metrics::SPACE_8);
         empty.setHidden(true);
-        empty.setAlphaValue(0.0);
         let Pill { surface: status, text: status_text, track: status_track, fill: status_fill } =
             download_pill(mtm, theme, &mut paint);
-        let shade: Retained<ShadeView> = unsafe { msg_send![ShadeView::alloc(mtm), init] };
-        let fade = CAGradientLayer::new();
-        fade.setStartPoint(CGPoint::new(0.5, 1.0));
-        fade.setEndPoint(CGPoint::new(0.5, 0.0));
-        shade.setLayer(Some(&fade));
-        shade.setWantsLayer(true);
+        let shade = ShadeView::new(mtm, theme);
+        let drop = DropView::new(mtm, theme);
         let this = Self::alloc(mtm).set_ivars(WallIvars {
-            canvas: canvas.clone(),
             shade,
-            fade,
+            drop,
             scroll,
             document,
             empty: widgets::view(&empty),
@@ -773,10 +954,8 @@ impl WallView {
             status_text,
             status_track,
             status_fill,
-            paint,
             tiles: RefCell::new(Vec::new()),
             shown: RefCell::new((Vec::new(), false)),
-            unlocked: Cell::new(false),
             list: Cell::new(false),
             columns: Cell::new(1),
             keyboard: Cell::new(false),
@@ -790,13 +969,14 @@ impl WallView {
         this.addSubview(&ivars.shade);
         let status = ivars.status.view();
         this.addSubview(status);
-        this.paint(theme);
         status.setTranslatesAutoresizingMaskIntoConstraints(false);
         status.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
         status
             .bottomAnchor()
             .constraintEqualToAnchor_constant(&this.bottomAnchor(), -metrics::SPACE_20)
             .setActive(true);
+        this.addSubview(&ivars.drop);
+        widgets::pin(&ivars.drop, &this, metrics::SPACE_8);
         widgets::pin(&canvas, &this, 0.0);
         widgets::pin(&ivars.scroll, &this, 0.0);
         ivars.empty.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -815,7 +995,15 @@ impl WallView {
             )
         };
         this.addTrackingArea(&area);
+        let types = [unsafe { NSPasteboardTypeFileURL }.copy()];
+        this.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
         return this;
+    }
+
+    fn drop_target(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+        let on = sidebar::dragged_items(info).is_empty() && !sidebar::droppable(info).is_empty();
+        self.ivars().drop.show(on);
+        return if on { NSDragOperation::Copy } else { NSDragOperation::None };
     }
 
     fn key(&self, event: &NSEvent) -> bool {
@@ -876,31 +1064,8 @@ impl WallView {
         }
     }
 
-    pub fn paint(&self, theme: &Theme) {
-        let ivars = self.ivars();
-        ivars.canvas.setFillColor(&theme.color(Key::WindowCanvas));
-        ivars.paint.apply(theme);
-        let hidden = ivars.status.view().isHidden();
-        ivars.status.paint(None, &theme.color(Key::PillFill));
-        ivars.status.view().setHidden(hidden);
-        ivars.status_fill.setBackgroundColor(Some(&widgets::cg(self, &theme.color(Key::PillBar))));
-        if let Some(layer) = ivars.status_track.layer() {
-            layer.setBackgroundColor(Some(&widgets::cg(self, &theme.color(Key::PillTrack))));
-        }
-        let shade = theme.color(Key::GridShade);
-        let colors: Vec<Retained<CGColor>> =
-            [0.4, 0.34, 0.0].iter().map(|alpha| widgets::cg(self, &shade.colorWithAlphaComponent(*alpha))).collect();
-        let locations: Vec<Retained<NSNumber>> =
-            [0.0, 0.7, 1.0].iter().map(|location| NSNumber::new_f64(*location)).collect();
-        let objects: Vec<&AnyObject> =
-            colors.iter().map(|color| unsafe { &*std::ptr::from_ref::<CGColor>(color).cast::<AnyObject>() }).collect();
-        unsafe {
-            ivars.fade.setColors(Some(&NSArray::from_slice(&objects)));
-            ivars.fade.setLocations(Some(&NSArray::from_retained_slice(&locations)));
-        }
-        for tile in ivars.tiles.borrow().iter() {
-            tile.paint(theme);
-        }
+    pub fn accessibility_changed(&self) {
+        self.ivars().status.refresh_material();
     }
 
     fn place_shade(&self) {
@@ -926,7 +1091,6 @@ impl WallView {
         let ivars = self.ivars();
         let key = (visible.iter().map(|index| library.items[*index].id).collect::<Vec<_>>(), list);
         let morph = *ivars.shown.borrow() != key;
-        let sealing = ivars.unlocked.replace(library.unlocked) && !library.unlocked;
         *ivars.shown.borrow_mut() = key;
         self.show_downloads(&library.downloads);
         let mut previous: HashMap<ItemId, Retained<TileView>> = ivars
@@ -939,7 +1103,6 @@ impl WallView {
             })
             .collect();
         let mut tiles: Vec<Retained<TileView>> = Vec::with_capacity(visible.len());
-        let mut entering: Vec<Retained<TileView>> = Vec::new();
         for index in visible {
             if let Some(tile) = previous.remove(&library.items[*index].id) {
                 tile.content(library, *index, scope, theme);
@@ -947,25 +1110,29 @@ impl WallView {
                 continue;
             }
             let tile = TileView::new(mtm, *index, library, scope, theme);
-            tile.setAlphaValue(0.0);
             ivars.document.addSubview(&tile);
-            entering.push(tile.clone());
             tiles.push(tile);
         }
         for tile in previous.into_values() {
-            if sealing {
-                tile.removeFromSuperview();
-            } else {
-                tile.fade(false);
-            }
+            tile.removeFromSuperview();
         }
         *ivars.tiles.borrow_mut() = tiles;
         ivars.list.set(list);
         self.show_empty(visible.is_empty());
         self.set_selected(selected);
-        self.relayout(morph, morph);
-        for tile in entering {
-            tile.fade(true);
+        let duration = metrics::transform(metrics::MOTION_LAYOUT);
+        if morph && duration > 0.0 {
+            let wall = self.retain();
+            let group = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+                let context = unsafe { context.as_ref() };
+                context.setDuration(duration);
+                context.setTimingFunction(Some(&ease_in_out()));
+                context.setAllowsImplicitAnimation(true);
+                wall.relayout(true);
+            });
+            NSAnimationContext::runAnimationGroup(&group);
+        } else {
+            self.relayout(morph);
         }
         self.rehover();
     }
@@ -986,43 +1153,11 @@ impl WallView {
             ivars.status_fill.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(width, STATUS_BAR)));
         }
         let hidden = text.is_none();
-        if ivars.status.view().isHidden() != hidden {
-            widgets::reveal(ivars.status.view(), !hidden);
-        }
+        ivars.status.view().setHidden(hidden);
     }
 
     fn show_empty(&self, show: bool) {
-        let empty = self.ivars().empty.clone();
-        if show {
-            if !empty.isHidden() && empty.alphaValue() >= 1.0 {
-                return;
-            }
-            empty.setHidden(false);
-            let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
-                let animation = unsafe { animation.as_ref() };
-                animation.setDuration(metrics::MOTION_STANDARD);
-                animation.setTimingFunction(Some(&ease_out()));
-                empty.animator().setAlphaValue(1.0);
-            });
-            NSAnimationContext::runAnimationGroup(&fade);
-            return;
-        }
-        if empty.isHidden() {
-            return;
-        }
-        let next = empty.clone();
-        let done = RcBlock::new(move || {
-            if next.alphaValue() == 0.0 {
-                next.setHidden(true);
-            }
-        });
-        let fade = RcBlock::new(move |animation: NonNull<NSAnimationContext>| {
-            let animation = unsafe { animation.as_ref() };
-            animation.setDuration(metrics::MOTION_STANDARD);
-            animation.setTimingFunction(Some(&ease_in()));
-            empty.animator().setAlphaValue(0.0);
-        });
-        NSAnimationContext::runAnimationGroup_completionHandler(&fade, Some(&done));
+        self.ivars().empty.setHidden(!show);
     }
 
     fn rehover(&self) {
@@ -1071,7 +1206,9 @@ impl WallView {
                 .clamp(0.0, limit);
                 let span = visible.size.height.max(1.0);
                 let range = metrics::SCROLL_MAX - metrics::SCROLL_MIN;
-                let duration = metrics::SCROLL_MIN + ((origin - visible.origin.y).abs() / span).min(1.0) * range;
+                let duration = metrics::transform(
+                    metrics::SCROLL_MIN + ((origin - visible.origin.y).abs() / span).min(1.0) * range,
+                );
                 let scroll = ivars.scroll.clone();
                 let target = CGPoint::new(visible.origin.x, origin);
                 let wall = self.retain();
@@ -1090,7 +1227,7 @@ impl WallView {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn relayout(&self, force: bool, animate: bool) {
+    fn relayout(&self, force: bool) {
         let ivars = self.ivars();
         let width = ivars.scroll.contentSize().width;
         if !force && (width - ivars.last_width.get()).abs() < 0.5 {
@@ -1119,7 +1256,6 @@ impl WallView {
                     CGSize::new(tile, if list { ROW_HEIGHT } else { height }),
                 ),
                 list,
-                animate,
             );
         }
         let rows = tiles.len().div_ceil(columns) as CGFloat;

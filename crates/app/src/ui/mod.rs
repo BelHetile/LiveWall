@@ -1,4 +1,5 @@
 mod actions;
+mod controls;
 mod dialogs;
 mod folders;
 mod inspector;
@@ -8,6 +9,7 @@ mod picker;
 mod settings;
 mod sidebar;
 mod state;
+mod swatches;
 mod theme;
 mod toolbar;
 mod view;
@@ -20,14 +22,14 @@ use std::collections::HashSet;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use block2::RcBlock;
+use block2::{DynBlock, RcBlock};
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSSplitViewController, NSSplitViewItem,
-    NSSystemColorsDidChangeNotification, NSWindow, NSWorkspace,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSApplicationActivationPolicy,
+    NSSplitViewController, NSSplitViewItem, NSSystemColorsDidChangeNotification, NSWindow, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -46,11 +48,13 @@ use crate::ui::actions::Actions;
 use crate::ui::inspector::Inspector;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::state::{Filter, Scope, Sort};
-use crate::ui::theme::Look;
+use crate::ui::theme::{Look, LookChange};
 use crate::ui::toolbar::Toolbar;
 use crate::ui::view::{Library, Thumbs};
 use crate::ui::wall::WallView;
 use crate::ui::widgets::ns;
+
+pub use crate::ui::theme::invalidate;
 
 const PROGRESS_TICK: f64 = 0.5;
 
@@ -61,7 +65,6 @@ struct Ui {
     thumbs: Thumbs,
     filter: Filter,
     look: Look,
-    applied: Option<usize>,
     selected: Option<usize>,
     actions: Retained<Actions>,
     wall: Retained<WallView>,
@@ -123,11 +126,9 @@ impl Ui {
             self.toolbar.search.setStringValue(&ns(""));
             self.selected = Some(index);
         }
-        if self.look.update(&appearance, &styles) {
-            self.restyle(mtm);
-        } else {
-            self.refresh(mtm);
-        }
+        let change = self.look.update(&appearance, &styles);
+        self.looked(mtm, change);
+        self.refresh(mtm);
         if let Some(index) = fresh {
             self.wall.reveal(index);
         }
@@ -167,6 +168,11 @@ impl Ui {
         }
         self.selected = index;
         self.wall.set_selected(index);
+        later(Ui::settle);
+    }
+
+    fn settle(&mut self, _mtm: MainThreadMarker) {
+        let index = self.selected;
         if index.is_some() || self.inspector_item.isCollapsed() {
             self.inspector.refresh(&self.library, &self.filter, &self.look.theme, index, &self.actions);
         } else {
@@ -180,24 +186,7 @@ impl Ui {
         if self.inspector_item.isCollapsed() == collapsed {
             return;
         }
-        let item = self.inspector_item.clone();
-        let view = self.split.view();
-        let changes = RcBlock::new(move |context: NonNull<objc2_app_kit::NSAnimationContext>| {
-            let context = unsafe { context.as_ref() };
-            context.setDuration(metrics::transform(metrics::MOTION_EMPHASIZED));
-            context.setTimingFunction(Some(&metrics::ease_in_out()));
-            context.setAllowsImplicitAnimation(true);
-            item.setCollapsed(collapsed);
-            view.layoutSubtreeIfNeeded();
-        });
-        let done = RcBlock::new(|| {
-            later(|ui, _| {
-                if ui.selected.is_none() {
-                    ui.inspector.refresh(&ui.library, &ui.filter, &ui.look.theme, None, &ui.actions);
-                }
-            });
-        });
-        objc2_app_kit::NSAnimationContext::runAnimationGroup_completionHandler(&changes, Some(&done));
+        animate_collapse(&self.inspector_item, collapsed);
     }
 
     fn show_sidebar(&self) {
@@ -240,20 +229,51 @@ impl Ui {
         self.settings(mtm).show(&window, tab);
     }
 
-    fn restyle(&mut self, mtm: MainThreadMarker) {
-        if self.applied != Some(self.look.mode) {
-            self.applied = Some(self.look.mode);
+    fn looked(&self, mtm: MainThreadMarker, change: LookChange) {
+        if change.mode {
             windows::set_appearance(mtm, self.look.mode);
+            invalidate();
         }
-        let theme = &self.look.theme;
-        self.wall.paint(theme);
-        self.inspector.restyle(theme);
-        self.sidebar.restyle(theme);
-        self.toolbar.restyle(theme);
-        if let Some(settings) = &self.settings {
-            settings.restyle(&self.look);
+        if change.repaint {
+            if let Some(settings) = &self.settings {
+                settings.repaint(&self.look.theme);
+            }
+            invalidate();
         }
-        self.refresh(mtm);
+    }
+
+    fn restyle(&mut self, mtm: MainThreadMarker) {
+        let Some((values, appearance, styles)) = app::with(|app| {
+            let settings = app.settings();
+            return (
+                serde_json::to_value(settings).unwrap_or(Value::Null),
+                settings.appearance.clone(),
+                app.styles().clone(),
+            );
+        }) else {
+            return;
+        };
+        self.values = values;
+        let change = self.look.update(&appearance, &styles);
+        self.looked(mtm, change);
+        if change.styles
+            && let Some(settings) = &self.settings
+        {
+            settings.sync_look(&self.look);
+        }
+    }
+
+    fn recapture(&mut self, accessibility: bool) {
+        let changed = self.look.rebuild();
+        if accessibility {
+            self.wall.accessibility_changed();
+            metrics::refresh_surfaces();
+        }
+        if changed && let Some(settings) = &self.settings {
+            settings.repaint(&self.look.theme);
+            settings.sync_look(&self.look);
+        }
+        invalidate();
     }
 
     #[allow(deprecated)]
@@ -274,7 +294,35 @@ thread_local! {
 
 static PENDING: AtomicBool = AtomicBool::new(false);
 static RESTYLE: AtomicBool = AtomicBool::new(false);
-static REBUILD: AtomicBool = AtomicBool::new(false);
+static RECAPTURE: AtomicBool = AtomicBool::new(false);
+static ACCESSIBILITY: AtomicBool = AtomicBool::new(false);
+
+fn drain(flag: &'static AtomicBool, run: fn(&mut Ui, MainThreadMarker)) {
+    if flag.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    DispatchQueue::main().exec_async(move || {
+        if busy() {
+            flag.store(false, Ordering::SeqCst);
+            drain(flag, run);
+            return;
+        }
+        flag.store(false, Ordering::SeqCst);
+        update(run);
+    });
+}
+
+fn animate_collapse(item: &Retained<NSSplitViewItem>, collapsed: bool) {
+    let item = item.clone();
+    let changes = RcBlock::new(move |context: NonNull<NSAnimationContext>| {
+        let context = unsafe { context.as_ref() };
+        context.setDuration(metrics::transform(metrics::MOTION_LAYOUT));
+        context.setTimingFunction(Some(&metrics::ease_in_out()));
+        context.setAllowsImplicitAnimation(true);
+        item.animator().setCollapsed(collapsed);
+    });
+    NSAnimationContext::runAnimationGroup(&changes);
+}
 
 fn update(change: impl FnOnce(&mut Ui, MainThreadMarker)) {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -347,18 +395,7 @@ pub fn download_failed(reason: &str) {
 }
 
 pub fn changed() {
-    if PENDING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    DispatchQueue::main().exec_async(|| {
-        if busy() {
-            PENDING.store(false, Ordering::SeqCst);
-            changed();
-            return;
-        }
-        PENDING.store(false, Ordering::SeqCst);
-        update(Ui::reload);
-    });
+    drain(&PENDING, Ui::reload);
 }
 
 fn selected_index() -> Option<usize> {
@@ -435,55 +472,33 @@ pub fn pick_style(index: usize) {
     });
 }
 
-fn schedule_restyle(rebuild: bool) {
-    if rebuild {
-        REBUILD.store(true, Ordering::SeqCst);
-    }
-    if RESTYLE.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    DispatchQueue::main().exec_async(|| {
-        if busy() {
-            RESTYLE.store(false, Ordering::SeqCst);
-            schedule_restyle(false);
-            return;
-        }
-        RESTYLE.store(false, Ordering::SeqCst);
-        let rebuild = REBUILD.swap(false, Ordering::SeqCst);
-        update(|ui, mtm| {
-            if rebuild {
-                ui.look.rebuild();
-            }
-            ui.restyle(mtm);
-        });
-    });
+pub fn restyled() {
+    drain(&RESTYLE, Ui::restyle);
 }
 
-pub fn restyle() {
-    schedule_restyle(true);
-}
-
-pub fn appearance_changed() {
-    schedule_restyle(false);
+fn recaptured(accessibility: bool) {
+    if accessibility {
+        ACCESSIBILITY.store(true, Ordering::SeqCst);
+    }
+    drain(&RECAPTURE, |ui, _| ui.recapture(ACCESSIBILITY.swap(false, Ordering::SeqCst)));
 }
 
 fn observe() -> Vec<Subscription> {
     let queue = NSOperationQueue::mainQueue();
-    let block = RcBlock::new(|_notification: NonNull<NSNotification>| restyle());
-    let centers = [
-        (NSNotificationCenter::defaultCenter(), unsafe { NSSystemColorsDidChangeNotification }),
-        (NSWorkspace::sharedWorkspace().notificationCenter(), unsafe {
-            NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
-        }),
+    let colors = RcBlock::new(|_notification: NonNull<NSNotification>| recaptured(false));
+    let accessibility = RcBlock::new(|_notification: NonNull<NSNotification>| recaptured(true));
+    let observe = |center: Retained<NSNotificationCenter>, name, block: &DynBlock<dyn Fn(NonNull<NSNotification>)>| {
+        let token = unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&queue), block) };
+        return (center, token);
+    };
+    return vec![
+        observe(NSNotificationCenter::defaultCenter(), unsafe { NSSystemColorsDidChangeNotification }, &colors),
+        observe(
+            NSWorkspace::sharedWorkspace().notificationCenter(),
+            unsafe { NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification },
+            &accessibility,
+        ),
     ];
-    return centers
-        .into_iter()
-        .map(|(center, name)| {
-            let token =
-                unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, Some(&queue), &block) };
-            return (center, token);
-        })
-        .collect();
 }
 
 pub fn toggle_play() {
@@ -597,8 +612,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
         return Err("LiveWall engine is not installed".to_string());
     };
     let look = Look::new(&appearance, &styles);
-    let mode = look.mode;
-    windows::set_appearance(mtm, mode);
+    windows::set_appearance(mtm, look.mode);
     let mut filter = initial_filter(&library);
     filter.list = appearance.list;
 
@@ -611,12 +625,14 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let windows::Panes { split, inspector: inspector_item, sidebar: sidebar_item } =
         windows::panes(mtm, &sidebar.view, &wall, &inspector);
 
-    let window = windows::main_window(mtm, &split);
+    let (window, restored) = windows::main_window(mtm, &split);
     window.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
     let toolbar = Toolbar::new(mtm, &actions, &look.theme);
     toolbar.search.setStringValue(&ns(&filter.query));
     window.setToolbar(Some(&toolbar.bar));
-    window.center();
+    if !restored {
+        window.center();
+    }
 
     let selected = env("LW_UI_SELECT").and_then(|title| library.items.iter().position(|item| item.title == title));
     inspector_item.setCollapsed(selected.is_none());
@@ -626,7 +642,6 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
         thumbs,
         filter,
         look,
-        applied: Some(mode),
         selected,
         actions,
         wall,

@@ -902,10 +902,14 @@ impl App {
         crate::ui::changed();
     }
 
-    fn persist_settings(&self) {
+    fn save_settings(&self) {
         if let Err(error) = store::save(&self.paths.settings_file(), &self.settings) {
             tracing::warn!(%error, "cannot save settings");
         }
+    }
+
+    fn persist_settings(&self) {
+        self.save_settings();
         crate::ui::changed();
     }
 

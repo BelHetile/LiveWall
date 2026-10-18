@@ -2,30 +2,31 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSButton, NSColor, NSEvent, NSImage, NSImageView, NSLayoutConstraint,
+    NSAccessibility, NSAccessibilityButtonRole, NSButton, NSColor, NSEvent, NSImage, NSImageView, NSLayoutConstraint,
     NSLineBreakMode, NSMenu, NSMenuItem, NSMenuToolbarItem, NSPopUpButton, NSSearchField, NSStackView, NSTextField,
     NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarItemGroup, NSToolbarItemGroupSelectionMode, NSToolbarItemIdentifier,
     NSToolbarSidebarTrackingSeparatorItemIdentifier, NSToolbarToggleInspectorItemIdentifier,
-    NSToolbarToggleSidebarItemIdentifier, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSToolbarToggleSidebarItemIdentifier, NSView,
 };
-use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
+use objc2_core_foundation::{CGFloat, CGPoint};
 use objc2_foundation::{NSArray, NSCopying, NSObject, NSObjectProtocol, NSString};
 use objc2_quartz_core::{CATransaction, kCAGravityResizeAspectFill};
 
 use crate::app::{PlayState, Sound};
 use crate::i18n::{Arg, key, tr, trf};
 use crate::style::Key;
+use crate::ui::controls::{self, ControlView};
 use crate::ui::metrics::{self, Text};
 use crate::ui::state::{Filter, KINDS, Scope, Showing, Sort, TAG_ALL, desktop_name, lock_tip, showing};
 use crate::ui::theme::{Look, Theme};
 use crate::ui::view::{Library, Status};
-use crate::ui::widgets::{self, Paint, Slot};
+use crate::ui::widgets::{self, IconRole, Paint, Slot, Swatch};
 
 const PILL_WIDTH: CGFloat = 148.0;
-const PILL_HEIGHT: CGFloat = metrics::CONTROL_HEIGHT;
+const PILL_HEIGHT: CGFloat = metrics::BUTTON_HEIGHT;
 const SCOPE_WIDTH: CGFloat = 128.0;
 const SEARCH_WIDTH: CGFloat = 120.0;
 const ADD_WIDTH: CGFloat = 76.0;
@@ -34,7 +35,8 @@ const STATUS_TEXT_WIDTH: CGFloat = 150.0;
 pub struct PillIvars {
     index: Cell<Option<usize>>,
     menu: RefCell<Option<Retained<NSMenu>>>,
-    hover: RefCell<Retained<NSColor>>,
+    hover: Retained<Swatch>,
+    control: controls::Control,
 }
 
 define_class!(
@@ -44,41 +46,99 @@ define_class!(
     struct PillView;
 
     impl PillView {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
-            let ivars = self.ivars();
-            let menu = ivars.menu.borrow().clone();
-            if let Some(menu) = menu {
-                menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(0.0, -metrics::SPACE_4), Some(self));
-            } else if let Some(index) = ivars.index.get() {
-                crate::ui::reveal(index);
+            self.press();
+        }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            let active = self.active();
+            if active {
+                self.press();
             }
+            active
+        }
+
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn did_move_to_window(&self) {
+            let () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            controls::window_changed(self);
         }
 
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, _event: &NSEvent) {
-            self.hover(true);
+            controls::entered(self);
         }
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
-            self.hover(false);
+            controls::exited(self);
         }
     }
 );
 
+impl ControlView for PillView {
+    fn view(&self) -> &NSView {
+        self
+    }
+
+    fn control(&self) -> &controls::Control {
+        &self.ivars().control
+    }
+
+    fn apply(&self, immediate: bool) {
+        self.hover(self.ivars().control.hovered() && self.active(), !immediate);
+    }
+
+    fn activate(&self) {
+        self.press();
+    }
+}
+
 impl PillView {
-    fn hover(&self, on: bool) {
-        let Some(layer) = self.layer() else {
+    fn active(&self) -> bool {
+        let ivars = self.ivars();
+        return ivars.index.get().is_some() || ivars.menu.borrow().is_some();
+    }
+
+    fn press(&self) {
+        let ivars = self.ivars();
+        self.hover(true, false);
+        let menu = ivars.menu.borrow().clone();
+        if let Some(menu) = menu {
+            menu.popUpMenuPositioningItem_atLocation_inView(None, CGPoint::new(0.0, -metrics::SPACE_4), Some(self));
+            self.settle();
+        } else if let Some(index) = ivars.index.get() {
+            crate::ui::reveal(index);
+        }
+    }
+
+    fn settle(&self) {
+        let inside = self.window().is_some_and(|window| {
+            let point = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+            return objc2_foundation::NSPointInRect(point, self.bounds());
+        });
+        self.hover(inside, true);
+    }
+
+    fn hover(&self, on: bool, animated: bool) {
+        let Some(layer) = self.ivars().hover.layer() else {
             return;
         };
-        let ivars = self.ivars();
-        let active = ivars.index.get().is_some() || ivars.menu.borrow().is_some();
-        let fill = if on && active { ivars.hover.borrow().clone() } else { NSColor::clearColor() };
-        let fill = widgets::cg(self, &fill);
         CATransaction::begin();
-        CATransaction::setAnimationDuration(metrics::MOTION_QUICK);
-        layer.setBackgroundColor(Some(&fill));
+        if animated {
+            CATransaction::setAnimationDuration(metrics::MOTION_QUICK);
+            CATransaction::setAnimationTimingFunction(Some(&metrics::ease_out()));
+        } else {
+            CATransaction::setDisableActions(true);
+        }
+        layer.setOpacity(if on && self.active() { 1.0 } else { 0.0 });
         CATransaction::commit();
     }
 }
@@ -130,40 +190,38 @@ pub struct Toolbar {
     desktop: Pill,
     screen: Pill,
     status: StatusBadge,
-    scope_title: RefCell<String>,
-    paint: Paint,
     _delegate: Retained<ToolbarDelegate>,
 }
 
 struct Pill {
     view: Retained<PillView>,
-    thumb: Retained<NSView>,
+    thumb: Retained<Swatch>,
     title: Retained<NSTextField>,
     badge: Retained<NSTextField>,
     chevron: Retained<NSView>,
     width: Retained<NSLayoutConstraint>,
-    titles: RefCell<(Retained<NSColor>, Retained<NSColor>)>,
+    titles: (Retained<NSColor>, Retained<NSColor>),
+    shown: RefCell<(Option<String>, usize)>,
 }
 
 impl Toolbar {
     pub fn new(mtm: MainThreadMarker, target: &AnyObject, theme: &Theme) -> Self {
         let mut paint = Paint::new();
-        let scope = popup(mtm, SCOPE_WIDTH);
+        let scope = popup(mtm, SCOPE_WIDTH, theme);
         let sort = NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), &widgets::ns("sort"));
         sort.setShowsIndicator(false);
-        if let Some(image) = widgets::symbol("arrow.up.arrow.down", metrics::ICON_REGULAR) {
+        if let Some(image) = widgets::icon("arrow.up.arrow.down", IconRole::Toolbar) {
             sort.setImage(Some(&image));
         }
         sort.setLabel(&widgets::ns(&tr("Sort & Filter")));
         sort.setToolTip(Some(&widgets::ns(&tr("Sort & Filter"))));
         let layout = layout_group(mtm, target);
         let (search, search_box) = search_field(mtm, target);
-        let add = widgets::button(mtm, &tr("Add"), Some("plus"), sel!(showAdd:), target);
-        add.setFont(Some(&metrics::font(Text::Headline)));
+        let add = widgets::primary(mtm, &tr("Add"), Some(("plus", IconRole::Toolbar)), sel!(showAdd:), target, theme);
         add.setToolTip(Some(&widgets::ns(&tr("Add wallpapers from files, a folder or a video link"))));
-        add.widthAnchor().constraintEqualToConstant(ADD_WIDTH).setActive(true);
+        add.widthAnchor().constraintGreaterThanOrEqualToConstant(ADD_WIDTH).setActive(true);
         let settings = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), &widgets::ns("settings"));
-        if let Some(image) = widgets::symbol("gearshape", metrics::ICON_REGULAR) {
+        if let Some(image) = widgets::icon("gearshape", IconRole::Toolbar) {
             settings.setImage(Some(&image));
         }
         settings.setLabel(&widgets::ns(&tr("Settings")));
@@ -173,7 +231,7 @@ impl Toolbar {
             settings.setAction(Some(sel!(showSettings:)));
         }
         let desktop = Pill::new(mtm, &tr("Desktop"), "display", theme, &mut paint);
-        let screen = Pill::new(mtm, &tr("Lock Screen"), "lock.fill", theme, &mut paint);
+        let screen = Pill::new(mtm, &tr("Lock Screen"), "lock", theme, &mut paint);
         let line = paint.fill(mtm, Key::ToolbarSeparator, 0.0, theme);
         line.widthAnchor().constraintEqualToConstant(1.0).setActive(true);
         line.heightAnchor().constraintEqualToConstant(metrics::ICON_ROW).setActive(true);
@@ -228,29 +286,15 @@ impl Toolbar {
             desktop,
             screen,
             status,
-            scope_title: RefCell::new(String::new()),
-            paint,
             _delegate: delegate,
         };
     }
 
-    pub fn restyle(&self, theme: &Theme) {
-        self.paint.apply(theme);
-        for pill in [&self.desktop, &self.screen] {
-            pill.restyle(theme);
-        }
-    }
-
     pub fn sync(&self, mtm: MainThreadMarker, library: &Library, filter: &Filter, look: &Look, target: &AnyObject) {
         let title = filter.scope.title();
-        if self.scope_title.borrow().as_str() != title {
-            widgets::fade(&self.scope);
-            self.scope_title.borrow_mut().clone_from(&title);
-        }
         self.scope.setMenu(Some(&scope_menu(mtm, library, filter.scope, &title, sel!(scope:), target)));
         self.sort.setMenu(&sort_menu(mtm, filter, target));
         self.layout.setSelectedIndex(isize::from(filter.list));
-        widgets::prominent(&self.add, &look.theme);
         let summary = showing(library, filter.scope);
         let menu = (summary.others > 0).then(|| desktops_menu(mtm, library, &summary, target));
         let item =
@@ -281,12 +325,13 @@ struct StatusBadge {
     icon: Retained<NSImageView>,
     text: Retained<NSTextField>,
     sound: Retained<NSImageView>,
+    lights: Cell<(Option<Key>, Option<Key>)>,
 }
 
 impl StatusBadge {
     fn new(mtm: MainThreadMarker, theme: &Theme, paint: &mut Paint) -> Self {
         let icon = NSImageView::new(mtm);
-        icon.setImage(widgets::symbol("circle.fill", metrics::ICON_BADGE).as_deref());
+        icon.setImage(widgets::icon("circle.fill", IconRole::Badge).as_deref());
         let text = paint.label(mtm, "", Text::SubheadlineMedium, Key::TextSecondary, theme);
         text.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         text.widthAnchor().constraintLessThanOrEqualToConstant(STATUS_TEXT_WIDTH).setActive(true);
@@ -295,7 +340,7 @@ impl StatusBadge {
         view.setCustomSpacing_afterView(metrics::SPACE_8, &text);
         view.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_4, 0.0, metrics::SPACE_4));
         view.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
-        return Self { view, icon, text, sound };
+        return Self { view, icon, text, sound, lights: Cell::new((None, None)) };
     }
 
     fn toolbar_item(&self, mtm: MainThreadMarker) -> Retained<NSToolbarItem> {
@@ -309,9 +354,12 @@ impl StatusBadge {
             None => (Light::Off, tr("Nothing playing"), tr("No wallpaper on this desktop")),
             Some(status) => describe(status),
         };
-        self.icon.setContentTintColor(Some(&light.color(theme)));
+        let (icon, sound_light) = self.lights.get();
+        if icon != Some(light.key()) {
+            widgets::retint(&self.icon, light.key(), theme);
+            self.lights.set((Some(light.key()), sound_light));
+        }
         if self.text.stringValue().to_string() != text {
-            widgets::fade(&self.text);
             self.text.setStringValue(&widgets::ns(&text));
         }
         self.view.setToolTip(Some(&widgets::ns(&tip)));
@@ -335,9 +383,13 @@ impl StatusBadge {
                     ("headphones", Light::Accent, tr("Listening to a preview of another wallpaper in the inspector"))
                 }
             };
-            self.sound.setImage(widgets::symbol(symbol, metrics::ICON_SMALL).as_deref());
-            self.sound.setContentTintColor(Some(&light.color(theme)));
-            self.sound.setToolTip(Some(&widgets::ns(&tip)));
+            self.sound.setImage(widgets::icon(symbol, IconRole::Small).as_deref());
+            let (icon, sound_light) = self.lights.get();
+            if sound_light != Some(light.key()) {
+                widgets::retint(&self.sound, light.key(), theme);
+                self.lights.set((icon, Some(light.key())));
+            }
+            widgets::describe(&self.sound, &tip, &tip);
         }
     }
 }
@@ -352,14 +404,14 @@ enum Light {
 }
 
 impl Light {
-    fn color(self, theme: &Theme) -> Retained<NSColor> {
-        return theme.color(match self {
+    fn key(self) -> Key {
+        return match self {
             Self::Off => Key::StatusOff,
             Self::Green => Key::StatusOk,
             Self::Yellow => Key::StatusWarn,
             Self::Red => Key::StatusError,
             Self::Accent => Key::Selection,
-        });
+        };
     }
 }
 
@@ -402,12 +454,10 @@ pub fn drop_down(button: &NSButton, menu: &NSMenu) {
     );
 }
 
-fn popup(mtm: MainThreadMarker, width: CGFloat) -> Retained<NSPopUpButton> {
-    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, true);
-    popup.setBezelStyle(objc2_app_kit::NSBezelStyle::Glass);
-    popup.setControlSize(objc2_app_kit::NSControlSize::Large);
-    popup.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
-    popup.widthAnchor().constraintEqualToConstant(width).setActive(true);
+fn popup(mtm: MainThreadMarker, width: CGFloat, theme: &Theme) -> Retained<NSPopUpButton> {
+    let popup = widgets::popup(mtm, true, theme);
+    popup.widthAnchor().constraintGreaterThanOrEqualToConstant(width).setActive(true);
+    popup.setToolTip(Some(&widgets::ns(&tr("Choose a specific desktop"))));
     return popup;
 }
 
@@ -445,10 +495,8 @@ fn view_item(mtm: MainThreadMarker, id: &str, title: &str, view: &NSView) -> Ret
 }
 
 fn layout_group(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSToolbarItemGroup> {
-    let images: Vec<Retained<NSImage>> = ["square.grid.2x2", "list.bullet"]
-        .iter()
-        .filter_map(|name| widgets::symbol(name, metrics::ICON_REGULAR))
-        .collect();
+    let images: Vec<Retained<NSImage>> =
+        ["square.grid.2x2", "list.bullet"].iter().filter_map(|name| widgets::icon(name, IconRole::Toolbar)).collect();
     let labels = [widgets::ns(&tr("Grid")), widgets::ns(&tr("List"))];
     let group = unsafe {
         NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
@@ -485,14 +533,15 @@ fn desktops_menu(mtm: MainThreadMarker, library: &Library, summary: &Showing, ta
 
 impl Pill {
     fn new(mtm: MainThreadMarker, caption: &str, icon: &str, theme: &Theme, paint: &mut Paint) -> Self {
-        let glyph = widgets::symbol_view(mtm, icon, metrics::ICON_SMALL, &theme.color(Key::TextSecondary));
+        let glyph = widgets::symbol_view(mtm, icon, IconRole::Small, &theme.color(Key::TextSecondary));
         paint.add(&glyph, Key::TextSecondary, Slot::Tint);
-        let thumb = NSView::new(mtm);
-        thumb.setWantsLayer(true);
+        let thumb = Swatch::new(
+            mtm,
+            metrics::RADIUS_CONTROL,
+            Some(&theme.color(Key::ToolbarPill)),
+            Some((metrics::BORDER_HAIRLINE, &theme.color(Key::ToolbarSeparator))),
+        );
         if let Some(layer) = thumb.layer() {
-            layer.setCornerRadius(metrics::RADIUS_CONTROL);
-            layer.setMasksToBounds(true);
-            layer.setBorderWidth(metrics::BORDER_HAIRLINE);
             layer.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
         }
         thumb.widthAnchor().constraintEqualToConstant(29.0).setActive(true);
@@ -505,54 +554,38 @@ impl Pill {
             objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
         );
         badge.setHidden(true);
-        let chevron = widgets::symbol_view(mtm, "chevron.down", metrics::ICON_BADGE, &theme.color(Key::TextTertiary));
+        let chevron = widgets::symbol_view(mtm, "chevron.down", IconRole::Badge, &theme.color(Key::TextTertiary));
         paint.add(&chevron, Key::TextTertiary, Slot::Tint);
         chevron.setHidden(true);
         let row = widgets::stack(mtm, &[&glyph, &thumb, &title, &badge, &chevron], false, metrics::SPACE_4);
         row.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_8, 0.0, metrics::SPACE_8));
         row.setCustomSpacing_afterView(metrics::SPACE_8, &thumb);
         row.setCustomSpacing_afterView(metrics::SPACE_2, &badge);
+        let hover = Swatch::new(mtm, metrics::capsule(PILL_HEIGHT), Some(&theme.color(Key::ToolbarPillHover)), None);
+        if let Some(layer) = hover.layer() {
+            layer.setOpacity(0.0);
+        }
         let view = PillView::alloc(mtm).set_ivars(PillIvars {
             index: Cell::new(None),
             menu: RefCell::new(None),
-            hover: RefCell::new(theme.color(Key::ToolbarPillHover)),
+            hover: hover.clone(),
+            control: controls::Control::new(),
         });
         let view: Retained<PillView> = unsafe { msg_send![super(view), init] };
-        view.setWantsLayer(true);
-        if let Some(layer) = view.layer() {
-            layer.setCornerRadius(metrics::capsule(PILL_HEIGHT));
-        }
+        view.addSubview(&hover);
+        widgets::pin(&hover, &view, 0.0);
         view.addSubview(&row);
         widgets::pin(&row, &view, 0.0);
         let width = view.widthAnchor().constraintEqualToConstant(PILL_WIDTH);
         width.setActive(true);
         view.heightAnchor().constraintEqualToConstant(PILL_HEIGHT).setActive(true);
-        let options = NSTrackingAreaOptions::MouseEnteredAndExited
-            | NSTrackingAreaOptions::ActiveInKeyWindow
-            | NSTrackingAreaOptions::InVisibleRect;
-        let area = unsafe {
-            NSTrackingArea::initWithRect_options_owner_userInfo(
-                NSTrackingArea::alloc(),
-                CGRect::ZERO,
-                options,
-                Some(&view),
-                None,
-            )
-        };
-        view.addTrackingArea(&area);
-        let titles = RefCell::new((theme.color(Key::Text), theme.color(Key::TextTertiary)));
-        let pill = Self { view, thumb, title, badge, chevron, width, titles };
-        pill.restyle(theme);
-        return pill;
-    }
-
-    fn restyle(&self, theme: &Theme) {
-        *self.view.ivars().hover.borrow_mut() = theme.color(Key::ToolbarPillHover);
-        *self.titles.borrow_mut() = (theme.color(Key::Text), theme.color(Key::TextTertiary));
-        if let Some(layer) = self.thumb.layer() {
-            layer.setBorderColor(Some(&widgets::cg(&self.thumb, &theme.color(Key::ToolbarSeparator))));
-            layer.setBackgroundColor(Some(&widgets::cg(&self.thumb, &theme.color(Key::ToolbarPill))));
-        }
+        controls::track(&view, &view);
+        view.setAccessibilityElement(true);
+        view.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        view.setAccessibilityLabel(Some(&widgets::ns(caption)));
+        view.setAccessibilityEnabled(false);
+        let titles = (theme.color(Key::Text), theme.color(Key::TextTertiary));
+        return Self { view, thumb, title, badge, chevron, width, titles, shown: RefCell::new((None, 0)) };
     }
 
     fn update(
@@ -564,30 +597,32 @@ impl Pill {
         menu: Option<Retained<NSMenu>>,
     ) {
         let (name, image) = shown.unzip();
-        widgets::fade(&self.thumb);
-        if let Some(layer) = self.thumb.layer() {
-            unsafe {
-                match image.flatten() {
-                    Some(image) => layer.setContents(Some(image)),
-                    None => layer.setContents(None),
+        let image = image.flatten();
+        let stamp = (name.clone(), image.map_or(0, |image| std::ptr::from_ref(image) as usize));
+        if self.shown.replace(stamp.clone()) != stamp {
+            if let Some(layer) = self.thumb.layer() {
+                unsafe {
+                    match image {
+                        Some(image) => layer.setContents(Some(image)),
+                        None => layer.setContents(None),
+                    }
                 }
             }
+            let titles = &self.titles;
+            self.title.setStringValue(&widgets::ns(name.as_deref().unwrap_or(caption)));
+            self.title.setTextColor(Some(if name.is_some() { &titles.0 } else { &titles.1 }));
         }
-        widgets::fade(&self.title);
-        let titles = self.titles.borrow();
-        self.title.setStringValue(&widgets::ns(name.as_deref().unwrap_or(caption)));
-        self.title.setTextColor(Some(if name.is_some() { &titles.0 } else { &titles.1 }));
+        self.view.setAccessibilityLabel(Some(&widgets::ns(name.as_deref().unwrap_or(caption))));
+        self.view.setAccessibilityEnabled(index.is_some() || menu.is_some());
         let expanded = others > 0;
         self.badge.setStringValue(&widgets::ns(&format!("+{others}")));
         if self.badge.isHidden() == expanded {
-            widgets::animate(metrics::MOTION_STANDARD, || {
-                self.badge.animator().setHidden(!expanded);
-                self.chevron.animator().setHidden(!expanded);
-                self.width.setConstant(PILL_WIDTH + if expanded { metrics::SPACE_24 } else { 0.0 });
-                if let Some(container) = unsafe { self.view.superview() } {
-                    container.layoutSubtreeIfNeeded();
-                }
-            });
+            self.badge.setHidden(!expanded);
+            self.chevron.setHidden(!expanded);
+            self.width.setConstant(PILL_WIDTH + if expanded { metrics::SPACE_24 } else { 0.0 });
+            if let Some(container) = unsafe { self.view.superview() } {
+                container.layoutSubtreeIfNeeded();
+            }
         }
         let ivars = self.view.ivars();
         ivars.index.set(index);
@@ -611,7 +646,7 @@ fn entry(
 fn title_entry(mtm: MainThreadMarker, title: &str, icon: &str) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
     item.setTitle(&widgets::ns(title));
-    if let Some(image) = widgets::symbol(icon, metrics::ICON_REGULAR) {
+    if let Some(image) = widgets::icon(icon, IconRole::Toolbar) {
         item.setImage(Some(&image));
     }
     return item;
@@ -676,7 +711,7 @@ fn add_menu(mtm: MainThreadMarker, target: &AnyObject) -> Retained<NSMenu> {
         entry(mtm, &tr("From Video Link…"), sel!(download:), 0, false, target),
     ];
     for (item, icon) in items.iter().zip(["doc.badge.plus", "folder.badge.plus", "link.badge.plus"]) {
-        if let Some(image) = widgets::symbol(icon, metrics::ICON_REGULAR) {
+        if let Some(image) = widgets::icon(icon, IconRole::Toolbar) {
             item.setImage(Some(&image));
         }
     }

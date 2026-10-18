@@ -5,7 +5,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlStateValueOn, NSLayoutAttribute,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlSize, NSControlStateValueOn, NSLayoutAttribute,
     NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSSavePanel, NSTextField, NSWindow,
 };
 use objc2_core_foundation::CGRect;
@@ -16,7 +16,8 @@ use uuid::Uuid;
 use crate::app;
 use crate::i18n::{self, Arg, tr, trf, trp};
 use crate::style;
-use crate::ui::metrics;
+use crate::ui::metrics::{self, Text};
+use crate::ui::theme::Theme;
 use crate::ui::widgets::{self, ns};
 use crate::ui::{UI, later, submit};
 
@@ -141,10 +142,16 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
         )
     };
     let hidden = unsafe { NSButton::checkboxWithTitle_target_action(&ns(&tr("Hide while locked")), None, None, mtm) };
-    hidden.setEnabled(false);
     hidden.setTag(PRIVATE_HIDE_TAG);
+    for check in [&private, &hidden] {
+        check.setControlSize(NSControlSize::Large);
+        check.setFont(Some(&metrics::font(Text::Callout)));
+    }
+    hidden.setEnabled(false);
+    widgets::alpha(&hidden, metrics::DIMMED);
     if item.is_some() && !app::with(|app| app.is_unlocked()).unwrap_or(false) {
         private.setEnabled(false);
+        widgets::alpha(&private, metrics::DIMMED);
         private.setToolTip(Some(&ns(&tr("Unlock private folders to move a wallpaper into a private folder"))));
     }
     let flags = widgets::stack(mtm, &[&private, &hidden], false, metrics::SPACE_16);
@@ -178,6 +185,11 @@ pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
             }
         });
     });
+}
+
+pub fn media(path: &Path) -> bool {
+    return path.is_dir()
+        || path.extension().and_then(|value| value.to_str()).and_then(crate::import::kind_for).is_some();
 }
 
 pub fn media_in(path: &Path) -> Vec<String> {
@@ -227,6 +239,14 @@ pub fn add_files(mtm: MainThreadMarker, directories: bool) {
     panel.beginSheetModalForWindow_completionHandler(&window, &block);
 }
 
+fn themed_popup(mtm: MainThreadMarker, pulls_down: bool) -> Retained<NSPopUpButton> {
+    let theme: Option<Theme> = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.look.theme.clone()));
+    return match theme {
+        Some(theme) => widgets::popup(mtm, pulls_down, &theme),
+        None => NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, pulls_down),
+    };
+}
+
 pub fn download_sheet(mtm: MainThreadMarker) {
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&ns(&tr("Add from Video Link")));
@@ -234,11 +254,12 @@ pub fn download_sheet(mtm: MainThreadMarker) {
         "Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.",
     )));
     let field = widgets::input(mtm, "https://youtu.be/…", LINK_WIDTH);
-    let quality = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+    let quality = themed_popup(mtm, false);
     let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(&tr(title))).collect();
     quality.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
     quality.selectItemAtIndex(DEFAULT_QUALITY);
     quality.setEnabled(false);
+    widgets::alpha(&quality, metrics::DIMMED);
     let label = NSTextField::labelWithString(&ns(&tr("Quality")), mtm);
     let options = widgets::stack(mtm, &[&label, &quality], false, metrics::SPACE_8);
     let accessory = widgets::stack(mtm, &[&field, &options], true, metrics::SPACE_12);

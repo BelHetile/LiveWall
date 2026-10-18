@@ -1,17 +1,20 @@
-use objc2::rc::Retained;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyClass;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSColor, NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSGlassEffectView, NSGlassEffectViewStyle, NSTitlePosition, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWorkspace,
+    NSColor, NSFont, NSFontWeight, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSGlassEffectView,
+    NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSVisualEffectView, NSWorkspace,
 };
 use objc2_core_foundation::CGFloat;
-use objc2_foundation::NSSize;
-use objc2_quartz_core::{
-    CAMediaTimingFunction, kCAMediaTimingFunctionEaseIn, kCAMediaTimingFunctionEaseInEaseOut,
-    kCAMediaTimingFunctionEaseOut,
-};
+use objc2_quartz_core::{CAMediaTimingFunction, kCAMediaTimingFunctionEaseInEaseOut, kCAMediaTimingFunctionEaseOut};
+
+use crate::style::Key;
+use crate::ui::theme::{self, Theme};
+use crate::ui::widgets::{self, Slot};
 
 pub const SPACE_2: CGFloat = 2.0;
 pub const SPACE_4: CGFloat = 4.0;
@@ -25,7 +28,8 @@ pub const WALL_PADDING: CGFloat = SPACE_16;
 
 pub const RADIUS_CONTROL: CGFloat = 6.0;
 pub const RADIUS_SMALL: CGFloat = 8.0;
-pub const RADIUS_CARD: CGFloat = 12.0;
+pub const RADIUS_CARD: CGFloat = 10.0;
+pub const RADIUS_TILE: CGFloat = 12.0;
 pub const RING_GAP: CGFloat = 5.0;
 
 pub const BORDER_HAIRLINE: CGFloat = 0.5;
@@ -35,25 +39,29 @@ pub const BORDER_RING: CGFloat = 3.0;
 pub const ICON_BADGE: CGFloat = 8.0;
 pub const ICON_SMALL: CGFloat = 11.0;
 pub const ICON_REGULAR: CGFloat = 13.0;
+pub const ICON_TOOLBAR: CGFloat = 15.0;
 pub const ICON_ROW: CGFloat = 16.0;
 pub const ICON_LARGE: CGFloat = 20.0;
 pub const ICON_HERO: CGFloat = 32.0;
 
 pub const ROW_LIST: CGFloat = 28.0;
-pub const ROW_SETTINGS: CGFloat = 40.0;
-pub const ROW_SETTINGS_HINT: CGFloat = 52.0;
+pub const ROW_SETTINGS: CGFloat = 36.0;
+pub const ROW_SETTINGS_HINT: CGFloat = 44.0;
 pub const CONTROL_HEIGHT: CGFloat = 26.0;
+pub const BUTTON_HEIGHT: CGFloat = 28.0;
 pub const EMPTY_TOP: CGFloat = 200.0;
 
 pub const MOTION_QUICK: f64 = 0.15;
-pub const MOTION_STANDARD: f64 = 0.22;
-pub const MOTION_EMPHASIZED: f64 = 0.3;
-pub const SCROLL_MIN: f64 = 0.16;
+pub const MOTION_STATE: f64 = 0.2;
+pub const MOTION_LAYOUT: f64 = 0.25;
+pub const SCROLL_MIN: f64 = 0.2;
 pub const SCROLL_MAX: f64 = 0.35;
 pub const HOVER_SCALE: f64 = 1.03;
 pub const DIMMED: f64 = 0.4;
 pub const MUTED: f64 = 0.85;
 pub const SELECT_SCALE: f64 = 0.94;
+pub const EDGE_HOVER: f32 = 0.45;
+pub const EDGE_PRESSED: f32 = 0.7;
 
 pub fn capsule(height: CGFloat) -> CGFloat {
     return height / 2.0;
@@ -79,7 +87,7 @@ pub enum Text {
 }
 
 impl Text {
-    pub fn size(self) -> CGFloat {
+    fn size(self) -> CGFloat {
         return match self {
             Self::Title2 => 17.0,
             Self::Title3 => 15.0,
@@ -119,10 +127,6 @@ pub fn ease_out() -> Retained<CAMediaTimingFunction> {
     return timing(unsafe { kCAMediaTimingFunctionEaseOut });
 }
 
-pub fn ease_in() -> Retained<CAMediaTimingFunction> {
-    return timing(unsafe { kCAMediaTimingFunctionEaseIn });
-}
-
 pub fn ease_in_out() -> Retained<CAMediaTimingFunction> {
     return timing(unsafe { kCAMediaTimingFunctionEaseInEaseOut });
 }
@@ -147,29 +151,85 @@ fn glass_available() -> bool {
     return AnyClass::get(c"NSGlassEffectView").is_some();
 }
 
-fn pin(view: &NSView, to: &NSView) {
-    view.setTranslatesAutoresizingMaskIntoConstraints(false);
-    view.leadingAnchor().constraintEqualToAnchor(&to.leadingAnchor()).setActive(true);
-    view.trailingAnchor().constraintEqualToAnchor(&to.trailingAnchor()).setActive(true);
-    view.topAnchor().constraintEqualToAnchor(&to.topAnchor()).setActive(true);
-    view.bottomAnchor().constraintEqualToAnchor(&to.bottomAnchor()).setActive(true);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Opaque,
+    Glass,
+    Tinted,
+    Effect,
 }
 
-fn card(mtm: MainThreadMarker, fill: &NSColor, radius: CGFloat) -> Retained<NSView> {
-    let card = NSBox::new(mtm);
-    card.setBoxType(NSBoxType::Custom);
-    card.setTitlePosition(NSTitlePosition::NoTitle);
-    card.setBorderWidth(0.0);
-    card.setCornerRadius(radius);
-    card.setFillColor(fill);
-    card.setContentViewMargins(NSSize::ZERO);
-    return Retained::into_super(card);
+fn kind(tint: Option<Key>) -> Kind {
+    return if reduce_transparency() {
+        Kind::Opaque
+    } else if glass_available() {
+        Kind::Glass
+    } else if tint.is_some() {
+        Kind::Tinted
+    } else {
+        Kind::Effect
+    };
+}
+
+fn make(mtm: MainThreadMarker, kind: Kind, content: &NSView, radius: CGFloat) -> Retained<NSView> {
+    return match kind {
+        Kind::Opaque | Kind::Tinted => {
+            let card = widgets::card(mtm, &NSColor::clearColor(), radius);
+            card.addSubview(content);
+            Retained::into_super(card)
+        }
+        Kind::Glass => {
+            let glass = NSGlassEffectView::new(mtm);
+            glass.setStyle(NSGlassEffectViewStyle::Regular);
+            glass.setCornerRadius(radius);
+            glass.setContentView(Some(content));
+            Retained::into_super(glass)
+        }
+        Kind::Effect => {
+            let effect = NSVisualEffectView::new(mtm);
+            effect.setMaterial(NSVisualEffectMaterial::Popover);
+            effect.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+            effect.setState(NSVisualEffectState::Active);
+            effect.setWantsLayer(true);
+            if let Some(layer) = effect.layer() {
+                layer.setCornerRadius(radius);
+                layer.setMasksToBounds(true);
+            }
+            effect.addSubview(content);
+            Retained::into_super(effect)
+        }
+    };
+}
+
+thread_local! {
+    static SURFACES: RefCell<Vec<Rc<Inner>>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn refresh_surfaces() {
+    let live: Vec<Rc<Inner>> = SURFACES.with(|surfaces| {
+        let mut surfaces = surfaces.borrow_mut();
+        surfaces.retain(|inner| inner.host.load().is_some());
+        return surfaces.clone();
+    });
+    for inner in &live {
+        inner.sync();
+    }
+}
+
+struct Inner {
+    host: Weak<NSView>,
+    content: Retained<NSView>,
+    radius: CGFloat,
+    theme: Theme,
+    tint: Cell<Option<Key>>,
+    fill: Cell<Key>,
+    kind: Cell<Kind>,
+    material: RefCell<Retained<NSView>>,
 }
 
 pub struct Surface {
     host: Retained<NSView>,
-    content: Retained<NSView>,
-    radius: CGFloat,
+    inner: Rc<Inner>,
 }
 
 impl Surface {
@@ -177,55 +237,91 @@ impl Surface {
         mtm: MainThreadMarker,
         content: &NSView,
         radius: CGFloat,
-        tint: Option<&NSColor>,
-        fill: &NSColor,
+        tint: Option<Key>,
+        fill: Key,
+        theme: &Theme,
     ) -> Self {
-        let surface = Self { host: NSView::new(mtm), content: Retained::from(content), radius };
-        surface.paint(tint, fill);
-        return surface;
+        let host = NSView::new(mtm);
+        let initial = kind(tint);
+        let material = make(mtm, initial, content, radius);
+        host.addSubview(&material);
+        widgets::pin(&material, &host, 0.0);
+        widgets::pin(content, &material, 0.0);
+        let inner = Rc::new(Inner {
+            host: Weak::new(&host),
+            content: Retained::from(content),
+            radius,
+            theme: theme.clone(),
+            tint: Cell::new(tint),
+            fill: Cell::new(fill),
+            kind: Cell::new(initial),
+            material: RefCell::new(material),
+        });
+        inner.bind();
+        SURFACES.with(|surfaces| {
+            let mut surfaces = surfaces.borrow_mut();
+            if surfaces.len() == surfaces.capacity() {
+                surfaces.retain(|other| other.host.load().is_some());
+            }
+            surfaces.push(Rc::clone(&inner));
+        });
+        return Self { host, inner };
     }
 
     pub fn view(&self) -> &NSView {
         return &self.host;
     }
 
-    pub fn paint(&self, tint: Option<&NSColor>, fill: &NSColor) {
-        let mtm = self.host.mtm();
-        for child in &self.host.subviews() {
-            child.removeFromSuperview();
+    pub fn refresh_material(&self) {
+        self.inner.sync();
+    }
+}
+
+impl Inner {
+    fn sync(&self) {
+        let wanted = kind(self.tint.get());
+        if wanted != self.kind.get() {
+            self.swap(wanted);
         }
-        self.content.removeFromSuperview();
-        let material = if reduce_transparency() {
-            let opaque = tint.unwrap_or(fill).colorWithAlphaComponent(1.0);
-            let card = card(mtm, &opaque, self.radius);
-            card.addSubview(&self.content);
-            card
-        } else if glass_available() {
-            let glass = NSGlassEffectView::new(mtm);
-            glass.setStyle(NSGlassEffectViewStyle::Regular);
-            glass.setCornerRadius(self.radius);
-            glass.setTintColor(tint);
-            glass.setContentView(Some(&self.content));
-            Retained::into_super(glass)
-        } else if let Some(tint) = tint {
-            let card = card(mtm, tint, self.radius);
-            card.addSubview(&self.content);
-            card
-        } else {
-            let effect = NSVisualEffectView::new(mtm);
-            effect.setMaterial(NSVisualEffectMaterial::Popover);
-            effect.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
-            effect.setState(NSVisualEffectState::Active);
-            effect.setWantsLayer(true);
-            if let Some(layer) = effect.layer() {
-                layer.setCornerRadius(self.radius);
-                layer.setMasksToBounds(true);
-            }
-            effect.addSubview(&self.content);
-            Retained::into_super(effect)
+        self.bind();
+    }
+
+    fn swap(&self, wanted: Kind) {
+        let Some(host) = self.host.load() else {
+            return;
         };
-        self.host.addSubview(&material);
-        pin(&material, &self.host);
-        pin(&self.content, &material);
+        let mtm = host.mtm();
+        self.content.removeFromSuperview();
+        let old = self.material.borrow().clone();
+        theme::forget(&old);
+        old.removeFromSuperview();
+        let material = make(mtm, wanted, &self.content, self.radius);
+        host.addSubview(&material);
+        widgets::pin(&material, &host, 0.0);
+        widgets::pin(&self.content, &material, 0.0);
+        self.material.replace(material);
+        self.kind.set(wanted);
+    }
+
+    fn bind(&self) {
+        let material = self.material.borrow();
+        theme::forget(&material);
+        let (key, slot) = match self.kind.get() {
+            Kind::Opaque => (Some(self.tint.get().unwrap_or(self.fill.get())), Slot::Opaque),
+            Kind::Glass => (self.tint.get(), Slot::Glass),
+            Kind::Tinted => (self.tint.get(), Slot::Fill),
+            Kind::Effect => (None, Slot::Fill),
+        };
+        match key {
+            Some(key) => {
+                theme::register(&material, key, slot);
+                widgets::paint(&material, key, slot, &self.theme);
+            }
+            None => {
+                if let Some(glass) = material.downcast_ref::<NSGlassEffectView>() {
+                    glass.setTintColor(None);
+                }
+            }
+        }
     }
 }

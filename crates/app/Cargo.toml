@@ -82,6 +82,9 @@ objc2-foundation = { workspace = true, features = [
 objc2-app-kit = { workspace = true, features = [
   "std",
   "NSAccessibility",
+  "NSAccessibilityConstants",
+  "NSAccessibilityProtocols",
+  "NSBezierPath",
   "NSApplication",
   "NSResponder",
   "NSRunningApplication",

@@ -1,13 +1,14 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingDestination, NSDraggingInfo,
-    NSImageView, NSLayoutAttribute, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboardTypeFileURL,
-    NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSTextField, NSTextFieldDelegate, NSView, NSViewController,
+    NSAccessibility, NSButton, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSImageView, NSLayoutAttribute,
+    NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboardTypeFileURL, NSPopover, NSPopoverBehavior,
+    NSPopoverDelegate, NSView, NSViewController,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSCopying, NSNotification, NSObject, NSObjectProtocol, NSRectEdge, NSString, NSURL};
@@ -16,11 +17,12 @@ use uuid::Uuid;
 
 use crate::app;
 use crate::i18n::tr;
-use crate::model::{self, Icon};
-use crate::style::{self, Key, Tag};
+use crate::model::Icon;
+use crate::style::Key;
 use crate::ui::metrics::{self, Text};
-use crate::ui::theme::{self, Theme, folder_color};
-use crate::ui::widgets::{self, ns};
+use crate::ui::swatches::{Panel, Pick};
+use crate::ui::theme::{self, Theme};
+use crate::ui::widgets::{self, Slot, Swatch, ns};
 use crate::ui::{folders, report};
 
 const COLUMNS: usize = 9;
@@ -37,15 +39,16 @@ pub struct PickerIvars {
     icons_dir: PathBuf,
     icon: RefCell<Option<String>>,
     color: RefCell<Option<String>>,
-    glyph: Retained<NSColor>,
-    soft: Retained<NSColor>,
-    empty: Retained<NSColor>,
     preview: Retained<NSImageView>,
-    field: Retained<NSTextField>,
-    well: Retained<NSView>,
-    colors: Vec<(Option<String>, Retained<NSButton>)>,
-    icons: Vec<(String, Retained<NSButton>)>,
+    board: Retained<Panel>,
+    icons: Vec<(String, Choice)>,
     popover: Retained<NSPopover>,
+}
+
+struct Choice {
+    view: Retained<NSView>,
+    button: Retained<NSButton>,
+    mark: Retained<Swatch>,
 }
 
 define_class!(
@@ -77,11 +80,6 @@ define_class!(
     unsafe impl NSObjectProtocol for StylePicker {}
 
     impl StylePicker {
-        #[unsafe(method(pickColor:))]
-        fn pick_color(&self, sender: &NSButton) {
-            self.choose_color(sender.tag());
-        }
-
         #[unsafe(method(pickIcon:))]
         fn pick_icon(&self, sender: &NSButton) {
             self.choose_icon(sender.tag());
@@ -108,15 +106,6 @@ define_class!(
         }
     }
 
-    unsafe impl NSControlTextEditingDelegate for StylePicker {
-        #[unsafe(method(controlTextDidChange:))]
-        fn text_did_change(&self, _notification: &NSNotification) {
-            self.typed();
-        }
-    }
-
-    unsafe impl NSTextFieldDelegate for StylePicker {}
-
     unsafe impl NSPopoverDelegate for StylePicker {
         #[unsafe(method(popoverDidClose:))]
         fn popover_did_close(&self, _notification: &NSNotification) {
@@ -140,13 +129,12 @@ fn dropped(info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
 }
 
 impl StylePicker {
-    fn choose_color(&self, tag: isize) {
-        let ivars = self.ivars();
-        let Some((color, _)) = usize::try_from(tag).ok().and_then(|index| ivars.colors.get(index)) else {
-            return;
-        };
-        ivars.field.setStringValue(&ns(color.as_deref().unwrap_or("")));
-        ivars.color.borrow_mut().clone_from(color);
+    fn pick(&self, pick: Option<Pick>) {
+        let color = pick.map(|pick| match pick {
+            Pick::Tag(tag) => tag.id().to_string(),
+            Pick::Hex(color) => color.to_hex(),
+        });
+        *self.ivars().color.borrow_mut() = color;
         self.apply();
     }
 
@@ -161,7 +149,7 @@ impl StylePicker {
 
     fn remove(&self, tag: isize) {
         let ivars = self.ivars();
-        let Some((icon, button)) = usize::try_from(tag).ok().and_then(|index| ivars.icons.get(index)) else {
+        let Some((icon, choice)) = usize::try_from(tag).ok().and_then(|index| ivars.icons.get(index)) else {
             return;
         };
         let Some(response) = app::with(|app| app.remove_icon(icon)) else {
@@ -171,7 +159,7 @@ impl StylePicker {
             report(&response);
             return;
         }
-        button.setHidden(true);
+        choice.view.setHidden(true);
         if ivars.icon.borrow().as_deref() == Some(icon.as_str()) {
             *ivars.icon.borrow_mut() = None;
         }
@@ -200,25 +188,7 @@ impl StylePicker {
         let ivars = self.ivars();
         *ivars.icon.borrow_mut() = None;
         *ivars.color.borrow_mut() = None;
-        ivars.field.setStringValue(&ns(""));
         self.apply();
-    }
-
-    fn typed(&self) {
-        let ivars = self.ivars();
-        let text = ivars.field.stringValue().to_string();
-        if text.trim().is_empty() {
-            *ivars.color.borrow_mut() = None;
-            self.apply();
-            return;
-        }
-        match model::parse_color(&text) {
-            Some(hex) => {
-                *ivars.color.borrow_mut() = Some(hex);
-                self.apply();
-            }
-            None => self.paint(),
-        }
     }
 
     fn closed(&self) {
@@ -271,28 +241,14 @@ impl StylePicker {
         let color = ivars.color.borrow().clone();
         let image = folders::preview(icon.as_deref(), color.as_deref(), &ivars.icons_dir, ivars.fallback, PREVIEW);
         ivars.preview.setImage(image.as_deref());
-        ivars.preview.setContentTintColor(Some(&ivars.glyph));
-        let typed = model::parse_color(&ivars.field.stringValue().to_string());
-        let fill = typed.as_deref().and_then(folder_color).unwrap_or_else(|| ivars.empty.clone());
-        if let Some(layer) = ivars.well.layer() {
-            layer.setBackgroundColor(Some(&widgets::cg(&ivars.well, &fill)));
-        }
-        for (value, button) in &ivars.colors {
-            mark(button, *value == color, &ivars.soft);
-        }
+        ivars.board.select(color.as_deref().and_then(Pick::parse));
         let current = icon.as_deref().unwrap_or(&folders::symbol_value(ivars.fallback)).to_string();
-        for (value, button) in &ivars.icons {
-            mark(button, *value == current, &ivars.soft);
+        for (value, choice) in &ivars.icons {
+            let on = *value == current;
+            choice.mark.setHidden(!on);
+            choice.button.setAccessibilitySelected(on);
         }
     }
-}
-
-fn mark(button: &NSButton, on: bool, soft: &NSColor) {
-    let Some(layer) = button.layer() else {
-        return;
-    };
-    let fill = if on { soft.retain() } else { NSColor::clearColor() };
-    layer.setBackgroundColor(Some(&widgets::cg(button, &fill)));
 }
 
 fn cell(
@@ -301,25 +257,29 @@ fn cell(
     tag: usize,
     action: objc2::runtime::Sel,
     tip: &str,
-) -> Retained<NSButton> {
+    theme: &Theme,
+) -> Choice {
     let button = unsafe { NSButton::buttonWithImage_target_action(image, None, Some(action), mtm) };
-    button.setBordered(false);
+    widgets::hoverable(&button);
     button.setTag(isize::try_from(tag).unwrap_or(0));
-    button.setToolTip(Some(&ns(tip)));
-    button.setWantsLayer(true);
-    if let Some(layer) = button.layer() {
-        layer.setCornerRadius(metrics::RADIUS_SMALL);
-    }
-    button.widthAnchor().constraintEqualToConstant(CELL).setActive(true);
-    button.heightAnchor().constraintEqualToConstant(CELL).setActive(true);
-    return button;
+    widgets::describe(&button, tip, tip);
+    let mark = Swatch::new(mtm, metrics::RADIUS_SMALL, Some(&theme.color(Key::PickerSelected)), None);
+    mark.setHidden(true);
+    let view = NSView::new(mtm);
+    view.addSubview(&mark);
+    view.addSubview(&button);
+    widgets::pin(&mark, &view, 0.0);
+    widgets::pin(&button, &view, 0.0);
+    view.widthAnchor().constraintEqualToConstant(CELL).setActive(true);
+    view.heightAnchor().constraintEqualToConstant(CELL).setActive(true);
+    return Choice { view, button, mark };
 }
 
-fn grid(mtm: MainThreadMarker, buttons: &[Retained<NSButton>]) -> Retained<NSView> {
-    let rows: Vec<Retained<objc2_app_kit::NSStackView>> = buttons
+fn grid(mtm: MainThreadMarker, cells: &[Retained<NSView>]) -> Retained<NSView> {
+    let rows: Vec<Retained<objc2_app_kit::NSStackView>> = cells
         .chunks(COLUMNS)
         .map(|chunk| {
-            let views: Vec<&NSView> = chunk.iter().map(|button| &***button as &NSView).collect();
+            let views: Vec<&NSView> = chunk.iter().map(|cell| &**cell).collect();
             return widgets::stack(mtm, &views, false, GAP);
         })
         .collect();
@@ -345,60 +305,23 @@ fn dropped_image(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf> {
         });
 }
 
-fn color_buttons(mtm: MainThreadMarker) -> Vec<(Option<String>, Retained<NSButton>)> {
-    let mut colors: Vec<(Option<String>, Retained<NSButton>)> = Vec::new();
-    if let Some(image) = folders::painted("circle.dashed", None, SWATCH) {
-        colors.push((None, cell(mtm, &image, 0, sel!(pickColor:), &tr("Default"))));
-    }
-    for tag in Tag::ALL {
-        let Some(image) = folders::swatch(&theme::system(tag.system()), SWATCH) else {
-            continue;
-        };
-        let index = colors.len();
-        colors.push((Some(tag.id().to_string()), cell(mtm, &image, index, sel!(pickColor:), &tr(tag.title()))));
-    }
-    return colors;
-}
-
-fn hex_row(
-    mtm: MainThreadMarker,
-    color: Option<&str>,
-    theme: &Theme,
-) -> (Retained<NSTextField>, Retained<NSView>, Retained<objc2_app_kit::NSStackView>) {
-    let field = widgets::input(mtm, "#RRGGBB", 92.0);
-    field.setStringValue(&ns(color.unwrap_or("")));
-    field.setFont(Some(&metrics::digits(Text::Subheadline)));
-    let well = NSView::new(mtm);
-    well.setWantsLayer(true);
-    let size = SWATCH + metrics::SPACE_4;
-    if let Some(layer) = well.layer() {
-        layer.setCornerRadius(metrics::capsule(size));
-        layer.setBorderWidth(metrics::BORDER_HAIRLINE);
-        layer.setBorderColor(Some(&widgets::cg(&well, &theme.color(Key::PickerDivider))));
-    }
-    well.widthAnchor().constraintEqualToConstant(size).setActive(true);
-    well.heightAnchor().constraintEqualToConstant(size).setActive(true);
-    let custom_label = widgets::label(mtm, &tr(style::CUSTOM), Text::Callout, &theme.color(Key::TextSecondary));
-    let hex_row = widgets::stack(mtm, &[&custom_label, &field, &well], false, metrics::SPACE_8);
-    return (field, well, hex_row);
-}
-
 fn icon_buttons(
     mtm: MainThreadMarker,
     icons_dir: &Path,
     custom: Vec<String>,
     theme: &Theme,
-) -> (Vec<(String, Retained<NSButton>)>, usize) {
-    let mut icons: Vec<(String, Retained<NSButton>)> = Vec::new();
-    let quiet = theme.color(Key::TextSecondary);
+) -> (Vec<(String, Choice)>, usize) {
+    let mut icons: Vec<(String, Choice)> = Vec::new();
     for symbol in folders::SYMBOLS {
         let Some(image) = folders::painted(symbol, None, SWATCH) else {
             continue;
         };
         let tag = icons.len();
-        let button = cell(mtm, &image, tag, sel!(pickIcon:), symbol);
-        button.setContentTintColor(Some(&quiet));
-        icons.push((folders::symbol_value(symbol), button));
+        let title = symbol.trim_end_matches(".fill").replace('.', " ");
+        let choice = cell(mtm, &image, tag, sel!(pickIcon:), &title, theme);
+        choice.button.setContentTintColor(Some(&theme.color(Key::TextSecondary)));
+        theme::register(&choice.button, Key::TextSecondary, Slot::Tint);
+        icons.push((folders::symbol_value(symbol), choice));
     }
     let symbol_count = icons.len();
     for value in custom {
@@ -409,8 +332,8 @@ fn icon_buttons(
             continue;
         };
         let tag = icons.len();
-        let button = cell(mtm, &image, tag, sel!(pickIcon:), &tr("Your image · right-click to remove"));
-        icons.push((value, button));
+        let choice = cell(mtm, &image, tag, sel!(pickIcon:), &tr("Your image · right-click to remove"), theme);
+        icons.push((value, choice));
     }
     return (icons, symbol_count);
 }
@@ -418,16 +341,11 @@ fn icon_buttons(
 fn wire(picker: &StylePicker, symbol_count: usize) {
     let mtm = picker.mtm();
     let target: &AnyObject = picker;
-    let buttons = picker
-        .ivars()
-        .colors
-        .iter()
-        .map(|(_, button)| button)
-        .chain(picker.ivars().icons.iter().map(|(_, button)| button));
-    for button in buttons {
+    for button in picker.ivars().icons.iter().map(|(_, choice)| &choice.button) {
         unsafe { button.setTarget(Some(target)) };
     }
-    for (index, (_, button)) in picker.ivars().icons.iter().enumerate().skip(symbol_count) {
+    for (index, (_, choice)) in picker.ivars().icons.iter().enumerate().skip(symbol_count) {
+        let button = &choice.button;
         let menu = NSMenu::new(mtm);
         let remove = widgets::menu_item(
             mtm,
@@ -440,13 +358,12 @@ fn wire(picker: &StylePicker, symbol_count: usize) {
         menu.addItem(&remove);
         unsafe { button.setMenu(Some(&menu)) };
     }
-    unsafe { picker.ivars().field.setDelegate(Some(ProtocolObject::from_ref(picker))) };
     picker.ivars().popover.setDelegate(Some(ProtocolObject::from_ref(picker)));
 }
 
-fn images_view(mtm: MainThreadMarker, buttons: &[Retained<NSButton>], theme: &Theme) -> Retained<NSView> {
-    if !buttons.is_empty() {
-        return grid(mtm, buttons);
+fn images_view(mtm: MainThreadMarker, cells: &[Retained<NSView>], theme: &Theme) -> Retained<NSView> {
+    if !cells.is_empty() {
+        return grid(mtm, cells);
     }
     let hint = widgets::label(
         mtm,
@@ -490,24 +407,24 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
     let custom = app::with(|app| app.custom_icons()).unwrap_or_default();
 
     let preview = NSImageView::new(mtm);
+    preview.setContentTintColor(Some(&theme.color(Key::SidebarIcon)));
+    theme::register(&preview, Key::SidebarIcon, Slot::Tint);
     preview.widthAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
     preview.heightAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
     let name = widgets::label(mtm, &library.folders[folder], Text::Title3, &theme.color(Key::Text));
     let header = widgets::stack(mtm, &[&preview, &name], false, metrics::SPACE_8);
 
-    let colors = color_buttons(mtm);
-    let color_buttons: Vec<Retained<NSButton>> = colors.iter().map(|(_, button)| button.clone()).collect();
-    let swatches = grid(mtm, &color_buttons);
-
-    let (field, well, hex_row) = hex_row(mtm, color.as_deref(), theme);
+    let board = Panel::new(mtm, theme, true);
+    board.configure(color.as_deref().and_then(Pick::parse), false, Some(&tr("Default")), Rc::new(|_| {}));
+    let swatches = board.view();
 
     let (icons, symbol_count) = icon_buttons(mtm, &library.icons_dir, custom, theme);
-    let symbol_buttons: Vec<Retained<NSButton>> =
-        icons[..symbol_count].iter().map(|(_, button)| button.clone()).collect();
-    let symbols = grid(mtm, &symbol_buttons);
-    let image_buttons: Vec<Retained<NSButton>> =
-        icons[symbol_count..].iter().map(|(_, button)| button.clone()).collect();
-    let images = images_view(mtm, &image_buttons, theme);
+    let symbol_cells: Vec<Retained<NSView>> =
+        icons[..symbol_count].iter().map(|(_, choice)| choice.view.clone()).collect();
+    let symbols = grid(mtm, &symbol_cells);
+    let image_cells: Vec<Retained<NSView>> =
+        icons[symbol_count..].iter().map(|(_, choice)| choice.view.clone()).collect();
+    let images = images_view(mtm, &image_cells, theme);
 
     let reset_button = widgets::compact(mtm, &tr("Reset"), Some(sel!(reset:)), None);
     let add_button = widgets::compact(mtm, &tr("Choose Image…"), Some(sel!(addImage:)), None);
@@ -519,24 +436,14 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
     let color_heading = widgets::header(mtm, &tr("Color"), theme);
     let icon_heading = widgets::header(mtm, &tr("Icon"), theme);
     let image_heading = widgets::header(mtm, &tr("Your Images"), theme);
-    let divider = widgets::divider(mtm, &theme.color(Key::PickerDivider));
-    let views: [&NSView; 10] = [
-        &header,
-        &color_heading,
-        &swatches,
-        &hex_row,
-        &icon_heading,
-        &symbols,
-        &image_heading,
-        &images,
-        &divider,
-        &footer,
-    ];
+    let divider = widgets::divider(mtm, Key::PickerDivider, theme);
+    let views: [&NSView; 9] =
+        [&header, &color_heading, &swatches, &icon_heading, &symbols, &image_heading, &images, &divider, &footer];
     let body = widgets::stack(mtm, &views, true, metrics::SPACE_8);
     body.setAlignment(NSLayoutAttribute::Leading);
     body.setEdgeInsets(widgets::insets(PADDING, PADDING, PADDING, PADDING));
     body.setCustomSpacing_afterView(metrics::SPACE_16, &header);
-    body.setCustomSpacing_afterView(metrics::SPACE_12, &hex_row);
+    body.setCustomSpacing_afterView(metrics::SPACE_12, &swatches);
     body.setCustomSpacing_afterView(metrics::SPACE_12, &symbols);
     body.setCustomSpacing_afterView(metrics::SPACE_12, &images);
     divider.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
@@ -552,18 +459,19 @@ pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
         icons_dir: library.icons_dir.clone(),
         icon: RefCell::new(icon),
         color: RefCell::new(color),
-        glyph: theme.color(Key::SidebarIcon),
-        soft: theme.color(Key::PickerSelected),
-        empty: theme.color(Key::FieldFill),
         preview,
-        field,
-        well,
-        colors,
+        board: board.clone(),
         icons,
         popover: popover.clone(),
     });
     let picker: Retained<StylePicker> = unsafe { msg_send![super(picker), init] };
     wire(&picker, symbol_count);
+    let weak = Weak::new(&*picker);
+    board.set_handler(Rc::new(move |pick| {
+        if let Some(picker) = weak.load() {
+            picker.pick(pick);
+        }
+    }));
     for button in [&reset_button, &add_button, &done_button] {
         unsafe { button.setTarget(Some(&picker)) };
     }

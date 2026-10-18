@@ -116,8 +116,8 @@ pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
         &bar,
         &tr("View"),
         &[
-            menu_item(mtm, &tr("as Grid"), sel!(showGrid:), Some(target), 0, Some(("1", command))),
-            menu_item(mtm, &tr("as List"), sel!(showList:), Some(target), 0, Some(("2", command))),
+            menu_item(mtm, &tr("as Grid"), sel!(layout:), Some(target), 0, Some(("1", command))),
+            menu_item(mtm, &tr("as List"), sel!(layout:), Some(target), 1, Some(("2", command))),
             NSMenuItem::separatorItem(mtm),
             menu_item(
                 mtm,

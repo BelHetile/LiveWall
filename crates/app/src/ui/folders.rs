@@ -147,7 +147,3 @@ pub fn painted(name: &str, color: Option<&NSColor>, size: f64) -> Option<Retaine
     image.setTemplate(template);
     return Some(image);
 }
-
-pub fn swatch(color: &NSColor, size: f64) -> Option<Retained<NSImage>> {
-    return painted("circle.fill", Some(color), size);
-}

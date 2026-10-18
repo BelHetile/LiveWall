@@ -12,7 +12,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
-    NSArray, NSCopying, NSIndexSet, NSInteger, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSURL,
+    NSArray, NSCopying, NSIndexSet, NSInteger, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSString, NSURL,
 };
 use proto::Request;
 use uuid::Uuid;
@@ -24,16 +24,16 @@ use crate::ui::state::{
     Filter, TAG_DELETE_FOLDER, TAG_HIDE_FOLDER, TAG_LOCK_FOLDER, TAG_NEW_FOLDER, TAG_RENAME_FOLDER, TAG_STYLE_FOLDER,
     privacy_title,
 };
-use crate::ui::theme::Theme;
+use crate::ui::theme::{self, Theme};
 use crate::ui::view::Library;
-use crate::ui::widgets::{self, ns};
+use crate::ui::widgets::{self, Slot, ns};
 use crate::ui::{UI, folders, submit};
 
 pub const ITEM_TYPE: &str = "app.livewall.item";
 pub const WIDTH: f64 = 220.0;
 const MIN_WIDTH: f64 = 180.0;
 const MAX_WIDTH: f64 = 320.0;
-const BAR_HEIGHT: f64 = metrics::CONTROL_HEIGHT + metrics::SPACE_8;
+const BAR_HEIGHT: f64 = metrics::BUTTON_HEIGHT + metrics::SPACE_8;
 const RETURN: u16 = 36;
 const ENTER: u16 = 76;
 const DELETE: u16 = 51;
@@ -75,10 +75,16 @@ impl Ink {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MoveTo {
+    Root,
+    Folder(usize),
+}
+
 pub struct SourceIvars {
     entries: RefCell<Vec<Entry>>,
     images: RefCell<Vec<Option<Retained<NSImage>>>>,
-    ink: RefCell<Ink>,
+    ink: Ink,
     table: RefCell<Option<Retained<SidebarTable>>>,
     syncing: Cell<bool>,
     stale: Cell<bool>,
@@ -271,28 +277,44 @@ impl SidebarSource {
         row: NSInteger,
         operation: NSTableViewDropOperation,
     ) -> NSDragOperation {
-        if usize::try_from(row).ok().and_then(|row| self.target(row)).is_none() {
+        let Some(index) = usize::try_from(row).ok() else {
+            return NSDragOperation::None;
+        };
+        let own = !dragged_items(info).is_empty();
+        let accepted = if own {
+            self.move_target(index).is_some()
+        } else {
+            self.target(index).is_some() && !droppable(info).is_empty()
+        };
+        if !accepted {
             return NSDragOperation::None;
         }
         if operation != NSTableViewDropOperation::On {
             table.setDropRow_dropOperation(row, NSTableViewDropOperation::On);
         }
-        if !dragged_items(info).is_empty() {
-            return NSDragOperation::Move;
-        }
-        return if dropped_files(info).is_empty() { NSDragOperation::None } else { NSDragOperation::Copy };
+        return if own { NSDragOperation::Move } else { NSDragOperation::Copy };
     }
 
     fn accept(&self, info: &ProtocolObject<dyn NSDraggingInfo>, row: NSInteger) -> bool {
-        let Some(folder) = usize::try_from(row).ok().and_then(|row| self.target(row)) else {
+        let Some(row) = usize::try_from(row).ok() else {
             return false;
         };
         let ids = dragged_items(info);
         if !ids.is_empty() {
-            crate::ui::actions::move_items(ids, Some(folder));
+            let Some(target) = self.move_target(row) else {
+                return false;
+            };
+            let folder = match target {
+                MoveTo::Root => None,
+                MoveTo::Folder(folder) => Some(folder),
+            };
+            crate::ui::actions::move_items(ids, folder);
             return true;
         }
-        let files = dropped_files(info);
+        let Some(folder) = self.target(row) else {
+            return false;
+        };
+        let files = droppable(info);
         if files.is_empty() {
             return false;
         }
@@ -357,6 +379,15 @@ impl SidebarSource {
         };
     }
 
+    fn move_target(&self, row: usize) -> Option<MoveTo> {
+        let entry = self.entry(row)?;
+        return match entry.row {
+            Row::Folder(folder) if !entry.sealed => Some(MoveTo::Folder(folder)),
+            Row::All => Some(MoveTo::Root),
+            _ => None,
+        };
+    }
+
     fn finish_rename(&self, field: &NSTextField) {
         let Some(table) = self.table() else {
             return;
@@ -380,7 +411,7 @@ impl SidebarSource {
         let mtm = self.mtm();
         if entry.row == Row::Header {
             let cell = NSTableCellView::new(mtm);
-            let title = widgets::label(mtm, &entry.title, Text::Section, &self.ivars().ink.borrow().header);
+            let title = widgets::label(mtm, &entry.title, Text::Section, &self.ivars().ink.header);
             cell.addSubview(&title);
             title.setTranslatesAutoresizingMaskIntoConstraints(false);
             title
@@ -391,8 +422,9 @@ impl SidebarSource {
             unsafe { cell.setTextField(Some(&title)) };
             return Retained::into_super(cell);
         }
-        let ink = self.ivars().ink.borrow().clone();
+        let ink = self.ivars().ink.clone();
         let cell = FolderCell::new(mtm, Some(ink.icon.clone()));
+        theme::register(&cell, Key::SidebarIcon, Slot::Tint);
         let icon = NSImageView::new(mtm);
         icon.setImage(image);
         let title = NSTextField::labelWithString(&ns(&entry.title), mtm);
@@ -442,6 +474,8 @@ impl SidebarSource {
         cell.tint(cell.backgroundStyle());
         if entry.sealed {
             cell.setToolTip(Some(&ns(&tr("Unlock private folders to open this folder"))));
+        } else {
+            cell.setToolTip(Some(&ns(&entry.title)));
         }
         return Retained::into_super(Retained::into_super(cell));
     }
@@ -452,7 +486,6 @@ pub struct Sidebar {
     table: Retained<SidebarTable>,
     source: Retained<SidebarSource>,
     privacy: Retained<objc2_app_kit::NSButton>,
-    add: Retained<objc2_app_kit::NSButton>,
 }
 
 impl Sidebar {
@@ -460,7 +493,7 @@ impl Sidebar {
         let source = SidebarSource::alloc(mtm).set_ivars(SourceIvars {
             entries: RefCell::new(Vec::new()),
             images: RefCell::new(Vec::new()),
-            ink: RefCell::new(Ink::new(theme)),
+            ink: Ink::new(theme),
             table: RefCell::new(None),
             syncing: Cell::new(false),
             stale: Cell::new(false),
@@ -494,11 +527,10 @@ impl Sidebar {
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
 
-        let quiet = theme.color(Key::TextSecondary);
-        let add = widgets::icon_button(mtm, "plus", sel!(folder:), target, &quiet);
+        let add = widgets::icon_button(mtm, "plus", sel!(folder:), target, Key::TextSecondary, theme);
         add.setTag(TAG_NEW_FOLDER);
-        add.setToolTip(Some(&ns(&tr("New Folder…"))));
-        let privacy = widgets::icon_button(mtm, "lock.fill", sel!(togglePrivacy:), target, &quiet);
+        widgets::describe(&add, &tr("New Folder…"), &tr("New Folder…"));
+        let privacy = widgets::icon_button(mtm, "lock", sel!(togglePrivacy:), target, Key::TextSecondary, theme);
         let gap = widgets::spacer(mtm);
         let bar = widgets::stack(mtm, &[&add, &gap, &privacy], false, metrics::SPACE_8);
         bar.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_8, 0.0, metrics::SPACE_8));
@@ -515,7 +547,7 @@ impl Sidebar {
         scroll.bottomAnchor().constraintEqualToAnchor(&bar.topAnchor()).setActive(true);
         bar.bottomAnchor().constraintEqualToAnchor(&view.bottomAnchor()).setActive(true);
         bar.heightAnchor().constraintEqualToConstant(BAR_HEIGHT).setActive(true);
-        return Self { view, table, source, privacy, add };
+        return Self { view, table, source, privacy };
     }
 
     pub fn min_width() -> f64 {
@@ -524,14 +556,6 @@ impl Sidebar {
 
     pub fn max_width() -> f64 {
         return MAX_WIDTH;
-    }
-
-    pub fn restyle(&self, theme: &Theme) {
-        *self.source.ivars().ink.borrow_mut() = Ink::new(theme);
-        let quiet = theme.color(Key::TextSecondary);
-        self.add.setContentTintColor(Some(&quiet));
-        self.privacy.setContentTintColor(Some(&quiet));
-        self.source.ivars().entries.borrow_mut().clear();
     }
 
     pub fn sync(&self, library: &Library, filter: &Filter) {
@@ -557,9 +581,10 @@ impl Sidebar {
             }
         }
         self.select(filter.folder);
-        self.privacy.setHidden(!library.has_locked);
-        widgets::set_icon(&self.privacy, if library.unlocked { "lock.open.fill" } else { "lock.fill" });
-        self.privacy.setToolTip(Some(&ns(&tr(privacy_title(library.unlocked)))));
+        let open = library.unlocked && library.has_locked;
+        widgets::set_icon(&self.privacy, if open { "lock.open" } else { "lock" });
+        let privacy = tr(privacy_title(library.unlocked));
+        widgets::describe(&self.privacy, &privacy, &privacy);
     }
 
     fn row_of(&self, folder: Option<usize>) -> Option<usize> {
@@ -637,26 +662,32 @@ fn row_kind(row: usize) -> Option<Row> {
     });
 }
 
-fn dragged_items(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
-    let kind = ns(ITEM_TYPE);
-    let Some(items) = info.draggingPasteboard().pasteboardItems() else {
-        return Vec::new();
-    };
-    return items.iter().filter_map(|item| item.stringForType(&kind)).map(|text| text.to_string()).collect();
+pub fn dragged_items(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
+    return items_of_type(info, &ns(ITEM_TYPE)).into_iter().map(|text| text.to_string()).collect();
 }
 
 pub fn dropped_files(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
     let kind = unsafe { NSPasteboardTypeFileURL };
-    let Some(items) = info.draggingPasteboard().pasteboardItems() else {
-        return Vec::new();
-    };
-    return items
-        .iter()
-        .filter_map(|item| item.stringForType(kind))
+    return items_of_type(info, kind)
+        .into_iter()
         .filter_map(|text| NSURL::URLWithString(&text))
         .filter_map(|url| url.path())
         .map(|path| path.to_string())
         .collect();
+}
+
+pub fn droppable(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
+    return dropped_files(info)
+        .into_iter()
+        .filter(|path| crate::ui::dialogs::media(std::path::Path::new(path)))
+        .collect();
+}
+
+fn items_of_type(info: &ProtocolObject<dyn NSDraggingInfo>, kind: &NSString) -> Vec<Retained<NSString>> {
+    let Some(items) = info.draggingPasteboard().pasteboardItems() else {
+        return Vec::new();
+    };
+    return items.iter().filter_map(|item| item.stringForType(kind)).collect();
 }
 
 fn context_menu(mtm: MainThreadMarker, row: Option<Row>) -> Option<Retained<NSMenu>> {

@@ -3,11 +3,11 @@ use std::path::Path;
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSBackingStoreType, NSImage,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSBackingStoreType, NSImage, NSScreen,
     NSSplitViewController, NSSplitViewItem, NSTitlebarSeparatorStyle, NSView, NSViewController, NSWindow,
     NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSBundle, NSData};
 
 use crate::ui::inspector::Inspector;
@@ -18,6 +18,8 @@ use crate::ui::widgets::ns;
 const ICON: &[u8] = include_bytes!("../../../../resources/AppIcon.iconset/icon_512x512@2x.png");
 const WINDOW_SIZE: CGSize = CGSize::new(1500.0, 860.0);
 const MIN_SIZE: CGSize = CGSize::new(1180.0, 600.0);
+const SCREEN_SHARE: CGFloat = 0.85;
+const AUTOSAVE: &str = "LiveWallMain";
 
 pub struct Panes {
     pub split: Retained<NSSplitViewController>,
@@ -70,13 +72,27 @@ pub fn panes(mtm: MainThreadMarker, sidebar: &NSView, wall: &WallView, inspector
     return Panes { split, inspector: inspector_item, sidebar: sidebar_item };
 }
 
-pub fn main_window(mtm: MainThreadMarker, split: &NSSplitViewController) -> Retained<NSWindow> {
-    let size = crate::ui::env("LW_UI_SIZE")
-        .and_then(|value| {
-            let (width, height) = value.split_once('x')?;
-            return Some(CGSize::new(width.parse().ok()?, height.parse().ok()?));
-        })
-        .unwrap_or(WINDOW_SIZE);
+fn visible_size(mtm: MainThreadMarker) -> Option<CGSize> {
+    let screen = NSScreen::mainScreen(mtm).or_else(|| NSScreen::screens(mtm).firstObject())?;
+    return Some(screen.visibleFrame().size);
+}
+
+fn fitted(size: CGSize, limit: CGSize) -> CGSize {
+    return CGSize::new(size.width.min(limit.width), size.height.min(limit.height));
+}
+
+pub fn main_window(mtm: MainThreadMarker, split: &NSSplitViewController) -> (Retained<NSWindow>, bool) {
+    let forced = crate::ui::env("LW_UI_SIZE").and_then(|value| {
+        let (width, height) = value.split_once('x')?;
+        return Some(CGSize::new(width.parse().ok()?, height.parse().ok()?));
+    });
+    let visible = visible_size(mtm);
+    let size = forced.unwrap_or_else(|| {
+        return visible.map_or(WINDOW_SIZE, |visible| {
+            return fitted(WINDOW_SIZE, CGSize::new(visible.width * SCREEN_SHARE, visible.height * SCREEN_SHARE));
+        });
+    });
+    let min_size = visible.map_or(MIN_SIZE, |visible| fitted(MIN_SIZE, visible));
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
@@ -96,9 +112,26 @@ pub fn main_window(mtm: MainThreadMarker, split: &NSSplitViewController) -> Reta
     window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
     window.setToolbarStyle(NSWindowToolbarStyle::Unified);
     window.setTitlebarAppearsTransparent(true);
-    window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
-    window.setContentMinSize(MIN_SIZE);
+    window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::Shadow);
+    if let Some(value) = crate::ui::env("LW_UI_TITLEBAR") {
+        window.setTitlebarAppearsTransparent(value == "clear");
+    }
+    if let Some(value) = crate::ui::env("LW_UI_SEPARATOR") {
+        window.setTitlebarSeparatorStyle(match value.as_str() {
+            "none" => NSTitlebarSeparatorStyle::None,
+            "line" => NSTitlebarSeparatorStyle::Line,
+            "shadow" => NSTitlebarSeparatorStyle::Shadow,
+            _ => NSTitlebarSeparatorStyle::Automatic,
+        });
+    }
+    window.setContentMinSize(min_size);
     window.setContentViewController(Some(split));
     window.setContentSize(size);
-    return window;
+    let mut restored = false;
+    if forced.is_none() {
+        let name = ns(AUTOSAVE);
+        restored = window.setFrameUsingName(&name);
+        window.setFrameAutosaveName(&name);
+    }
+    return (window, restored);
 }

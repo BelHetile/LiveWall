@@ -181,7 +181,6 @@ const fn spec(key: Key, id: &'static str, group: Group, title: &'static str, rol
     return Spec { key, id, group, title, role, fallback };
 }
 
-const SCRIM: Rgba = Rgba::new(0, 0, 0, 115);
 const SHADOW_LIGHT: Rgba = Rgba::new(0, 0, 0, 36);
 const SHADOW_DARK: Rgba = Rgba::new(0, 0, 0, 102);
 
@@ -260,8 +259,8 @@ const SPECS: [Spec; 54] = [
     spec(Key::GridShade, "grid.shade", Grid, key("Top Shade"), Surface, Fallback::Key(Key::Canvas)),
     spec(Key::GridShadow, "grid.shadow", Grid, key("Tile Shadow"), Shadow, Fallback::Key(Key::Shadow)),
     spec(Key::GridEmpty, "grid.empty", Grid, key("Empty State"), Content, Fallback::Key(Key::TextTertiary)),
-    spec(Key::ChipFill, "chip.fill", Chips, key("Chip"), Surface, Fixed(SCRIM, SCRIM)),
-    spec(Key::ChipText, "chip.text", Chips, key("Chip Text"), Content, Fixed(Rgba::WHITE, Rgba::WHITE)),
+    spec(Key::ChipFill, "chip.fill", Chips, key("Chip"), Surface, Fallback::Key(Key::SurfaceRaised)),
+    spec(Key::ChipText, "chip.text", Chips, key("Chip Text"), Content, System(SystemColor::Label)),
     spec(Key::ChipActive, "chip.active", Chips, key("Active Chip"), Surface, Fallback::Key(Key::Selection)),
     spec(Key::PillFill, "pill.fill", Downloads, key("Background"), Surface, Fallback::Key(Key::SurfaceRaised)),
     spec(Key::PillBar, "pill.bar", Downloads, key("Progress"), Content, Fallback::Key(Key::Selection)),

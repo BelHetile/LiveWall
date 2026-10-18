@@ -203,7 +203,10 @@ impl Style {
                 self.accent(variant, palette).scale_alpha(alpha)
             }
             Fallback::OnAccent => match self.accent {
-                Accent::System => palette.system(SystemColor::TextOnAccent, variant),
+                Accent::System if variant.is_high_contrast() => {
+                    Rgba::WHITE.derive_contrast(self.accent(variant, palette), Role::Content)
+                }
+                Accent::System => Rgba::WHITE,
                 Accent::Fixed(_) => {
                     self.accent(variant, palette).over(self.resolve(Key::Canvas, variant, palette).opaque()).on()
                 }
@@ -222,9 +225,8 @@ impl Style {
             Fallback::System(color) => Some(color),
             Fallback::Neutral(color) => (self.tint.is_none() || self.tint_strength <= 0.0).then_some(color),
             Fallback::Accent => system.then_some(SystemColor::ControlAccent),
-            Fallback::OnAccent => system.then_some(SystemColor::TextOnAccent),
             Fallback::Key(next) => self.native(next),
-            Fallback::AccentAlpha(_) | Fallback::Fixed(..) => None,
+            Fallback::OnAccent | Fallback::AccentAlpha(_) | Fallback::Fixed(..) => None,
         };
     }
 
@@ -463,19 +465,26 @@ mod tests {
             let expected = !matches!(
                 key,
                 Key::SelectionSoft
+                    | Key::OnAccent
                     | Key::Shadow
                     | Key::GlassTint
                     | Key::GridHighlight
                     | Key::GridShadow
-                    | Key::ChipFill
-                    | Key::ChipText
                     | Key::PickerSelected
             );
             assert_eq!(native.is_some(), expected, "{key:?}");
         }
         assert_eq!(style.native(Key::GridRing), Some(SystemColor::ControlAccent));
-        assert_eq!(style.native(Key::OnAccent), Some(SystemColor::TextOnAccent));
+        assert_eq!(style.native(Key::OnAccent), None);
         assert_eq!(style.resolve(Key::GridRing, Variant::Dark, &Reference), Rgba::hex(0x0A_84FF));
+    }
+
+    #[test]
+    fn on_accent_is_concrete_white_on_the_system_accent() {
+        let style = presets::system();
+        for variant in Variant::ALL {
+            assert_eq!(style.resolve(Key::OnAccent, variant, &Reference), Rgba::WHITE, "{variant:?}");
+        }
     }
 
     #[test]

@@ -157,7 +157,7 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
         out.push(Marker { icon: "display", text: short, tip: long, active });
     }
     if targets.contains(&Target::Lock) {
-        out.push(Marker { icon: "lock.fill", text: tr("Lock"), tip: lock_tip(library), active: false });
+        out.push(Marker { icon: "lock", text: tr("Lock"), tip: lock_tip(library), active: false });
     }
     return out;
 }

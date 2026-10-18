@@ -1,28 +1,33 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSButtonType, NSColor, NSColorWell, NSColorWellStyle, NSControl, NSControlSize,
-    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton,
-    NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider, NSStackView, NSSwitch, NSTabViewController,
-    NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView, NSViewController,
-    NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityRadioButtonRole, NSAccessibilityRadioGroupRole,
+    NSApplication, NSBezelStyle, NSBezierPath, NSButton, NSButtonType, NSColor, NSControl, NSControlSize,
+    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSImageView, NSLayoutAttribute,
+    NSLayoutConstraint, NSPopUpButton, NSScrollView, NSSegmentedControl, NSSlider,
+    NSStackView, NSTextAlignment, NSTextField, NSTextView, NSView, NSViewController, NSViewLayerContentsRedrawPolicy,
+    NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
 };
-use objc2_core_foundation::{CGFloat, CGRect};
+use objc2_core_foundation::{CGFloat, CGPoint, CGRect};
 use objc2_foundation::{NSArray, NSString};
+use objc2_quartz_core::CATransaction;
 use proto::HotkeyAction;
 use serde_json::{Value, json};
 
 use crate::hotkey;
 use crate::i18n::{self, Arg, tr, trf};
-use crate::style::{self, ACCENT, Accent, Group, Key, Pair, Rgba, Style, TINT, TINT_STRENGTH, Variant};
+use crate::style::{self, ACCENT, Accent, Group, Key, Pair, Rgba, Style, SystemColor, TINT, TINT_STRENGTH, Variant};
+use crate::ui::controls::{self, ControlView, Edge, Switch};
 use crate::ui::metrics::{self, Text};
+use crate::ui::swatches::{Dot, RING_PAD};
 use crate::ui::theme::{self, Look, Theme};
-use crate::ui::widgets::{self, NumberField, Paint, Slot, Units};
+use crate::ui::widgets::{self, IconRole, NumberField, Paint, Slot, Units, resolving};
+use crate::ui::{actions, pick_style};
 
-const WIDTH: CGFloat = 540.0;
+const WIDTH: CGFloat = 580.0;
 const ESCAPE: u32 = 53;
 const DELETE: u32 = 51;
 const FORWARD_DELETE: u32 = 117;
@@ -49,18 +54,31 @@ const IDLE_AFTER: isize = 23;
 const HIDE_DESKTOP: isize = 24;
 const VOLUME: isize = 20;
 const DURATION: isize = 21;
-const STRENGTH: isize = 25;
-pub const STYLE_ACCENT: isize = 1000;
-pub const STYLE_TINT: isize = 1001;
-pub const DARK_WELL: isize = 10_000;
+pub const STRENGTH: isize = 25;
 const RECORDER_WIDTH: CGFloat = 128.0;
-const TITLE_WIDTH: CGFloat = 170.0;
-const WELL_WIDTH: CGFloat = 40.0;
-const SWATCH: CGFloat = 30.0;
-const SWATCH_CELL: CGFloat = 54.0;
-const SWATCH_COLUMNS: usize = 6;
+const CIRCLE: CGFloat = 26.0;
+const CIRCLE_PITCH: CGFloat = CIRCLE + RING_PAD * 2.0;
+const CIRCLE_COLUMNS: usize = 13;
+const SWATCH: CGFloat = 22.0;
+const MARKER_WIDTH: CGFloat = 32.0;
 const KNOB_WIDTH: CGFloat = 150.0;
 const VALUE_WIDTH: CGFloat = 62.0;
+const NAV_TOP: CGFloat = metrics::SPACE_24 + metrics::SPACE_12;
+const NAV_INSET: CGFloat = metrics::SPACE_20;
+const NAV_GAP: CGFloat = metrics::SPACE_4;
+const ITEM_HEIGHT: CGFloat = 32.0;
+const ITEM_PAD: CGFloat = metrics::SPACE_8;
+const BAND: CGFloat = NAV_TOP + ITEM_HEIGHT;
+const ARROW_LEFT: u16 = 123;
+const ARROW_RIGHT: u16 = 124;
+
+const TABS: [(&str, &str); 5] = [
+    (i18n::key("General"), "gearshape"),
+    (i18n::key("Appearance"), "paintpalette"),
+    (i18n::key("Playback"), "play.rectangle"),
+    (i18n::key("Shortcuts"), "keyboard"),
+    (i18n::key("Privacy"), "lock"),
+];
 
 const FRAME_RATES: [u32; 6] = [24, 30, 48, 60, 90, 120];
 const RELEASES: [(&str, u32); 5] = [
@@ -91,7 +109,6 @@ const IDLE_MINUTES: [(&str, u32); 5] = [
     (i18n::key("1 Hour"), 60),
 ];
 const PAUSE_KEYS: [&str; 4] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot", "pause_when_focused"];
-const ACCENT_MODES: [&str; 2] = [style::SYSTEM, style::CUSTOM];
 
 type Knob = (Retained<NSSlider>, Retained<NumberField>);
 
@@ -159,14 +176,8 @@ pub fn change(tag: isize, input: &Input) -> Option<Change> {
     };
 }
 
-pub fn style_field(tag: isize) -> Option<(&'static str, bool)> {
-    let (base, dark) = if tag >= DARK_WELL { (tag - DARK_WELL, true) } else { (tag, false) };
-    let field = match base {
-        STYLE_ACCENT => ACCENT,
-        STYLE_TINT => TINT,
-        index => Key::ALL.get(usize::try_from(index).ok()?)?.id(),
-    };
-    return Some((field, dark));
+pub fn style_field(tag: isize) -> Option<&'static str> {
+    return Some(Key::ALL.get(usize::try_from(tag).ok()?)?.id());
 }
 
 fn key_tag(key: Key) -> isize {
@@ -200,7 +211,10 @@ pub struct RecorderIvars {
     label: Retained<NSTextField>,
     recording: Cell<bool>,
     ink: RefCell<RecorderInk>,
+    border: RefCell<Option<Retained<NSColor>>>,
     shown: RefCell<Option<proto::KeyCombo>>,
+    edge: OnceCell<Edge>,
+    control: controls::Control,
 }
 
 define_class!(
@@ -210,6 +224,16 @@ define_class!(
     struct RecorderView;
 
     impl RecorderView {
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.colorize();
+        }
+
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
@@ -232,11 +256,30 @@ define_class!(
             true
         }
 
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
-            if let Some(window) = self.window() {
-                window.makeFirstResponder(Some(self));
-            }
+            self.focus();
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            controls::entered(self);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            controls::exited(self);
+        }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            self.focus();
+            true
         }
 
         #[unsafe(method(keyDown:))]
@@ -251,6 +294,24 @@ define_class!(
     }
 );
 
+impl ControlView for RecorderView {
+    fn view(&self) -> &NSView {
+        self
+    }
+
+    fn control(&self) -> &controls::Control {
+        &self.ivars().control
+    }
+
+    fn apply(&self, immediate: bool) {
+        self.glow(!immediate);
+    }
+
+    fn activate(&self) {
+        self.focus();
+    }
+}
+
 impl RecorderView {
     fn new(mtm: MainThreadMarker, action: HotkeyAction, theme: &Theme) -> Retained<Self> {
         let ink = RecorderInk::new(theme);
@@ -261,13 +322,24 @@ impl RecorderView {
             label,
             recording: Cell::new(false),
             ink: RefCell::new(ink),
+            border: RefCell::new(None),
             shown: RefCell::new(None),
+            edge: OnceCell::new(),
+            control: controls::Control::new(),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
         if let Some(layer) = this.layer() {
             layer.setCornerRadius(metrics::RADIUS_CONTROL);
         }
+        let active = this.ivars().ink.borrow().active.clone();
+        if let Some(edge) = Edge::mount(&this, metrics::RADIUS_CONTROL, active) {
+            let _ = this.ivars().edge.set(edge);
+        }
+        controls::track(&this, &this);
+        this.setAccessibilityElement(true);
+        this.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
         let label = &this.ivars().label;
         this.addSubview(label);
         label.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -280,18 +352,21 @@ impl RecorderView {
         this.widthAnchor().constraintEqualToConstant(RECORDER_WIDTH).setActive(true);
         this.heightAnchor().constraintEqualToConstant(metrics::CONTROL_HEIGHT - metrics::SPACE_2).setActive(true);
         this.setToolTip(Some(&widgets::ns(&tr("Click, then press a shortcut. ⌫ clears it, ⎋ cancels."))));
-        this.restyle(theme);
+        this.show(None);
+        this.setNeedsDisplay(true);
         return this;
     }
 
-    fn restyle(&self, theme: &Theme) {
-        let ink = RecorderInk::new(theme);
-        if let Some(layer) = self.layer() {
-            layer.setBackgroundColor(Some(&widgets::cg(self, &ink.fill)));
-        }
-        *self.ivars().ink.borrow_mut() = ink;
-        let shown = self.ivars().shown.borrow().clone();
-        self.show(shown.as_ref());
+    fn colorize(&self) {
+        let ivars = self.ivars();
+        let fill = ivars.ink.borrow().fill.clone();
+        let border = ivars.border.borrow().clone();
+        resolving(self, || {
+            if let Some(layer) = self.layer() {
+                layer.setBackgroundColor(Some(&fill.CGColor()));
+                layer.setBorderColor(border.as_ref().map(|color| color.CGColor()).as_deref());
+            }
+        });
     }
 
     fn show(&self, combo: Option<&proto::KeyCombo>) {
@@ -309,16 +384,32 @@ impl RecorderView {
         self.paint(&text, &color, None);
     }
 
+    fn focus(&self) {
+        if let Some(window) = self.window() {
+            window.makeFirstResponder(Some(self));
+        }
+    }
+
+    fn glow(&self, animated: bool) {
+        let ivars = self.ivars();
+        let Some(edge) = ivars.edge.get() else {
+            return;
+        };
+        let level = if ivars.control.hovered() && !ivars.recording.get() { metrics::EDGE_HOVER } else { 0.0 };
+        edge.show(self, level, animated);
+    }
+
     fn paint(&self, text: &str, color: &NSColor, border: Option<&NSColor>) {
         let label = &self.ivars().label;
         label.setStringValue(&widgets::ns(text));
         label.setTextColor(Some(color));
+        let title = tr(crate::hotkey::title(self.ivars().action));
+        self.setAccessibilityLabel(Some(&widgets::ns(&format!("{title}, {text}"))));
         if let Some(layer) = self.layer() {
             layer.setBorderWidth(if border.is_some() { metrics::BORDER_EMPHASIS } else { 0.0 });
-            if let Some(border) = border {
-                layer.setBorderColor(Some(&widgets::cg(self, border)));
-            }
         }
+        *self.ivars().border.borrow_mut() = border.map(Retained::from);
+        self.setNeedsDisplay(true);
     }
 
     fn begin(&self) {
@@ -328,11 +419,13 @@ impl RecorderView {
             (ink.hint.clone(), ink.active.clone())
         };
         self.paint(&tr("Type Shortcut…"), &hint, Some(&active));
+        self.glow(false);
         crate::ui::recording(true);
     }
 
     fn end(&self) {
         self.ivars().recording.set(false);
+        self.glow(true);
         crate::ui::recording(false);
     }
 
@@ -384,151 +477,143 @@ impl RecorderView {
     }
 }
 
-pub struct SwatchIvars {
-    index: usize,
-    ring: Retained<NSView>,
-    dot: Retained<NSView>,
-    accent: Retained<NSColor>,
-    tint: Retained<NSColor>,
-    selection: RefCell<Retained<NSColor>>,
-}
-
-define_class!(
-    #[unsafe(super(NSView))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = SwatchIvars]
-    struct SwatchView;
-
-    impl SwatchView {
-        #[unsafe(method(mouseDown:))]
-        fn mouse_down(&self, _event: &NSEvent) {
-            crate::ui::pick_style(self.ivars().index);
-        }
-    }
-);
-
-impl SwatchView {
-    fn new(mtm: MainThreadMarker, index: usize, style: &Style, theme: &Theme) -> Retained<Self> {
-        let ring = NSView::new(mtm);
-        ring.setWantsLayer(true);
-        let dot = NSView::new(mtm);
-        dot.setWantsLayer(true);
-        let accent = match &style.accent {
-            Accent::System => theme::system(style::SystemColor::ControlAccent),
-            Accent::Fixed(pair) => theme::pair_color(pair),
-        };
-        let tint = style.tint.as_ref().map_or_else(NSColor::windowBackgroundColor, theme::pair_color);
-        let name = if style::built_in(&style.name) { tr(&style.name) } else { style.name.clone() };
-        let caption = widgets::label(mtm, &name, Text::Subheadline, &theme.color(Key::TextSecondary));
-        caption.setAlignment(NSTextAlignment::Center);
-        let this = SwatchView::alloc(mtm).set_ivars(SwatchIvars {
-            index,
-            ring: ring.clone(),
-            dot: dot.clone(),
-            accent,
-            tint,
-            selection: RefCell::new(theme.color(Key::Selection)),
-        });
-        let this: Retained<SwatchView> = unsafe { msg_send![super(this), init] };
-        this.setToolTip(Some(&widgets::ns(&name)));
-        for view in [&*ring, &*dot, &**caption] {
-            this.addSubview(view);
-            view.setTranslatesAutoresizingMaskIntoConstraints(false);
-            view.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
-        }
-        let outer = SWATCH + metrics::SPACE_8;
-        ring.widthAnchor().constraintEqualToConstant(outer).setActive(true);
-        ring.heightAnchor().constraintEqualToConstant(outer).setActive(true);
-        ring.topAnchor().constraintEqualToAnchor(&this.topAnchor()).setActive(true);
-        dot.widthAnchor().constraintEqualToConstant(SWATCH).setActive(true);
-        dot.heightAnchor().constraintEqualToConstant(SWATCH).setActive(true);
-        dot.centerYAnchor().constraintEqualToAnchor(&ring.centerYAnchor()).setActive(true);
-        caption.topAnchor().constraintEqualToAnchor_constant(&ring.bottomAnchor(), metrics::SPACE_4).setActive(true);
-        caption.bottomAnchor().constraintEqualToAnchor(&this.bottomAnchor()).setActive(true);
-        caption.widthAnchor().constraintLessThanOrEqualToConstant(SWATCH_CELL + metrics::SPACE_8).setActive(true);
-        this.widthAnchor().constraintEqualToConstant(SWATCH_CELL).setActive(true);
-        this.paint();
-        return this;
-    }
-
-    fn paint(&self) {
-        let ivars = self.ivars();
-        if let Some(layer) = ivars.ring.layer() {
-            layer.setCornerRadius(metrics::capsule(SWATCH + metrics::SPACE_8));
-            layer.setBorderWidth(metrics::BORDER_EMPHASIS);
-            layer.setBorderColor(Some(&widgets::cg(&ivars.ring, &ivars.selection.borrow())));
-        }
-        if let Some(layer) = ivars.dot.layer() {
-            layer.setCornerRadius(metrics::capsule(SWATCH));
-            layer.setBackgroundColor(Some(&widgets::cg(&ivars.dot, &ivars.accent)));
-            layer.setBorderWidth(metrics::SPACE_4);
-            layer.setBorderColor(Some(&widgets::cg(&ivars.dot, &ivars.tint)));
-        }
-    }
-}
-
-struct Well {
-    light: Retained<NSColorWell>,
-    dark: Retained<NSColorWell>,
+struct Colors {
+    light: Retained<Dot>,
+    dark: Retained<Dot>,
     auto: Retained<NSTextField>,
-    reset: Retained<NSButton>,
+    reset: Option<Retained<NSButton>>,
+    shown: Cell<[Option<Rgba>; 2]>,
 }
 
-impl Well {
-    fn new(mtm: MainThreadMarker, tag: isize, target: &AnyObject, paint: &mut Paint, theme: &Theme) -> Self {
-        let well = |tag: isize, tip: &str| {
-            let well = NSColorWell::colorWellWithStyle(NSColorWellStyle::Minimal, mtm);
-            well.setSupportsAlpha(true);
-            well.setTag(tag);
-            well.setToolTip(Some(&widgets::ns(tip)));
-            unsafe {
-                well.setTarget(Some(target));
-                well.setAction(Some(sel!(styleColor:)));
-            }
-            well.widthAnchor().constraintEqualToConstant(WELL_WIDTH).setActive(true);
-            return well;
+impl Colors {
+    fn new(kit: &mut Kit, field: &'static str, title: &str, reset: Option<isize>) -> Self {
+        let dot = |dark: bool| {
+            let dot = Dot::new(kit.mtm, SWATCH, 0.0, false, Some("minus"), kit.theme);
+            let tip = if dark { tr("Dark appearance") } else { tr("Light appearance") };
+            widgets::describe(&dot, &tip, &format!("{title}, {tip}"));
+            dot.on_press(move |dot| actions::choose_color(dot, field, dark));
+            dot.fit();
+            return dot;
         };
-        let light = well(tag, &tr("Light appearance"));
-        let dark = well(tag + DARK_WELL, &tr("Dark appearance"));
-        let auto = paint.label(mtm, &tr("Auto"), Text::Subheadline, Key::TextTertiary, theme);
+        let (light, dark) = (dot(false), dot(true));
+        let auto = kit.paint.label(kit.mtm, "", Text::Subheadline, Key::TextTertiary, kit.theme);
+        auto.setAlignment(NSTextAlignment::Right);
         auto.setToolTip(Some(&widgets::ns(&tr("The dark color follows the light one until you change it"))));
-        let reset = widgets::icon_button(
-            mtm,
-            "arrow.counterclockwise",
-            sel!(styleReset:),
-            target,
-            &theme.color(Key::TextSecondary),
-        );
-        paint.add(&reset, Key::TextSecondary, Slot::Tint);
-        reset.setTag(tag);
-        reset.setToolTip(Some(&widgets::ns(&tr("Reset"))));
-        return Self { light, dark, auto, reset };
+        auto.widthAnchor().constraintEqualToConstant(MARKER_WIDTH).setActive(true);
+        let reset = reset.map(|tag| {
+            let button = widgets::icon_button(
+                kit.mtm,
+                "arrow.counterclockwise",
+                sel!(styleReset:),
+                kit.target,
+                Key::TextSecondary,
+                kit.theme,
+            );
+            button.setTag(tag);
+            widgets::describe(&button, &tr("Reset"), &format!("{title}, {}", tr("Reset")));
+            return button;
+        });
+        return Self { light, dark, auto, reset, shown: Cell::new([None, None]) };
     }
 
     fn view(&self, mtm: MainThreadMarker) -> Retained<NSView> {
-        let row = widgets::stack(mtm, &[&self.auto, &self.light, &self.dark, &self.reset], false, metrics::SPACE_8);
-        return widgets::view(&row);
+        let (auto, light, dark): (&NSView, &NSView, &NSView) = (&self.auto, &self.light, &self.dark);
+        let mut views = vec![auto, light, dark];
+        if let Some(reset) = &self.reset {
+            views.push(reset);
+        }
+        return widgets::view(&widgets::stack(mtm, &views, false, metrics::SPACE_8));
     }
 
-    fn show(&self, light: Rgba, dark: Rgba, auto: bool, custom: bool) {
-        set_well(&self.light, light);
-        set_well(&self.dark, dark);
-        self.auto.setHidden(!auto);
-        self.reset.setEnabled(custom);
-        widgets::alpha(&self.reset, if custom { 1.0 } else { metrics::DIMMED });
-    }
-
-    fn enable(&self, on: bool) {
-        for well in [&self.light, &self.dark] {
-            well.setEnabled(on);
-            widgets::alpha(well, if on { 1.0 } else { metrics::DIMMED });
+    fn show(&self, light: Option<Rgba>, dark: Option<Rgba>, auto: bool, custom: bool) {
+        if self.shown.replace([light, dark]) != [light, dark] {
+            self.light.set_fill(light.map(theme::ns_color).as_deref());
+            self.dark.set_fill(dark.map(theme::ns_color).as_deref());
+        }
+        self.auto.setStringValue(&widgets::ns(&if auto { tr("Auto") } else { String::new() }));
+        if let Some(reset) = &self.reset {
+            reset.setEnabled(custom);
+            widgets::alpha(reset, if custom { 1.0 } else { metrics::DIMMED });
         }
     }
 }
 
-fn set_well(well: &NSColorWell, value: Rgba) {
-    if theme::rgba(&well.color()) != Some(value) {
-        well.setColor(&theme::ns_color(value));
+struct Circles {
+    mtm: MainThreadMarker,
+    view: Retained<NSView>,
+    height: Retained<NSLayoutConstraint>,
+    dots: RefCell<Vec<Retained<Dot>>>,
+    names: RefCell<Vec<String>>,
+    faces: RefCell<Vec<(Accent, Option<Pair>)>>,
+}
+
+fn step(index: usize) -> CGFloat {
+    return f64::from(u32::try_from(index).unwrap_or(0));
+}
+
+fn paint_circle(dot: &Dot, accent: &Accent, tint: Option<&Pair>) {
+    let fill = match accent {
+        Accent::System => theme::system(SystemColor::ControlAccent),
+        Accent::Fixed(pair) => theme::pair_color(pair),
+    };
+    dot.set_fill(Some(&fill));
+    dot.set_rim(tint.map(theme::pair_color).as_deref());
+}
+
+impl Circles {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let view: Retained<NSView> = Retained::into_super(widgets::Flipped::new(mtm));
+        let height = view.heightAnchor().constraintEqualToConstant(CIRCLE);
+        height.setActive(true);
+        return Self {
+            mtm,
+            view,
+            height,
+            dots: RefCell::new(Vec::new()),
+            names: RefCell::new(Vec::new()),
+            faces: RefCell::new(Vec::new()),
+        };
+    }
+
+    fn sync(&self, styles: &[Style], active: usize, theme: &Theme) {
+        let names: Vec<String> = styles.iter().map(|style| style.name.clone()).collect();
+        if *self.names.borrow() != names {
+            self.rebuild(&names, theme);
+            *self.names.borrow_mut() = names;
+            self.faces.borrow_mut().clear();
+        }
+        let faces: Vec<(Accent, Option<Pair>)> = styles.iter().map(|style| (style.accent, style.tint)).collect();
+        if *self.faces.borrow() != faces {
+            for (dot, (accent, tint)) in self.dots.borrow().iter().zip(&faces) {
+                paint_circle(dot, accent, tint.as_ref());
+            }
+            *self.faces.borrow_mut() = faces;
+        }
+        for (index, dot) in self.dots.borrow().iter().enumerate() {
+            dot.set_selected(index == active);
+        }
+    }
+
+    fn rebuild(&self, names: &[String], theme: &Theme) {
+        let mut dots = self.dots.borrow_mut();
+        for dot in dots.drain(..) {
+            dot.removeFromSuperview();
+        }
+        for (index, name) in names.iter().enumerate() {
+            let dot = Dot::new(self.mtm, CIRCLE, RING_PAD, true, None, theme);
+            let origin = CGPoint::new(
+                step(index % CIRCLE_COLUMNS) * CIRCLE_PITCH - RING_PAD,
+                step(index / CIRCLE_COLUMNS) * CIRCLE_PITCH - RING_PAD,
+            );
+            dot.setFrameOrigin(origin);
+            let title = if style::built_in(name) { tr(name) } else { name.clone() };
+            widgets::describe(&dot, &title, &title);
+            dot.on_press(move |_| pick_style(index));
+            self.view.addSubview(&dot);
+            dots.push(dot);
+        }
+        let rows = names.len().div_ceil(CIRCLE_COLUMNS).max(1);
+        self.height.setConstant(step(rows) * CIRCLE_PITCH - RING_PAD * 2.0);
     }
 }
 
@@ -536,23 +621,23 @@ pub struct Appearance {
     page: Retained<NSView>,
     height: CGFloat,
     mode: Retained<NSSegmentedControl>,
-    gallery: Retained<NSStackView>,
-    swatches: RefCell<Vec<Retained<SwatchView>>>,
-    shown: RefCell<Vec<Style>>,
-    accent_mode: Retained<NSSegmentedControl>,
-    accent: Well,
-    tint: Well,
-    strength: Knob,
+    circles: Circles,
+    chosen: Retained<NSTextField>,
     rename: Retained<NSButton>,
     delete: Retained<NSButton>,
+    accent: Colors,
+    tint: Colors,
+    strength: Knob,
+    strength_label: Retained<NSTextField>,
     disclosure: Retained<NSButton>,
-    advanced: Retained<NSView>,
-    keys: Vec<(Key, Well)>,
+    advanced: Retained<NSStackView>,
+    built: Cell<bool>,
+    keys: RefCell<Vec<(Key, Colors)>>,
 }
 
 pub struct Settings {
     pub window: Retained<NSWindow>,
-    switches: Vec<Retained<NSSwitch>>,
+    switches: Vec<Retained<Switch>>,
     popups: Vec<Retained<NSPopUpButton>>,
     knobs: Vec<Knob>,
     rotate: Vec<Retained<NSView>>,
@@ -560,7 +645,10 @@ pub struct Settings {
     pause: Vec<Retained<NSView>>,
     idle: Vec<Retained<NSView>>,
     recorders: Vec<Retained<RecorderView>>,
-    tabs: Retained<NSTabViewController>,
+    shell: Retained<Shell>,
+    sections: Vec<Retained<TabButton>>,
+    pages: Vec<Retained<NSView>>,
+    titles: Vec<String>,
     paint: Paint,
     appearance: Appearance,
 }
@@ -568,14 +656,14 @@ pub struct Settings {
 struct General {
     page: Retained<NSView>,
     pause: Vec<Retained<NSView>>,
-    switches: Vec<Retained<NSSwitch>>,
+    switches: Vec<Retained<Switch>>,
     popups: Vec<Retained<NSPopUpButton>>,
 }
 
 struct Locking {
     page: Retained<NSView>,
     idle: Vec<Retained<NSView>>,
-    switches: Vec<Retained<NSSwitch>>,
+    switches: Vec<Retained<Switch>>,
     popups: Vec<Retained<NSPopUpButton>>,
 }
 
@@ -584,6 +672,313 @@ struct Kit<'a> {
     target: &'a AnyObject,
     theme: &'a Theme,
     paint: Paint,
+}
+
+pub struct TabIvars {
+    control: controls::Control,
+    tag: Cell<isize>,
+    icon: Retained<NSImageView>,
+    label: Retained<NSTextField>,
+    target: RefCell<Option<Retained<AnyObject>>>,
+    action: Cell<Option<Sel>>,
+    accent: RefCell<Retained<NSColor>>,
+    ink: RefCell<Retained<NSColor>>,
+    fill: RefCell<Retained<NSColor>>,
+    soft: RefCell<Retained<NSColor>>,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = TabIvars]
+    pub struct TabButton;
+
+    impl TabButton {
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.paint(true);
+        }
+
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _event: &NSEvent) {
+            controls::mouse_down(self);
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            controls::mouse_dragged(self, event);
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            controls::mouse_up(self, event);
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            controls::entered(self);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            controls::exited(self);
+        }
+
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn did_move_to_window(&self) {
+            let () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            controls::window_changed(self);
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if controls::key_event(event) {
+                self.fire();
+                return;
+            }
+            let _: () = unsafe { msg_send![super(self), keyDown: event] };
+        }
+
+        #[unsafe(method(drawFocusRingMask))]
+        fn draw_focus_ring_mask(&self) {
+            NSBezierPath::bezierPathWithRect(self.bounds()).fill();
+        }
+
+        #[unsafe(method(focusRingMaskBounds))]
+        fn focus_ring_mask_bounds(&self) -> CGRect {
+            self.bounds()
+        }
+
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            let enabled = self.ivars().control.enabled();
+            if enabled {
+                self.fire();
+            }
+            enabled
+        }
+    }
+);
+
+impl ControlView for TabButton {
+    fn view(&self) -> &NSView {
+        self
+    }
+
+    fn control(&self) -> &controls::Control {
+        &self.ivars().control
+    }
+
+    fn apply(&self, immediate: bool) {
+        self.paint(immediate);
+    }
+
+    fn activate(&self) {
+        self.fire();
+    }
+}
+
+impl TabButton {
+    fn new(
+        mtm: MainThreadMarker,
+        tag: isize,
+        title: &str,
+        symbol: &str,
+        action: Sel,
+        target: &AnyObject,
+        theme: &Theme,
+    ) -> Retained<Self> {
+        let image = widgets::icon(symbol, IconRole::Tab);
+        let icon = NSImageView::new(mtm);
+        icon.setImage(image.as_deref());
+        icon.setContentTintColor(Some(&theme.color(Key::TextSecondary)));
+        icon.widthAnchor().constraintEqualToConstant(metrics::ICON_LARGE).setActive(true);
+        icon.heightAnchor().constraintEqualToConstant(metrics::ICON_LARGE).setActive(true);
+        let label = widgets::label(mtm, title, Text::Body, &theme.color(Key::TextSecondary));
+        let content = widgets::stack(mtm, &[&icon, &label], false, metrics::SPACE_8);
+        content.setAlignment(NSLayoutAttribute::CenterY);
+        content.setEdgeInsets(widgets::insets(0.0, ITEM_PAD, 0.0, ITEM_PAD));
+        let this = Self::alloc(mtm).set_ivars(TabIvars {
+            control: controls::Control::new(),
+            tag: Cell::new(tag),
+            icon,
+            label,
+            target: RefCell::new(Some(target.retain())),
+            action: Cell::new(Some(action)),
+            accent: RefCell::new(theme.accent()),
+            ink: RefCell::new(theme.color(Key::TextSecondary)),
+            fill: RefCell::new(theme.color(Key::ToolbarPillHover)),
+            soft: RefCell::new(theme.color(Key::SelectionSoft)),
+        });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.setWantsLayer(true);
+        this.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::OnSetNeedsDisplay);
+        if let Some(layer) = this.layer() {
+            layer.setCornerRadius(metrics::RADIUS_CONTROL);
+        }
+        this.addSubview(&content);
+        widgets::pin(&content, &this, 0.0);
+        controls::track(&this, &this);
+        this.setAccessibilityElement(true);
+        this.setAccessibilityRole(Some(unsafe { NSAccessibilityRadioButtonRole }));
+        this.setAccessibilityLabel(Some(&widgets::ns(title)));
+        this.heightAnchor().constraintEqualToConstant(ITEM_HEIGHT).setActive(true);
+        this.paint(true);
+        this.setNeedsDisplay(true);
+        return this;
+    }
+
+    pub fn tag(&self) -> isize {
+        return self.ivars().tag.get();
+    }
+
+    pub fn set_selected(&self, selected: bool) {
+        controls::set_selected(self, selected);
+    }
+
+    pub fn repaint(&self, theme: &Theme) {
+        let ivars = self.ivars();
+        *ivars.accent.borrow_mut() = theme.accent();
+        *ivars.ink.borrow_mut() = theme.color(Key::TextSecondary);
+        *ivars.fill.borrow_mut() = theme.color(Key::ToolbarPillHover);
+        *ivars.soft.borrow_mut() = theme.color(Key::SelectionSoft);
+        self.paint(true);
+    }
+
+    fn paint(&self, immediate: bool) {
+        let ivars = self.ivars();
+        let selected = ivars.control.selected();
+        let hover = (ivars.control.hovered() || ivars.control.pressed()) && ivars.control.enabled();
+        let fill = if selected { ivars.soft.borrow().clone() } else { ivars.fill.borrow().clone() };
+        CATransaction::begin();
+        if immediate || ivars.control.pressed() {
+            CATransaction::setDisableActions(true);
+        } else {
+            CATransaction::setAnimationDuration(metrics::MOTION_QUICK);
+            CATransaction::setAnimationTimingFunction(Some(&metrics::ease_out()));
+        }
+        resolving(self, || {
+            if let Some(layer) = self.layer() {
+                let glow = fill.CGColor();
+                layer.setBackgroundColor(if selected || hover { Some(&glow) } else { None });
+            }
+        });
+        CATransaction::commit();
+        let tint = if selected { ivars.accent.borrow().clone() } else { ivars.ink.borrow().clone() };
+        ivars.icon.setContentTintColor(Some(&tint));
+        ivars.label.setTextColor(Some(&tint));
+    }
+
+    fn fire(&self) {
+        let ivars = self.ivars();
+        let Some(action) = ivars.action.get() else {
+            return;
+        };
+        let target = ivars.target.borrow().clone();
+        unsafe {
+            NSApplication::sharedApplication(self.mtm()).sendAction_to_from(action, target.as_deref(), Some(self));
+        }
+    }
+}
+
+struct ShellIvars {
+    buttons: Vec<Retained<TabButton>>,
+    target: Retained<AnyObject>,
+    current: Cell<usize>,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ShellIvars]
+    struct Shell;
+
+    impl Shell {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            self.equivalent(event)
+        }
+    }
+);
+
+impl Shell {
+    fn new(mtm: MainThreadMarker, buttons: Vec<Retained<TabButton>>, target: &AnyObject) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ShellIvars { buttons, target: target.retain(), current: Cell::new(0) });
+        return unsafe { msg_send![super(this), init] };
+    }
+
+    fn set_current(&self, index: usize) {
+        self.ivars().current.set(index);
+    }
+
+    fn equivalent(&self, event: &NSEvent) -> bool {
+        let step: isize = match event.keyCode() {
+            ARROW_LEFT => -1,
+            ARROW_RIGHT => 1,
+            _ => {
+                let handled: Bool = unsafe { msg_send![super(self), performKeyEquivalent: event] };
+                return handled.as_bool();
+            }
+        };
+        let ivars = self.ivars();
+        if self.captive() || ivars.buttons.is_empty() {
+            let handled: Bool = unsafe { msg_send![super(self), performKeyEquivalent: event] };
+            return handled.as_bool();
+        }
+        let count = isize::try_from(ivars.buttons.len()).unwrap_or(1);
+        let current = isize::try_from(ivars.current.get()).unwrap_or(0);
+        let next = usize::try_from((current + step).rem_euclid(count)).unwrap_or(0);
+        let Some(button) = ivars.buttons.get(next) else {
+            return false;
+        };
+        return unsafe {
+            NSApplication::sharedApplication(self.mtm()).sendAction_to_from(
+                sel!(selectTab:),
+                Some(&ivars.target),
+                Some(&**button),
+            )
+        };
+    }
+
+    fn captive(&self) -> bool {
+        let Some(window) = self.window() else {
+            return true;
+        };
+        let Some(responder) = window.firstResponder() else {
+            return false;
+        };
+        let class = responder.class();
+        return std::ptr::eq(class, NSTextView::class())
+            || std::ptr::eq(class, NSSlider::class())
+            || std::ptr::eq(class, RecorderView::class());
+    }
+}
+
+fn navigation(mtm: MainThreadMarker, items: &[&NSView]) -> Retained<NSStackView> {
+    let row = widgets::stack(mtm, items, false, NAV_GAP);
+    row.setAccessibilityElement(true);
+    row.setAccessibilityRole(Some(unsafe { NSAccessibilityRadioGroupRole }));
+    return row;
 }
 
 impl Settings {
@@ -602,39 +997,59 @@ impl Settings {
             .filter_map(|view| view.subviews().firstObject())
             .map(|stack| stack.fittingSize().height)
             .fold(0.0, CGFloat::max);
-        let appearance = appearance(&mut kit, look, height);
+        let appearance = appearance(&mut kit, height);
         knobs.push(appearance.strength.clone());
-        let tabs = NSTabViewController::new(mtm);
-        tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
-        tabs.setCanPropagateSelectedChildViewControllerTitle(true);
-        tabs.setTransitionOptions(NSViewControllerTransitionOptions::Crossfade);
-        let pages = [
-            (tr("General"), "gearshape", &general),
-            (tr("Appearance"), "paintpalette", &appearance.page),
-            (tr("Playback"), "play.rectangle", &playback),
-            (tr("Shortcuts"), "keyboard", &shortcuts),
-            (tr("Privacy"), "lock", &privacy),
-        ];
-        let size = objc2_foundation::NSSize::new(WIDTH, appearance.height);
-        for (title, icon, view) in pages {
-            let controller = NSViewController::new(mtm);
-            controller.setView(view);
-            controller.setTitle(Some(&widgets::ns(&title)));
-            controller.setPreferredContentSize(size);
-            let item = NSTabViewItem::tabViewItemWithViewController(&controller);
-            item.setLabel(&widgets::ns(&title));
-            item.setImage(widgets::symbol(icon, metrics::ICON_ROW).as_deref());
-            tabs.addTabViewItem(&item);
+        let pages = [general, appearance.page.clone(), playback, shortcuts, privacy];
+        let titles: Vec<String> = TABS.iter().map(|(title, _)| tr(title)).collect();
+        let theme = kit.theme;
+        let buttons: Vec<Retained<TabButton>> = TABS
+            .iter()
+            .enumerate()
+            .map(|(index, (_, symbol))| {
+                return TabButton::new(
+                    mtm,
+                    isize::try_from(index).unwrap_or(0),
+                    &titles[index],
+                    symbol,
+                    sel!(selectTab:),
+                    target,
+                    theme,
+                );
+            })
+            .collect();
+        let refs: Vec<&NSView> = buttons.iter().map(|button| &***button).collect();
+        let nav = navigation(mtm, &refs);
+        let host = NSView::new(mtm);
+        for page in &pages {
+            host.addSubview(page);
+            widgets::pin(page, &host, 0.0);
         }
-        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
-        let window = NSWindow::windowWithContentViewController(&tabs);
+        let shell = Shell::new(mtm, buttons.clone(), target);
+        shell.addSubview(&nav);
+        shell.addSubview(&host);
+        nav.setTranslatesAutoresizingMaskIntoConstraints(false);
+        host.setTranslatesAutoresizingMaskIntoConstraints(false);
+        nav.leadingAnchor().constraintEqualToAnchor_constant(&shell.leadingAnchor(), NAV_INSET).setActive(true);
+        nav.topAnchor().constraintEqualToAnchor_constant(&shell.topAnchor(), NAV_TOP).setActive(true);
+        nav.trailingAnchor()
+            .constraintLessThanOrEqualToAnchor_constant(&shell.trailingAnchor(), -NAV_INSET)
+            .setActive(true);
+        host.leadingAnchor().constraintEqualToAnchor(&shell.leadingAnchor()).setActive(true);
+        host.trailingAnchor().constraintEqualToAnchor(&shell.trailingAnchor()).setActive(true);
+        host.topAnchor().constraintEqualToAnchor_constant(&shell.topAnchor(), BAND).setActive(true);
+        host.bottomAnchor().constraintEqualToAnchor(&shell.bottomAnchor()).setActive(true);
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::FullSizeContentView;
+        let controller = NSViewController::new(mtm);
+        controller.setView(&shell);
+        let window = NSWindow::windowWithContentViewController(&controller);
         window.setStyleMask(style);
-        window.setToolbarStyle(NSWindowToolbarStyle::Preference);
+        window.setTitlebarAppearsTransparent(true);
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         unsafe { window.setReleasedWhenClosed(false) };
         window.setPreventsApplicationTerminationWhenModal(false);
-        window.setContentSize(size);
+        window.setContentSize(objc2_foundation::NSSize::new(WIDTH, BAND + appearance.height));
         add_close(mtm, &window, style, target);
-        return Self {
+        let this = Self {
             window,
             switches,
             popups,
@@ -644,18 +1059,38 @@ impl Settings {
             pause,
             idle,
             recorders,
-            tabs,
+            shell,
+            sections: buttons,
+            pages: pages.to_vec(),
+            titles,
             paint: kit.paint,
             appearance,
         };
+        this.select(0);
+        return this;
     }
 
     pub fn show(&self, parent: &NSWindow, tab: Option<isize>) {
         if let Some(tab) = tab {
-            self.tabs.setSelectedTabViewItemIndex(tab);
+            self.select(usize::try_from(tab).unwrap_or(0));
         }
         if self.window.sheetParent().is_none() {
             parent.beginSheet_completionHandler(&self.window, None);
+        }
+        self.window.makeFirstResponder(None);
+    }
+
+    pub fn select(&self, index: usize) {
+        let index = index.min(self.pages.len().saturating_sub(1));
+        self.shell.set_current(index);
+        for (position, button) in self.sections.iter().enumerate() {
+            button.set_selected(position == index);
+        }
+        for (position, page) in self.pages.iter().enumerate() {
+            page.setHidden(position != index);
+        }
+        if let Some(title) = self.titles.get(index) {
+            self.window.setTitle(&widgets::ns(title));
         }
         self.window.makeFirstResponder(None);
     }
@@ -666,17 +1101,14 @@ impl Settings {
         }
     }
 
-    pub fn restyle(&self, look: &Look) {
-        let theme = &look.theme;
+    pub fn repaint(&self, theme: &Theme) {
         self.paint.apply(theme);
-        for recorder in &self.recorders {
-            recorder.restyle(theme);
+        for button in &self.sections {
+            button.repaint(theme);
         }
         for (_, field) in &self.knobs {
             field.paint(theme);
         }
-        self.appearance.shown.borrow_mut().clear();
-        self.sync_look(look);
     }
 
     pub fn sync_look(&self, look: &Look) {
@@ -684,49 +1116,71 @@ impl Settings {
         let theme = &look.theme;
         let style = look.style();
         page.mode.setSelectedSegment(isize::try_from(look.mode).unwrap_or(0));
-        if *page.shown.borrow() != look.styles {
-            fill_gallery(&page.gallery, &mut page.swatches.borrow_mut(), look);
-            page.shown.borrow_mut().clone_from(&look.styles);
-        }
-        for swatch in page.swatches.borrow().iter() {
-            widgets::alpha(&swatch.ivars().ring, if swatch.ivars().index == look.active { 1.0 } else { 0.0 });
-        }
-        let custom_accent = matches!(style.accent, Accent::Fixed(_));
-        page.accent_mode.setSelectedSegment(isize::from(custom_accent));
-        let accent_auto = !matches!(style.accent, Accent::Fixed(Pair { dark: Some(_), .. }));
-        page.accent.show(
-            theme.accent_value(Variant::Light),
-            theme.accent_value(Variant::Dark),
-            custom_accent && accent_auto,
-            custom_accent,
-        );
-        page.accent.enable(custom_accent);
-        let tint = style.tint.unwrap_or_else(|| {
-            let fallback = theme.value(Key::Chrome, Variant::Light);
-            return Pair::new(fallback);
-        });
-        page.tint.show(tint.light, tint.dark(), tint.dark.is_none(), style.tint.is_some());
-        let percent = (style.tint_strength * 100.0).round();
-        page.strength.0.setDoubleValue(percent);
-        page.strength.1.show(percent);
+        page.circles.sync(&look.styles, look.active, theme);
+        let name = if style::built_in(&style.name) { tr(&style.name) } else { style.name.clone() };
+        page.chosen.setStringValue(&widgets::ns(&name));
         let user = !style::built_in(&style.name);
         page.rename.setEnabled(user);
         page.delete.setEnabled(user);
-        for (key, well) in &page.keys {
+        let (custom, auto) = match style.accent {
+            Accent::Fixed(pair) => (true, pair.dark.is_none()),
+            Accent::System => (false, false),
+        };
+        page.accent.show(
+            Some(theme.accent_value(Variant::Light)),
+            Some(theme.accent_value(Variant::Dark)),
+            custom && auto,
+            custom,
+        );
+        match style.tint {
+            Some(tint) => page.tint.show(Some(tint.light), Some(tint.dark()), tint.dark.is_none(), true),
+            None => page.tint.show(None, None, false, false),
+        }
+        let has_tint = style.tint.is_some();
+        page.tint.dark.set_enabled(has_tint);
+        let (slider, field) = &page.strength;
+        slider.setEnabled(has_tint);
+        field.setEnabled(has_tint);
+        let level = if has_tint { 1.0 } else { metrics::DIMMED };
+        let dimmed: [&NSView; 3] = [slider, field, &page.strength_label];
+        for view in dimmed {
+            widgets::alpha(view, level);
+        }
+        if !actions::dragging(self.window.mtm()) && !field.editing() {
+            let percent = (style.tint_strength * 100.0).round();
+            slider.setDoubleValue(percent);
+            field.show(percent);
+        }
+        for (key, colors) in page.keys.borrow().iter() {
             let pair = style.pair(*key);
-            well.show(
-                theme.value(*key, Variant::Light),
-                theme.value(*key, Variant::Dark),
+            colors.show(
+                Some(theme.value(*key, Variant::Light)),
+                Some(theme.value(*key, Variant::Dark)),
                 pair.is_none_or(|pair| pair.dark.is_none()),
                 pair.is_some(),
             );
         }
     }
 
-    pub fn toggle_advanced(&self) {
+    pub fn flip_advanced(&self, mtm: MainThreadMarker, look: &Look, target: &AnyObject) {
+        let disclosure = &self.appearance.disclosure;
+        disclosure.setState(if disclosure.state() == NSControlStateValueOn {
+            NSControlStateValueOff
+        } else {
+            NSControlStateValueOn
+        });
+        self.toggle_advanced(mtm, look, target);
+    }
+
+    pub fn toggle_advanced(&self, mtm: MainThreadMarker, look: &Look, target: &AnyObject) {
         let page = &self.appearance;
         let open = page.disclosure.state() == NSControlStateValueOn;
-        widgets::reveal(&page.advanced, open);
+        if open && !page.built.replace(true) {
+            let mut kit = Kit { mtm, target, theme: &look.theme, paint: Paint::new() };
+            *page.keys.borrow_mut() = advanced(&mut kit, &page.advanced);
+            self.sync_look(look);
+        }
+        page.advanced.setHidden(!open);
     }
 
     pub fn sync(&self, values: &Value) {
@@ -758,7 +1212,7 @@ impl Settings {
                 HIDE_DESKTOP => locks("hide_desktop"),
                 _ => continue,
             };
-            switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+            switch.set_state(if on { NSControlStateValueOn } else { NSControlStateValueOff });
         }
         let style = STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0));
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -832,6 +1286,8 @@ impl Settings {
             widgets::alpha(view, if on { 1.0 } else { metrics::DIMMED });
             if let Some(control) = view.downcast_ref::<NSControl>() {
                 control.setEnabled(on);
+            } else if let Some(control) = view.downcast_ref::<Switch>() {
+                control.set_enabled(on);
             }
         }
     }
@@ -892,24 +1348,20 @@ fn add_close(mtm: MainThreadMarker, window: &NSWindow, style: NSWindowStyleMask,
     close.topAnchor().constraintEqualToAnchor_constant(&frame.topAnchor(), CLOSE_INSET).setActive(true);
 }
 
-fn column(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSStackView> {
+fn column(mtm: MainThreadMarker, sections: &[&NSView], inset: CGFloat) -> Retained<NSStackView> {
     let stack = widgets::stack(mtm, sections, true, metrics::SPACE_20);
     stack.setAlignment(NSLayoutAttribute::Leading);
-    stack.setEdgeInsets(widgets::insets(metrics::SPACE_20, metrics::SPACE_24, metrics::SPACE_24, metrics::SPACE_24));
+    stack.setEdgeInsets(widgets::insets(metrics::SPACE_20, inset, inset, inset));
     for view in sections {
-        view.leadingAnchor()
-            .constraintEqualToAnchor_constant(&stack.leadingAnchor(), metrics::SPACE_24)
-            .setActive(true);
-        view.trailingAnchor()
-            .constraintEqualToAnchor_constant(&stack.trailingAnchor(), -metrics::SPACE_24)
-            .setActive(true);
+        view.leadingAnchor().constraintEqualToAnchor_constant(&stack.leadingAnchor(), inset).setActive(true);
+        view.trailingAnchor().constraintEqualToAnchor_constant(&stack.trailingAnchor(), -inset).setActive(true);
     }
     stack.widthAnchor().constraintEqualToConstant(WIDTH).setActive(true);
     return stack;
 }
 
 fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
-    let stack = column(mtm, sections);
+    let stack = column(mtm, sections, metrics::SPACE_24);
     let container = widgets::Flipped::new(mtm);
     container.addSubview(&stack);
     stack.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -921,7 +1373,7 @@ fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
 }
 
 fn scrolling(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
-    let stack = column(mtm, sections);
+    let stack = column(mtm, sections, metrics::SPACE_20);
     let document = widgets::Flipped::new(mtm);
     document.setTranslatesAutoresizingMaskIntoConstraints(false);
     document.addSubview(&stack);
@@ -939,26 +1391,34 @@ fn scrolling(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
 }
 
 fn form(kit: &mut Kit, title: &str, rows: &[Retained<NSView>]) -> Retained<NSView> {
+    return form_in(kit, title, Key::Text, 0.0, rows);
+}
+
+fn section(kit: &mut Kit, title: &str, rows: &[Retained<NSView>]) -> Retained<NSView> {
+    return form_in(kit, title, Key::TextSecondary, metrics::SPACE_16, rows);
+}
+
+fn form_in(kit: &mut Kit, title: &str, header: Key, separator: CGFloat, rows: &[Retained<NSView>]) -> Retained<NSView> {
     let mtm = kit.mtm;
     let card = kit.paint.fill(mtm, Key::SettingsCard, metrics::RADIUS_CARD, kit.theme);
-    let mut views: Vec<Retained<NSView>> = Vec::new();
+    let mut views: Vec<(Retained<NSView>, CGFloat)> = Vec::new();
     for (position, row) in rows.iter().enumerate() {
         if position > 0 {
-            let line = widgets::divider(mtm, &kit.theme.color(Key::SettingsSeparator));
+            let line = widgets::divider(mtm, Key::SettingsSeparator, kit.theme);
             kit.paint.add(&line, Key::SettingsSeparator, Slot::Fill);
-            views.push(Retained::into_super(line));
+            views.push((Retained::into_super(line), separator));
         }
-        views.push(row.clone());
+        views.push((row.clone(), 0.0));
     }
-    let refs: Vec<&NSView> = views.iter().map(|view| &**view).collect();
+    let refs: Vec<&NSView> = views.iter().map(|(view, _)| &**view).collect();
     let body = widgets::stack(mtm, &refs, true, 0.0);
-    for view in &refs {
-        view.leadingAnchor().constraintEqualToAnchor(&body.leadingAnchor()).setActive(true);
-        view.trailingAnchor().constraintEqualToAnchor(&body.trailingAnchor()).setActive(true);
+    for (view, inset) in &views {
+        view.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), *inset).setActive(true);
+        view.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -*inset).setActive(true);
     }
     card.addSubview(&body);
     widgets::pin(&body, &card, 0.0);
-    let header = kit.paint.label(mtm, title, Text::Headline, Key::Text, kit.theme);
+    let header = kit.paint.label(mtm, title, Text::Headline, header, kit.theme);
     let section = widgets::stack(mtm, &[&header, &card], true, metrics::SPACE_8);
     section.setAlignment(NSLayoutAttribute::Leading);
     card.leadingAnchor().constraintEqualToAnchor(&section.leadingAnchor()).setActive(true);
@@ -968,6 +1428,16 @@ fn form(kit: &mut Kit, title: &str, rows: &[Retained<NSView>]) -> Retained<NSVie
 }
 
 fn line(kit: &mut Kit, title: &str, note: Option<&str>, control: &NSView) -> Retained<NSView> {
+    return labelled(kit, title, note, control, metrics::SPACE_12).0;
+}
+
+fn labelled(
+    kit: &mut Kit,
+    title: &str,
+    note: Option<&str>,
+    control: &NSView,
+    inset: CGFloat,
+) -> (Retained<NSView>, Retained<NSTextField>) {
     let mtm = kit.mtm;
     let name = kit.paint.label(mtm, title, Text::Body, Key::Text, kit.theme);
     let text: Retained<NSView> = match note {
@@ -987,33 +1457,29 @@ fn line(kit: &mut Kit, title: &str, note: Option<&str>, control: &NSView) -> Ret
         tip.push_str(note);
     }
     row.setToolTip(Some(&widgets::ns(&tip)));
-    row.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_12, 0.0, metrics::SPACE_12));
+    row.setEdgeInsets(widgets::insets(0.0, inset, 0.0, inset));
     let height = if note.is_some() { metrics::ROW_SETTINGS_HINT } else { metrics::ROW_SETTINGS };
     row.heightAnchor().constraintGreaterThanOrEqualToConstant(height).setActive(true);
-    return widgets::view(&row);
+    return (widgets::view(&row), name);
 }
 
-fn switch(kit: &Kit, tag: isize) -> Retained<NSSwitch> {
-    let control = NSSwitch::new(kit.mtm);
-    control.setControlSize(NSControlSize::Small);
-    control.setTag(tag);
-    unsafe {
-        control.setTarget(Some(kit.target));
-        control.setAction(Some(sel!(toggle:)));
-    }
+fn switch(kit: &Kit, tag: isize) -> Retained<Switch> {
+    let control = Switch::new(kit.mtm, kit.theme);
+    control.set_tag(tag);
+    control.set_target(Some(kit.target));
+    control.set_action(Some(sel!(toggle:)));
     return control;
 }
 
-fn fixed_switch(mtm: MainThreadMarker) -> Retained<NSSwitch> {
-    let control = NSSwitch::new(mtm);
-    control.setControlSize(NSControlSize::Small);
-    control.setState(NSControlStateValueOn);
-    control.setEnabled(false);
+fn fixed_switch(kit: &Kit) -> Retained<Switch> {
+    let control = Switch::new(kit.mtm, kit.theme);
+    control.set_state(NSControlStateValueOn);
+    control.set_enabled(false);
     return control;
 }
 
 fn choice(kit: &Kit, items: &[&str], tag: isize) -> Retained<NSPopUpButton> {
-    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(kit.mtm), CGRect::ZERO, false);
+    let popup = widgets::popup(kit.mtm, false, kit.theme);
     if let Some(menu) = popup.menu() {
         menu.setAutoenablesItems(false);
     }
@@ -1043,12 +1509,19 @@ fn knob(kit: &mut Kit, value: f64, min: f64, max: f64, tag: isize) -> Knob {
     slider.setTag(tag);
     slider.setTrackFillColor(Some(&kit.theme.color(Key::SettingsSlider)));
     kit.paint.add(&slider, Key::SettingsSlider, Slot::Track);
+    let title = match tag {
+        VOLUME => i18n::key("Default Volume"),
+        DURATION => i18n::key("Duration"),
+        _ => i18n::key("Tint Strength"),
+    };
+    slider.setAccessibilityLabel(Some(&widgets::ns(&tr(title))));
     slider.widthAnchor().constraintEqualToConstant(KNOB_WIDTH).setActive(true);
     let (step, format): (f64, fn(f64) -> String) =
         if tag == DURATION { (50.0, |value| format!("{value:.0} ms")) } else { (5.0, |value| format!("{value:.0}%")) };
     let units = Units { step, format, parse: widgets::number };
     let field = NumberField::new(kit.mtm, units, tag, VALUE_WIDTH, sel!(settingTyped:), kit.target, kit.theme);
     field.show(value);
+    field.setAccessibilityLabel(Some(&widgets::ns(&tr(title))));
     return (slider, field);
 }
 
@@ -1093,7 +1566,7 @@ fn general(kit: &mut Kit, location: &str) -> General {
         choice(kit, &FRAME_RATES.map(|rate| format!("{rate} fps")).each_ref().map(String::as_str), FRAME_RATE);
     let rows = [
         line(kit, &tr("Location"), None, &library_row),
-        line(kit, &tr("Copy Added Files into Library"), None, &fixed_switch(mtm)),
+        line(kit, &tr("Copy Added Files into Library"), None, &fixed_switch(kit)),
         line(kit, &tr("Optimize on Import"), Some(&tr("Convert videos that need it for smooth playback")), &optimize),
         line(kit, &tr("Frame Rate Limit"), None, &frame_rate),
     ];
@@ -1111,7 +1584,7 @@ type PlaybackPage = (
     Vec<Retained<NSView>>,
     Vec<Retained<NSView>>,
     Vec<Knob>,
-    Vec<Retained<NSSwitch>>,
+    Vec<Retained<Switch>>,
     Vec<Retained<NSPopUpButton>>,
 );
 
@@ -1219,143 +1692,131 @@ fn locking(kit: &mut Kit) -> Locking {
     };
 }
 
-fn segmented(kit: &mut Kit, labels: &[&str], action: Sel) -> Retained<NSSegmentedControl> {
-    let labels: Vec<Retained<NSString>> = labels.iter().map(|title| widgets::ns(&tr(title))).collect();
-    let control = unsafe {
-        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
-            &NSArray::from_retained_slice(&labels),
-            NSSegmentSwitchTracking::SelectOne,
-            Some(kit.target),
-            Some(action),
-            kit.mtm,
-        )
-    };
-    control.setSelectedSegmentBezelColor(Some(&kit.theme.color(Key::Selection)));
-    kit.paint.add(&control, Key::Selection, Slot::Bezel);
-    return control;
+fn segmented(kit: &Kit, labels: &[&str], action: Sel) -> Retained<NSSegmentedControl> {
+    let titles: Vec<String> = labels.iter().map(|title| tr(title)).collect();
+    let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+    return widgets::segmented(kit.mtm, &refs, action, kit.target, Key::Selection, kit.theme);
 }
 
 fn button(kit: &Kit, title: &str, action: Sel) -> Retained<NSButton> {
     return widgets::compact(kit.mtm, title, Some(action), Some(kit.target));
 }
 
-fn titled(kit: &mut Kit, title: &str, control: &NSView) -> Retained<NSView> {
+fn advanced(kit: &mut Kit, stack: &NSStackView) -> Vec<(Key, Colors)> {
     let mtm = kit.mtm;
-    let name = kit.paint.label(mtm, title, Text::Body, Key::Text, kit.theme);
-    name.widthAnchor().constraintEqualToConstant(TITLE_WIDTH).setActive(true);
-    let gap = widgets::spacer(mtm);
-    let row = widgets::stack(mtm, &[&name, &gap, control], false, metrics::SPACE_8);
-    row.setEdgeInsets(widgets::insets(0.0, metrics::SPACE_12, 0.0, metrics::SPACE_12));
-    row.heightAnchor().constraintGreaterThanOrEqualToConstant(metrics::ROW_SETTINGS).setActive(true);
-    return widgets::view(&row);
-}
-
-fn appearance(kit: &mut Kit, look: &Look, height: CGFloat) -> Appearance {
-    let mtm = kit.mtm;
-    let mode = segmented(kit, &theme::Look::MODES, sel!(mode:));
-    let gallery = widgets::stack(mtm, &[], true, metrics::SPACE_12);
-    gallery.setAlignment(NSLayoutAttribute::Leading);
-    gallery.setEdgeInsets(widgets::insets(metrics::SPACE_16, metrics::SPACE_12, metrics::SPACE_12, metrics::SPACE_12));
-    let accent_mode = segmented(kit, &ACCENT_MODES, sel!(accentMode:));
-    accent_mode.setControlSize(NSControlSize::Small);
-    let accent = Well::new(mtm, STYLE_ACCENT, kit.target, &mut kit.paint, kit.theme);
-    let accent_controls = widgets::stack(mtm, &[&accent_mode, &accent.view(mtm)], false, metrics::SPACE_8);
-    let tint = Well::new(mtm, STYLE_TINT, kit.target, &mut kit.paint, kit.theme);
-    let strength = knob(kit, 50.0, 0.0, 100.0, STRENGTH);
-    let rename = button(kit, &tr("Rename…"), sel!(renameStyle:));
-    let delete = button(kit, &tr("Delete…"), sel!(deleteStyle:));
-    let export = button(kit, &tr("Export…"), sel!(exportStyle:));
-    let import = button(kit, &tr("Import…"), sel!(importStyle:));
-    let actions = widgets::stack(mtm, &[&rename, &delete, &export, &import], false, metrics::SPACE_8);
-    let rows = [line(kit, &tr("Mode"), None, &mode)];
-    let window = form(kit, &tr("Appearance"), &rows);
-    let rows = [
-        widgets::view(&gallery),
-        line(kit, &tr("Accent"), Some(&tr("Buttons, selection and sliders")), &accent_controls),
-        line(kit, &tr("Tint"), Some(&tr("Colors the window, the sidebar and cards")), &tint.view(mtm)),
-        line(kit, &tr("Tint Strength"), None, &pair(mtm, &strength)),
-        line(kit, &tr("Style File"), None, &actions),
-    ];
-    let general = form(kit, &tr("Style"), &rows);
-    let disclosure = unsafe {
-        NSButton::buttonWithTitle_target_action(&widgets::ns(""), Some(kit.target), Some(sel!(toggleAdvanced:)), mtm)
-    };
-    disclosure.setBezelStyle(NSBezelStyle::Disclosure);
-    disclosure.setButtonType(NSButtonType::PushOnPushOff);
-    disclosure.setState(NSControlStateValueOff);
-    let advanced_title = kit.paint.label(mtm, &tr("Advanced"), Text::Headline, Key::Text, kit.theme);
-    let advanced_hint = kit.paint.label(
+    let hint = kit.paint.label(
         mtm,
         &tr("Fine-tune single parts. Dark colors follow the light ones until you change them."),
         Text::Subheadline,
         Key::TextSecondary,
         kit.theme,
     );
-    let toggle = widgets::stack(mtm, &[&disclosure, &advanced_title], false, metrics::SPACE_4);
+    stack.addArrangedSubview(&hint);
     let mut keys = Vec::new();
-    let mut groups: Vec<Retained<NSView>> = vec![widgets::view(&advanced_hint)];
     for group in Group::ALL {
         let mut rows = Vec::new();
         for key in group.keys() {
-            let well = Well::new(mtm, key_tag(key), kit.target, &mut kit.paint, kit.theme);
-            rows.push(titled(kit, &tr(key.title()), &well.view(mtm)));
-            keys.push((key, well));
+            let title = tr(key.title());
+            let colors = Colors::new(kit, key.id(), &title, Some(key_tag(key)));
+            rows.push(labelled(kit, &title, None, &colors.view(mtm), metrics::SPACE_16).0);
+            keys.push((key, colors));
         }
-        groups.push(form(kit, &tr(group.title()), &rows));
+        let card = section(kit, &tr(group.title()), &rows);
+        stack.addArrangedSubview(&card);
+        card.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
+        card.trailingAnchor().constraintEqualToAnchor(&stack.trailingAnchor()).setActive(true);
     }
-    let group_refs: Vec<&NSView> = groups.iter().map(|view| &**view).collect();
-    let advanced = widgets::stack(mtm, &group_refs, true, metrics::SPACE_20);
+    return keys;
+}
+
+fn appearance(kit: &mut Kit, height: CGFloat) -> Appearance {
+    let mtm = kit.mtm;
+    let mode = segmented(kit, &Look::MODES, sel!(mode:));
+    let mode_row = labelled(kit, &tr("Appearance"), None, &mode, metrics::SPACE_16).0;
+    let mode_card = section(kit, &tr("Mode"), &[mode_row]);
+
+    let circles = Circles::new(mtm);
+    let chosen = kit.paint.label(mtm, "", Text::Body, Key::Text, kit.theme);
+    let picker = widgets::stack(mtm, &[&circles.view, &chosen], true, metrics::SPACE_8);
+    picker.setAlignment(NSLayoutAttribute::Leading);
+    picker.setEdgeInsets(widgets::insets(metrics::SPACE_16, metrics::SPACE_16, metrics::SPACE_12, metrics::SPACE_16));
+    circles
+        .view
+        .trailingAnchor()
+        .constraintEqualToAnchor_constant(&picker.trailingAnchor(), -metrics::SPACE_16)
+        .setActive(true);
+    let rename = button(kit, &tr("Rename…"), sel!(renameStyle:));
+    let delete = button(kit, &tr("Delete…"), sel!(deleteStyle:));
+    let export = button(kit, &tr("Export…"), sel!(exportStyle:));
+    let import = button(kit, &tr("Import…"), sel!(importStyle:));
+    let buttons = widgets::stack(mtm, &[&rename, &delete, &export, &import], false, metrics::SPACE_8);
+    let style_rows = [widgets::view(&picker), labelled(kit, &tr("Style File"), None, &buttons, metrics::SPACE_16).0];
+    let style_card = section(kit, &tr("Style"), &style_rows);
+
+    let accent = Colors::new(kit, ACCENT, &tr("Accent"), None);
+    let tint = Colors::new(kit, TINT, &tr("Tint"), None);
+    let strength = knob(kit, 50.0, 0.0, 100.0, STRENGTH);
+    let (strength_row, strength_label) =
+        labelled(kit, &tr("Tint Strength"), None, &pair(mtm, &strength), metrics::SPACE_16);
+    let general_rows = [
+        labelled(kit, &tr("Accent"), Some(&tr("Buttons, selection and sliders")), &accent.view(mtm), metrics::SPACE_16)
+            .0,
+        labelled(
+            kit,
+            &tr("Tint"),
+            Some(&tr("Colors the window, the sidebar and cards")),
+            &tint.view(mtm),
+            metrics::SPACE_16,
+        )
+        .0,
+        strength_row,
+    ];
+    let general_card = section(kit, &tr("General Colors"), &general_rows);
+
+    let disclosure = unsafe {
+        NSButton::buttonWithTitle_target_action(&widgets::ns(""), Some(kit.target), Some(sel!(toggleAdvanced:)), mtm)
+    };
+    disclosure.setBezelStyle(NSBezelStyle::Disclosure);
+    disclosure.setButtonType(NSButtonType::PushOnPushOff);
+    disclosure.setState(NSControlStateValueOff);
+    let heading = tr("Advanced Colors");
+    widgets::describe(&disclosure, &heading, &heading);
+    let advanced_title = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &widgets::ns(&heading),
+            Some(kit.target),
+            Some(sel!(flipAdvanced:)),
+            mtm,
+        )
+    };
+    advanced_title.setBordered(false);
+    advanced_title.setAlignment(NSTextAlignment::Left);
+    advanced_title.setFont(Some(&metrics::font(Text::Headline)));
+    let ink = kit.theme.color(Key::TextSecondary);
+    advanced_title.setAttributedTitle(&widgets::styled(&heading, &metrics::font(Text::Headline), &ink));
+    advanced_title.setContentTintColor(Some(&ink));
+    kit.paint.add(&advanced_title, Key::TextSecondary, Slot::Title);
+    let toggle = widgets::stack(mtm, &[&disclosure, &advanced_title], false, metrics::SPACE_4);
+    let advanced = widgets::stack(mtm, &[], true, metrics::SPACE_20);
     advanced.setAlignment(NSLayoutAttribute::Leading);
-    for view in &group_refs {
-        view.leadingAnchor().constraintEqualToAnchor(&advanced.leadingAnchor()).setActive(true);
-        view.trailingAnchor().constraintEqualToAnchor(&advanced.trailingAnchor()).setActive(true);
-    }
     advanced.setHidden(true);
-    let advanced = widgets::view(&advanced);
-    let page = scrolling(mtm, &[&window, &general, &toggle, &advanced]);
-    let appearance = Appearance {
+
+    let page = scrolling(mtm, &[&mode_card, &style_card, &general_card, &toggle, &advanced]);
+    return Appearance {
         page,
         height,
         mode,
-        gallery,
-        swatches: RefCell::new(Vec::new()),
-        shown: RefCell::new(Vec::new()),
-        accent_mode,
+        circles,
+        chosen,
+        rename,
+        delete,
         accent,
         tint,
         strength,
-        rename,
-        delete,
+        strength_label,
         disclosure,
         advanced,
-        keys,
+        built: Cell::new(false),
+        keys: RefCell::new(Vec::new()),
     };
-    fill_gallery(&appearance.gallery, &mut appearance.swatches.borrow_mut(), look);
-    appearance.shown.borrow_mut().clone_from(&look.styles);
-    return appearance;
-}
-
-fn fill_gallery(gallery: &NSStackView, swatches: &mut Vec<Retained<SwatchView>>, look: &Look) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let arranged = gallery.arrangedSubviews();
-    for index in 0..arranged.count() {
-        let view = arranged.objectAtIndex(index);
-        gallery.removeArrangedSubview(&view);
-        view.removeFromSuperview();
-    }
-    swatches.clear();
-    for (row, chunk) in look.styles.chunks(SWATCH_COLUMNS).enumerate() {
-        let cells: Vec<Retained<SwatchView>> = chunk
-            .iter()
-            .enumerate()
-            .map(|(column, style)| SwatchView::new(mtm, row * SWATCH_COLUMNS + column, style, &look.theme))
-            .collect();
-        let refs: Vec<&NSView> = cells.iter().map(|view| &***view).collect();
-        let line = widgets::stack(mtm, &refs, false, metrics::SPACE_16);
-        line.setAlignment(NSLayoutAttribute::Top);
-        gallery.addArrangedSubview(&line);
-        swatches.extend(cells);
-    }
 }

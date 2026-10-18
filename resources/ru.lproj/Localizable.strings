@@ -56,8 +56,8 @@
 	<string>Добавлено %@</string>
 	<key>Adding to library…</key>
 	<string>Добавляю в библиотеку…</string>
-	<key>Advanced</key>
-	<string>Дополнительно</string>
+	<key>Advanced Colors</key>
+	<string>Дополнительные цвета</string>
 	<key>After %ld Seconds</key>
 	<string>Через %ld с</string>
 	<key>After 1 Minute</key>
@@ -98,6 +98,8 @@
 	<string>Оформление</string>
 	<key>Auto</key>
 	<string>Авто</string>
+	<key>Automatic</key>
+	<string>Автоматически</string>
 	<key>Background</key>
 	<string>Подложка</string>
 	<key>Base Colors</key>
@@ -106,6 +108,8 @@
 	<string>Лучшее доступное</string>
 	<key>Blue</key>
 	<string>Синий</string>
+	<key>Brightness</key>
+	<string>Яркость</string>
 	<key>Bring All to Front</key>
 	<string>Все окна — на передний план</string>
 	<key>Buttons, selection and sliders</key>
@@ -294,6 +298,8 @@
 	<string>GIF</string>
 	<key>General</key>
 	<string>Основные</string>
+	<key>General Colors</key>
+	<string>Общие цвета</string>
 	<key>Getting video info…</key>
 	<string>Получаю сведения о видео…</string>
 	<key>Glass Tint</key>
