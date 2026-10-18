@@ -80,12 +80,18 @@ fn sweep_dir(dir: &Path, keep: &HashSet<OsString>) {
 
 impl Engine {
     pub fn refresh_desktop(&mut self, library: &Library, force: bool) {
+        if crate::dev::isolated() {
+            return;
+        }
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.update(self.mtm, &targets, &stills, force);
         self.sweep_stills();
     }
 
     pub fn on_unlock(&mut self, library: &Library) {
+        if crate::dev::isolated() {
+            return;
+        }
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.on_unlock(self.mtm, &targets, &stills);
         self.sweep_stills();

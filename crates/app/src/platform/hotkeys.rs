@@ -129,6 +129,14 @@ pub struct Hotkeys {
 
 impl Hotkeys {
     pub fn install() -> Self {
+        if crate::dev::isolated() {
+            return Self {
+                target: ptr::null_mut(),
+                handler: ptr::null_mut(),
+                refs: BTreeMap::new(),
+                combos: BTreeMap::new(),
+            };
+        }
         let target = unsafe { GetApplicationEventTarget() };
         let mut handler: *mut c_void = ptr::null_mut();
         if !target.is_null() {
@@ -151,6 +159,9 @@ impl Hotkeys {
     }
 
     pub fn register(&mut self, action: HotkeyAction, combo: &KeyCombo) -> Result<(), RegisterError> {
+        if crate::dev::isolated() {
+            return Ok(());
+        }
         if let Some(current) = self.combos.get(&action)
             && hotkey::same(current, combo)
         {

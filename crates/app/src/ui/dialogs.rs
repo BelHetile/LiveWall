@@ -1,34 +1,22 @@
-use std::path::Path;
-
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlSize, NSControlStateValueOn, NSLayoutAttribute,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSSavePanel, NSTextField, NSWindow,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSButton, NSControlStateValueOff, NSControlStateValueOn,
+    NSLayoutAttribute, NSModalResponse, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
-use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSArray, NSString};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol};
 use proto::Request;
 use uuid::Uuid;
 
 use crate::app;
-use crate::i18n::{self, Arg, tr, trf, trp};
-use crate::style;
-use crate::ui::metrics::{self, Text};
-use crate::ui::theme::Theme;
-use crate::ui::widgets::{self, ns};
-use crate::ui::{UI, later, submit};
+use crate::i18n::{Arg, tr, trf, trp};
+use crate::ui::{UI, later, ns, submit};
 
 const NAME_WIDTH: f64 = 260.0;
-pub const PRIVATE_HIDE_TAG: isize = 1;
-const LINK_WIDTH: f64 = 340.0;
-const QUALITIES: [&str; 5] = [i18n::key("Best Available"), "4K", "1440p", "1080p", "720p"];
-const DEFAULT_QUALITY: isize = 3;
-const STYLE_EXTENSION: &str = "livewallstyle";
 
-fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
+pub fn sheet(alert: &NSAlert, done: impl Fn(NSModalResponse) + 'static) {
     alert.window().setPreventsApplicationTerminationWhenModal(false);
     let Some(window) = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.window.clone())).filter(|window| window.isVisible())
     else {
@@ -50,49 +38,127 @@ pub fn notice(message: &str) {
     sheet(&alert, |_| {});
 }
 
-pub fn consent_sheet(url: String, message: &str) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns(&tr("Install download tools?")));
-    alert.setInformativeText(&ns(&trf(
-        "%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.",
-        &[Arg::Text(message.to_string())],
-    )));
-    alert.addButtonWithTitle(&ns(&tr("Install and Download")));
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    sheet(&alert, move |response| {
-        if response == NSAlertFirstButtonReturn {
-            let request = Request::Download { url: url.clone(), consent: true };
-            submit(move |app| {
-                app.submit(request);
-                return None;
-            });
+fn name_field(mtm: MainThreadMarker) -> Retained<NSTextField> {
+    let field = NSTextField::textFieldWithString(&ns(""), mtm);
+    field.setPlaceholderString(Some(&ns(&tr("Folder name"))));
+    field.widthAnchor().constraintEqualToConstant(NAME_WIDTH).setActive(true);
+    return field;
+}
+
+fn stack(mtm: MainThreadMarker, views: &[&NSView], vertical: bool) -> Retained<NSStackView> {
+    let stack = NSStackView::stackViewWithViews(&NSArray::from_slice(views), mtm);
+    stack.setOrientation(if vertical {
+        NSUserInterfaceLayoutOrientation::Vertical
+    } else {
+        NSUserInterfaceLayoutOrientation::Horizontal
+    });
+    stack.setAlignment(if vertical { NSLayoutAttribute::Leading } else { NSLayoutAttribute::CenterY });
+    return stack;
+}
+
+struct FlagsIvars {
+    hidden: Retained<NSButton>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = FlagsIvars]
+    struct FolderFlags;
+
+    unsafe impl NSObjectProtocol for FolderFlags {}
+
+    impl FolderFlags {
+        #[unsafe(method(privateToggled:))]
+        fn private_toggled(&self, sender: &NSButton) {
+            let on = sender.state() == NSControlStateValueOn;
+            let hidden = &self.ivars().hidden;
+            hidden.setEnabled(on);
+            if !on {
+                hidden.setState(NSControlStateValueOff);
+            }
         }
+    }
+);
+
+impl FolderFlags {
+    fn new(mtm: MainThreadMarker, hidden: Retained<NSButton>) -> Retained<Self> {
+        let flags = Self::alloc(mtm).set_ivars(FlagsIvars { hidden });
+        return unsafe { objc2::msg_send![super(flags), init] };
+    }
+}
+
+pub fn new_folder(mtm: MainThreadMarker) {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&ns(&tr("New Folder")));
+    alert.setInformativeText(&ns(&tr(
+        "Locked folders keep their wallpapers hidden until you unlock them with Touch ID.",
+    )));
+    let field = name_field(mtm);
+    let hidden = unsafe { NSButton::checkboxWithTitle_target_action(&ns(&tr("Hide while locked")), None, None, mtm) };
+    hidden.setEnabled(false);
+    let flags = FolderFlags::new(mtm, hidden.clone());
+    let private = unsafe {
+        NSButton::checkboxWithTitle_target_action(
+            &ns(&tr("Private")),
+            Some(&flags as &AnyObject),
+            Some(sel!(privateToggled:)),
+            mtm,
+        )
+    };
+    let options = stack(mtm, &[&private, &hidden], false);
+    let accessory = stack(mtm, &[&field, &options], true);
+    accessory.setFrameSize(accessory.fittingSize());
+    alert.setAccessoryView(Some(&accessory));
+    alert.addButtonWithTitle(&ns(&tr("Create")));
+    alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    alert.window().setInitialFirstResponder(Some(&field));
+    sheet(&alert, move |response| {
+        let _keep = &flags;
+        let name = field.stringValue().to_string().trim().to_string();
+        if response != NSAlertFirstButtonReturn || name.is_empty() {
+            return;
+        }
+        let private = (private.state() == NSControlStateValueOn).then(|| hidden.state() == NSControlStateValueOn);
+        later(move |ui, mtm| {
+            let Some(folder) = app::with(|app| app.create_folder(name, None, private)) else {
+                return;
+            };
+            ui.reload(mtm);
+            ui.filter.folder = ui
+                .library
+                .folder_ids
+                .iter()
+                .position(|other| *other == folder)
+                .filter(|index| !ui.library.sealed(*index));
+            ui.refresh(mtm);
+        });
     });
 }
 
-pub fn confirm_delete(mtm: MainThreadMarker, index: Option<usize>) {
-    let Some((id, title)) = UI.with_borrow(|ui| {
-        let ui = ui.as_ref()?;
-        let index = index.or(ui.selected)?;
-        return ui.library.items.get(index).map(|item| (item.id, item.title.clone()));
-    }) else {
+pub fn rename_folder(mtm: MainThreadMarker, id: Uuid) {
+    let Some(name) =
+        app::with(|app| app.library().folders.iter().find(|folder| folder.id == id).map(|folder| folder.name.clone()))
+            .flatten()
+    else {
         return;
     };
     let alert = NSAlert::new(mtm);
-    alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&trf("Remove “%@” from the library?", &[Arg::Text(title)])));
-    alert.setInformativeText(&ns(&tr("LiveWall deletes its copy. Your original file isn’t affected.")));
-    let remove = alert.addButtonWithTitle(&ns(&tr("Remove")));
-    remove.setHasDestructiveAction(true);
+    alert.setMessageText(&ns(&tr("Rename Folder")));
+    let field = name_field(mtm);
+    field.setStringValue(&ns(&name));
+    field.setFrameSize(field.fittingSize());
+    alert.setAccessoryView(Some(&field));
+    alert.addButtonWithTitle(&ns(&tr("Rename")));
     alert.addButtonWithTitle(&ns(&tr("Cancel")));
+    alert.window().setInitialFirstResponder(Some(&field));
     sheet(&alert, move |response| {
-        if response == NSAlertFirstButtonReturn {
-            let request = Request::LibraryRemove { ids: vec![id.to_string()] };
-            submit(move |app| Some(app.dispatch(&request)));
+        let name = field.stringValue().to_string().trim().to_string();
+        if response != NSAlertFirstButtonReturn || name.is_empty() {
+            return;
         }
+        let request = Request::FolderRename { id: id.to_string(), name };
+        submit(move |app| Some(app.dispatch(&request)));
     });
 }
 
@@ -122,251 +188,5 @@ pub fn delete_folder(mtm: MainThreadMarker, id: Uuid) {
             let request = Request::FolderDelete { id: id.to_string() };
             submit(move |app| Some(app.dispatch(&request)));
         }
-    });
-}
-
-pub fn new_folder(mtm: MainThreadMarker, item: Option<usize>) {
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns(&tr("New Folder")));
-    alert.setInformativeText(&ns(&tr(
-        "Locked folders keep their wallpapers hidden until you unlock them with Touch ID.",
-    )));
-    let field = widgets::input(mtm, &tr("Folder name"), NAME_WIDTH);
-    let target = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.actions.clone()));
-    let private = unsafe {
-        NSButton::checkboxWithTitle_target_action(
-            &ns(&tr("Private")),
-            target.as_deref().map(|target| target as &AnyObject),
-            Some(sel!(newFolderPrivate:)),
-            mtm,
-        )
-    };
-    let hidden = unsafe { NSButton::checkboxWithTitle_target_action(&ns(&tr("Hide while locked")), None, None, mtm) };
-    hidden.setTag(PRIVATE_HIDE_TAG);
-    for check in [&private, &hidden] {
-        check.setControlSize(NSControlSize::Large);
-        check.setFont(Some(&metrics::font(Text::Callout)));
-    }
-    hidden.setEnabled(false);
-    widgets::alpha(&hidden, metrics::DIMMED);
-    if item.is_some() && !app::with(|app| app.is_unlocked()).unwrap_or(false) {
-        private.setEnabled(false);
-        widgets::alpha(&private, metrics::DIMMED);
-        private.setToolTip(Some(&ns(&tr("Unlock private folders to move a wallpaper into a private folder"))));
-    }
-    let flags = widgets::stack(mtm, &[&private, &hidden], false, metrics::SPACE_16);
-    let accessory = widgets::stack(mtm, &[&field, &flags], true, metrics::SPACE_12);
-    accessory.setAlignment(NSLayoutAttribute::Leading);
-    accessory.setFrameSize(accessory.fittingSize());
-    alert.setAccessoryView(Some(&accessory));
-    alert.addButtonWithTitle(&ns(&tr("Create")));
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    alert.window().setInitialFirstResponder(Some(&field));
-    sheet(&alert, move |response| {
-        let name = field.stringValue().to_string().trim().to_string();
-        if response != NSAlertFirstButtonReturn || name.is_empty() {
-            return;
-        }
-        let flags = (private.state() == NSControlStateValueOn).then(|| hidden.state() == NSControlStateValueOn);
-        later(move |ui, mtm| {
-            let id = item.and_then(|index| ui.library.items.get(index)).map(|entry| entry.id);
-            let Some(folder) = app::with(|app| app.create_folder(name, id, flags)) else {
-                return;
-            };
-            ui.reload(mtm);
-            if id.is_none() {
-                ui.filter.folder = ui
-                    .library
-                    .folder_ids
-                    .iter()
-                    .position(|other| *other == folder)
-                    .filter(|index| !ui.library.sealed(*index));
-                ui.refresh(mtm);
-            }
-        });
-    });
-}
-
-pub fn media(path: &Path) -> bool {
-    return path.is_dir()
-        || path.extension().and_then(|value| value.to_str()).and_then(crate::import::kind_for).is_some();
-}
-
-pub fn media_in(path: &Path) -> Vec<String> {
-    if !path.is_dir() {
-        return vec![path.to_string_lossy().into_owned()];
-    }
-    let mut files: Vec<String> = std::fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|file| file.extension().and_then(|value| value.to_str()).and_then(crate::import::kind_for).is_some())
-        .map(|file| file.to_string_lossy().into_owned())
-        .collect();
-    files.sort();
-    return files;
-}
-
-pub fn add_files(mtm: MainThreadMarker, directories: bool) {
-    let Some(window) = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.window.clone())) else {
-        return;
-    };
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(!directories);
-    panel.setCanChooseDirectories(directories);
-    panel.setAllowsMultipleSelection(true);
-    panel.setPrompt(Some(&ns(&tr("Add"))));
-    let chosen = panel.clone();
-    let block = RcBlock::new(move |response: NSModalResponse| {
-        if response != NSModalResponseOK {
-            return;
-        }
-        let urls = chosen.URLs();
-        let paths: Vec<String> = (0..urls.count())
-            .filter_map(|position| urls.objectAtIndex(position).path())
-            .flat_map(|path| media_in(Path::new(&path.to_string())))
-            .collect();
-        if paths.is_empty() {
-            return;
-        }
-        later(move |ui, _| {
-            ui.awaiting = true;
-            let folder = ui.filter.folder.and_then(|index| ui.library.folder_ids.get(index)).map(ToString::to_string);
-            app::with(|app| app.submit(Request::LibraryAdd { paths, folder }));
-        });
-    });
-    panel.beginSheetModalForWindow_completionHandler(&window, &block);
-}
-
-fn themed_popup(mtm: MainThreadMarker, pulls_down: bool) -> Retained<NSPopUpButton> {
-    let theme: Option<Theme> = UI.with_borrow(|ui| ui.as_ref().map(|ui| ui.look.theme.clone()));
-    return match theme {
-        Some(theme) => widgets::popup(mtm, pulls_down, &theme),
-        None => NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, pulls_down),
-    };
-}
-
-pub fn download_sheet(mtm: MainThreadMarker) {
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns(&tr("Add from Video Link")));
-    alert.setInformativeText(&ns(&tr(
-        "Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.",
-    )));
-    let field = widgets::input(mtm, "https://youtu.be/…", LINK_WIDTH);
-    let quality = themed_popup(mtm, false);
-    let titles: Vec<Retained<NSString>> = QUALITIES.iter().map(|title| ns(&tr(title))).collect();
-    quality.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-    quality.selectItemAtIndex(DEFAULT_QUALITY);
-    quality.setEnabled(false);
-    widgets::alpha(&quality, metrics::DIMMED);
-    let label = NSTextField::labelWithString(&ns(&tr("Quality")), mtm);
-    let options = widgets::stack(mtm, &[&label, &quality], false, metrics::SPACE_8);
-    let accessory = widgets::stack(mtm, &[&field, &options], true, metrics::SPACE_12);
-    accessory.setAlignment(NSLayoutAttribute::Leading);
-    accessory.setFrameSize(accessory.fittingSize());
-    alert.setAccessoryView(Some(&accessory));
-    alert.addButtonWithTitle(&ns(&tr("Download")));
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    alert.window().setInitialFirstResponder(Some(&field));
-    sheet(&alert, move |response| {
-        let url = field.stringValue().to_string().trim().to_string();
-        if response != NSAlertFirstButtonReturn || url.is_empty() {
-            return;
-        }
-        submit(move |app| {
-            app.submit(Request::Download { url, consent: false });
-            return None;
-        });
-    });
-}
-
-fn display_name(name: &str) -> String {
-    return if style::built_in(name) { tr(name) } else { name.to_string() };
-}
-
-pub fn rename_style(mtm: MainThreadMarker, window: &NSWindow, name: &str) {
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&ns(&tr("Rename Style")));
-    let field = widgets::input(mtm, &tr("Style name"), NAME_WIDTH);
-    field.setStringValue(&ns(name));
-    field.setFrameSize(field.fittingSize());
-    alert.setAccessoryView(Some(&field));
-    alert.addButtonWithTitle(&ns(&tr("Rename")));
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    alert.window().setInitialFirstResponder(Some(&field));
-    let name = name.to_string();
-    let block = RcBlock::new(move |response: NSModalResponse| {
-        let to = field.stringValue().to_string();
-        if response != NSAlertFirstButtonReturn || to.trim() == name {
-            return;
-        }
-        let name = name.clone();
-        crate::ui::style(move |app| app.style_rename(&name, &to));
-    });
-    alert.beginSheetModalForWindow_completionHandler(window, Some(&block));
-}
-
-pub fn delete_style(mtm: MainThreadMarker, window: &NSWindow, name: &str) {
-    let alert = NSAlert::new(mtm);
-    alert.setAlertStyle(NSAlertStyle::Warning);
-    alert.setMessageText(&ns(&trf("Delete the style “%@”?", &[Arg::Text(display_name(name))])));
-    alert.setInformativeText(&ns(&tr("LiveWall switches to the System style.")));
-    let delete = alert.addButtonWithTitle(&ns(&tr("Delete")));
-    delete.setHasDestructiveAction(true);
-    alert.addButtonWithTitle(&ns(&tr("Cancel")));
-    let name = name.to_string();
-    let block = RcBlock::new(move |response: NSModalResponse| {
-        if response == NSAlertFirstButtonReturn {
-            let name = name.clone();
-            crate::ui::style(move |app| app.style_delete(&name));
-        }
-    });
-    alert.beginSheetModalForWindow_completionHandler(window, Some(&block));
-}
-
-pub fn export_style(mtm: MainThreadMarker, name: &str) {
-    let Some(Ok((name, document))) = app::with(|app| app.style_export(Some(name))) else {
-        return;
-    };
-    let panel = NSSavePanel::savePanel(mtm);
-    panel.setPrompt(Some(&ns(&tr("Export"))));
-    panel.setNameFieldStringValue(&ns(&format!("{}.{STYLE_EXTENSION}", display_name(&name))));
-    #[allow(deprecated)]
-    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&[ns(STYLE_EXTENSION)])));
-    if panel.runModal() != NSModalResponseOK {
-        return;
-    }
-    let Some(path) = panel.URL().and_then(|url| url.path()) else {
-        return;
-    };
-    if let Err(error) = std::fs::write(path.to_string(), document) {
-        notice(&trf("Couldn’t export the style: %@", &[Arg::Text(error.to_string())]));
-    }
-}
-
-pub fn import_style(mtm: MainThreadMarker) {
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(true);
-    panel.setCanChooseDirectories(false);
-    panel.setAllowsMultipleSelection(false);
-    panel.setPrompt(Some(&ns(&tr("Import"))));
-    panel.setMessage(Some(&ns(&tr("Choose a LiveWall style file."))));
-    let types = [ns(STYLE_EXTENSION), ns("json")];
-    #[allow(deprecated)]
-    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
-    if panel.runModal() != NSModalResponseOK {
-        return;
-    }
-    let Some(path) = panel.URL().and_then(|url| url.path()) else {
-        return;
-    };
-    let Ok(text) = std::fs::read_to_string(path.to_string()) else {
-        notice(&tr("Couldn’t read the style file."));
-        return;
-    };
-    crate::ui::style(move |app| {
-        let name = app.style_import(&text)?;
-        return app.style_apply(&name);
     });
 }

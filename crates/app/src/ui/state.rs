@@ -1,7 +1,11 @@
 use crate::i18n::{Arg, key, tr, trf};
 use crate::model::ItemKind;
 use crate::ui::view::{Library, Target};
-use crate::ui::wall::duration;
+
+pub fn duration(seconds: f64) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    return format!("{}:{:02}", total / 60, total % 60);
+}
 
 pub const TAG_ALL: isize = -1;
 pub const TAG_NEW_FOLDER: isize = -2;
@@ -70,13 +74,32 @@ pub const KINDS: [(Option<ItemKind>, &str); 4] = [
     (Some(ItemKind::Image), key("Images")),
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    Large,
+    Small,
+    List,
+}
+
+impl Layout {
+    pub const ALL: [(Layout, &'static str, &'static str); 3] = [
+        (Layout::Large, "square.grid.2x2", key("Large Grid")),
+        (Layout::Small, "square.grid.3x3", key("Small Grid")),
+        (Layout::List, "list.bullet", key("List")),
+    ];
+
+    pub fn from_index(index: isize) -> Self {
+        return usize::try_from(index).ok().and_then(|index| Self::ALL.get(index)).map_or(Layout::Large, |(layout, _, _)| *layout);
+    }
+}
+
 pub struct Filter {
     pub scope: Scope,
     pub folder: Option<usize>,
     pub sort: Sort,
     pub kind: Option<ItemKind>,
     pub query: String,
-    pub list: bool,
+    pub layout: Layout,
 }
 
 impl Filter {
@@ -154,7 +177,7 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
             (false, _) => trf("Desktops %@", &[Arg::Text(short.clone())]),
         };
         let active = mine.iter().any(|target| showing.contains(target));
-        out.push(Marker { icon: "display", text: short, tip: long, active });
+        out.push(Marker { icon: "desktopcomputer", text: short, tip: long, active });
     }
     if targets.contains(&Target::Lock) {
         out.push(Marker { icon: "lock", text: tr("Lock"), tip: lock_tip(library), active: false });

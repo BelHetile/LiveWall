@@ -89,7 +89,9 @@ impl Engine {
             paths.dir_for(DirKind::Wallpapers, Visibility::Private),
         ];
         let mut desktop = Desktop::new(paths.swap_state_file(), mode, owned);
-        desktop.recover(mtm);
+        if !crate::dev::isolated() {
+            desktop.recover(mtm);
+        }
         return Self {
             mtm,
             cgs,
@@ -256,6 +258,9 @@ impl Engine {
     }
 
     fn create_surface(&mut self, spec: spaces::SurfaceSpec) {
+        if crate::dev::isolated() {
+            return;
+        }
         let frame = self.display.frame;
         let window = WallpaperWindow::create(self.mtm, frame, spec.can_join_all);
         if let Some(space_id) = spec.space_id {

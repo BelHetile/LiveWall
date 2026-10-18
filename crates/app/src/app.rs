@@ -238,7 +238,8 @@ impl App {
         let (library, library_warning) = store::load::<Library>(&paths.library_file());
         let (mut settings, settings_warning) = store::load::<Settings>(&paths.settings_file());
         settings.normalize();
-        settings.launch_at_login = matches!(system::login_item_status(), LoginItemStatus::Enabled);
+        settings.launch_at_login =
+            !crate::dev::isolated() && matches!(system::login_item_status(), LoginItemStatus::Enabled);
         let (mut styles, styles_warning) = store::load::<UserStyles>(&paths.styles_file());
         let legacy = settings.appearance.theme.is_some();
         let migrated = style::migrate(&mut settings.appearance, &mut styles);
@@ -783,8 +784,10 @@ impl App {
     }
 
     fn shutdown(&mut self) {
-        self.engine.restore_desktop();
-        process::kill_all();
+        if !crate::dev::isolated() {
+            self.engine.restore_desktop();
+            process::kill_all();
+        }
         crate::ui::dismiss_sheets();
         quit(self.mtm);
     }
@@ -1050,10 +1053,14 @@ impl App {
         }
         self.unlock_epoch += 1;
         let reason = i18n::tr(UNLOCK_REASON);
+        crate::ui::auth_began();
         self.unlock_pending = Some(auth::evaluate(&reason, self.unlock_epoch));
     }
 
     fn finish_unlock(&mut self, success: bool, epoch: u64) {
+        if epoch == self.unlock_epoch {
+            crate::ui::auth_ended();
+        }
         if epoch != self.unlock_epoch || self.unlock_pending.take().is_none() || !success {
             return;
         }
@@ -1396,7 +1403,13 @@ impl App {
             }
             Request::HotkeysGet => ok(&self.hotkeys_report()),
             Request::HotkeysSet { action, combo } => self.set_hotkey(*action, combo.clone()),
-            Request::LoginItemGet => ok(&serde_json::json!({ "status": system::login_item_status() })),
+            Request::LoginItemGet => ok(&serde_json::json!({
+                "status": if crate::dev::isolated() {
+                    LoginItemStatus::NotRegistered
+                } else {
+                    system::login_item_status()
+                },
+            })),
             Request::LoginItemSet { enabled } => self.set_login_item(*enabled),
             Request::Menu => ok(&self.menu.report()),
             Request::Optimize { id } => self.start_optimize(id)?,
@@ -1540,6 +1553,11 @@ impl App {
     }
 
     fn set_login_item(&mut self, enabled: bool) -> Response {
+        if crate::dev::isolated() {
+            self.settings.launch_at_login = false;
+            self.persist_settings();
+            return ok(&serde_json::json!({ "status": LoginItemStatus::NotRegistered }));
+        }
         let status = match system::set_login_item(enabled) {
             Ok(status) => status,
             Err(message) => return Response::err(ErrorCode::Internal, message),

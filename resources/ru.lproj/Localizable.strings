@@ -397,7 +397,7 @@
 	<key>Location</key>
 	<string>Расположение</string>
 	<key>Lock</key>
-	<string>Закрыть</string>
+	<string>Блокировка</string>
 	<key>Lock Automatically</key>
 	<string>Блокировать автоматически</string>
 	<key>Lock Folder</key>
@@ -574,6 +574,8 @@
 	<string>Переименовать</string>
 	<key>Rename Folder</key>
 	<string>Переименовать папку</string>
+	<key>Rename Folder…</key>
+	<string>Переименовать папку…</string>
 	<key>Rename Style</key>
 	<string>Переименовать стиль</string>
 	<key>Rename…</key>
@@ -914,5 +916,25 @@ change how it plays.</key>
 	<string>«%@» — встроенный стиль, его нельзя изменить.</string>
 	<key>“%@” isn’t a color for %@. Use #RRGGBB or #RRGGBBAA.</key>
 	<string>«%@» — не цвет для %@. Используйте #RRGGBB или #RRGGBBAA.</string>
+	<key>Large Grid</key>
+	<string>Крупная сетка</string>
+	<key>Small Grid</key>
+	<string>Мелкая сетка</string>
+	<key>as Large Grid</key>
+	<string>как крупная сетка</string>
+	<key>as Small Grid</key>
+	<string>как мелкая сетка</string>
+	<key>Name</key>
+	<string>Название</string>
+	<key>Kind</key>
+	<string>Тип</string>
+	<key>Resolution</key>
+	<string>Разрешение</string>
+	<key>Size</key>
+	<string>Размер</string>
+	<key>Date Added</key>
+	<string>Дата добавления</string>
+	<key>Placement</key>
+	<string>Размещение</string>
 </dict>
 </plist>

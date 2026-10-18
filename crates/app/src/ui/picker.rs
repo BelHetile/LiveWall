@@ -1,93 +1,124 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use objc2::rc::{Retained, Weak};
+use dispatch2::DispatchQueue;
+use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSButton, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSImageView, NSLayoutAttribute,
-    NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboardTypeFileURL, NSPopover, NSPopoverBehavior,
-    NSPopoverDelegate, NSView, NSViewController,
+    NSBezelStyle, NSButton, NSButtonType, NSColor, NSColorPanel, NSColorPanelMode, NSColorWell, NSColorWellStyle,
+    NSLayoutAttribute, NSLayoutConstraintOrientation, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPopover, NSPopoverBehavior,
+    NSPopoverDelegate, NSStackView, NSStackViewDistribution, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSViewController,
 };
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSArray, NSCopying, NSNotification, NSObject, NSObjectProtocol, NSRectEdge, NSString, NSURL};
-use proto::Request;
+use objc2_foundation::{NSArray, NSCopying, NSEdgeInsets, NSNotification, NSObject, NSObjectProtocol, NSRectEdge, NSString};
+use proto::{Request, ResponseBody};
 use uuid::Uuid;
 
 use crate::app;
 use crate::i18n::tr;
-use crate::model::Icon;
-use crate::style::Key;
-use crate::ui::metrics::{self, Text};
-use crate::ui::swatches::{Panel, Pick};
-use crate::ui::theme::{self, Theme};
-use crate::ui::widgets::{self, Slot, Swatch, ns};
-use crate::ui::{folders, report};
+use crate::model::{Icon, SYMBOL_PREFIX};
+use crate::style::{Rgba, Tag};
+use crate::ui::view::icon_file;
+use crate::ui::{UI, dialogs, folders, notice, ns, submit};
 
-const COLUMNS: usize = 9;
-const CELL: f64 = 30.0;
-const GAP: f64 = metrics::SPACE_4;
-const PREVIEW: f64 = metrics::ICON_HERO;
-const SWATCH: f64 = 18.0;
-const PADDING: f64 = metrics::SPACE_16;
+const COLUMNS: usize = 8;
+const PADDING: f64 = 16.0;
+const PANEL_WIDTH: f64 = 340.0;
 const IMAGE_TYPES: [&str; 8] = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "gif", "webp"];
+const SYMBOLS: [&str; 48] = [
+    "folder.fill",
+    "star.fill",
+    "heart.fill",
+    "bookmark.fill",
+    "tag.fill",
+    "flag.fill",
+    "bolt.fill",
+    "sparkles",
+    "photo.fill",
+    "film.fill",
+    "camera.fill",
+    "paintpalette.fill",
+    "music.note",
+    "gamecontroller.fill",
+    "tv.fill",
+    "desktopcomputer",
+    "sun.max.fill",
+    "moon.fill",
+    "cloud.fill",
+    "snowflake",
+    "flame.fill",
+    "drop.fill",
+    "leaf.fill",
+    "tree.fill",
+    "mountain.2.fill",
+    "water.waves",
+    "globe.americas.fill",
+    "airplane",
+    "car.fill",
+    "sailboat.fill",
+    "house.fill",
+    "building.2.fill",
+    "pawprint.fill",
+    "fish.fill",
+    "bird.fill",
+    "ladybug.fill",
+    "person.fill",
+    "person.2.fill",
+    "face.smiling.fill",
+    "theatermasks.fill",
+    "crown.fill",
+    "gift.fill",
+    "cup.and.saucer.fill",
+    "book.fill",
+    "graduationcap.fill",
+    "briefcase.fill",
+    "atom",
+    "lock.fill",
+];
 
-pub struct PickerIvars {
+struct Ivars {
     folder: Uuid,
-    fallback: &'static str,
     icons_dir: PathBuf,
     icon: RefCell<Option<String>>,
     color: RefCell<Option<String>>,
-    preview: Retained<NSImageView>,
-    board: Retained<Panel>,
-    icons: Vec<(String, Choice)>,
+    choices: RefCell<Vec<(String, Retained<NSButton>)>>,
+    tags: Vec<(Tag, Retained<NSButton>)>,
+    images: Retained<NSStackView>,
+    body: Retained<NSStackView>,
+    well: Retained<NSColorWell>,
+    hex: Retained<NSTextField>,
     popover: Retained<NSPopover>,
 }
-
-struct Choice {
-    view: Retained<NSView>,
-    button: Retained<NSButton>,
-    mark: Retained<Swatch>,
-}
-
-define_class!(
-    #[unsafe(super(NSView))]
-    #[thread_kind = MainThreadOnly]
-    pub struct DropView;
-
-    unsafe impl NSObjectProtocol for DropView {}
-
-    unsafe impl NSDraggingDestination for DropView {
-        #[unsafe(method(draggingEntered:))]
-        fn dragging_entered(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            if dropped_image(info).is_some() { NSDragOperation::Copy } else { NSDragOperation::None }
-        }
-
-        #[unsafe(method(performDragOperation:))]
-        fn perform_drag(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-            dropped(info)
-        }
-    }
-);
 
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = PickerIvars]
-    pub struct StylePicker;
+    #[ivars = Ivars]
+    struct FolderPicker;
 
-    unsafe impl NSObjectProtocol for StylePicker {}
+    unsafe impl NSObjectProtocol for FolderPicker {}
 
-    impl StylePicker {
+    impl FolderPicker {
         #[unsafe(method(pickIcon:))]
         fn pick_icon(&self, sender: &NSButton) {
-            self.choose_icon(sender.tag());
+            self.choose(sender.tag());
         }
 
-        #[unsafe(method(removeImage:))]
-        fn remove_image(&self, sender: &NSMenuItem) {
-            self.remove(sender.tag());
+        #[unsafe(method(pickTag:))]
+        fn pick_tag(&self, sender: &NSButton) {
+            self.choose_tag(sender.tag());
+        }
+
+        #[unsafe(method(colorChanged:))]
+        fn color_changed(&self, sender: &NSColorWell) {
+            self.from_well(&sender.color());
+        }
+
+        #[unsafe(method(hexEntered:))]
+        fn hex_entered(&self, sender: &NSTextField) {
+            self.from_hex(&sender.stringValue().to_string());
         }
 
         #[unsafe(method(addImage:))]
@@ -95,18 +126,18 @@ define_class!(
             self.browse();
         }
 
+        #[unsafe(method(removeImage:))]
+        fn remove_image(&self, sender: &NSMenuItem) {
+            self.remove(sender.tag());
+        }
+
         #[unsafe(method(reset:))]
         fn reset(&self, _sender: Option<&AnyObject>) {
             self.clear();
         }
-
-        #[unsafe(method(done:))]
-        fn done(&self, _sender: Option<&AnyObject>) {
-            self.retain().ivars().popover.close();
-        }
     }
 
-    unsafe impl NSPopoverDelegate for StylePicker {
+    unsafe impl NSPopoverDelegate for FolderPicker {
         #[unsafe(method(popoverDidClose:))]
         fn popover_did_close(&self, _notification: &NSNotification) {
             self.closed();
@@ -114,56 +145,160 @@ define_class!(
     }
 );
 
+define_class!(
+    #[unsafe(super(NSColorWell))]
+    #[thread_kind = MainThreadOnly]
+    struct OpaqueWell;
+
+    unsafe impl NSObjectProtocol for OpaqueWell {}
+
+    impl OpaqueWell {
+        #[unsafe(method(activate:))]
+        fn activate(&self, exclusive: bool) {
+            let _: () = unsafe { msg_send![super(self), activate: exclusive] };
+            let panel = NSColorPanel::sharedColorPanel(self.mtm());
+            panel.setMode(NSColorPanelMode::Wheel);
+            panel.setShowsAlpha(false);
+        }
+    }
+);
+
 thread_local! {
-    static PICKER: RefCell<Option<Retained<StylePicker>>> = const { RefCell::new(None) };
+    static PICKER: RefCell<Option<Retained<FolderPicker>>> = const { RefCell::new(None) };
 }
 
-fn dropped(info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-    let Some(path) = dropped_image(info) else {
-        return false;
-    };
-    if let Some(picker) = PICKER.with_borrow(Clone::clone) {
-        picker.import(&path);
-    }
-    return true;
+fn stack(mtm: MainThreadMarker, views: &[Retained<NSView>], vertical: bool) -> Retained<NSStackView> {
+    let stack = NSStackView::stackViewWithViews(&NSArray::from_retained_slice(views), mtm);
+    stack.setOrientation(if vertical {
+        NSUserInterfaceLayoutOrientation::Vertical
+    } else {
+        NSUserInterfaceLayoutOrientation::Horizontal
+    });
+    stack.setAlignment(if vertical { NSLayoutAttribute::Leading } else { NSLayoutAttribute::CenterY });
+    return stack;
 }
 
-impl StylePicker {
-    fn pick(&self, pick: Option<Pick>) {
-        let color = pick.map(|pick| match pick {
-            Pick::Tag(tag) => tag.id().to_string(),
-            Pick::Hex(color) => color.to_hex(),
-        });
-        *self.ivars().color.borrow_mut() = color;
-        self.apply();
+fn equal(mtm: MainThreadMarker, cells: &[Retained<NSView>]) -> Vec<Retained<NSStackView>> {
+    return cells
+        .chunks(COLUMNS)
+        .map(|chunk| {
+            let mut views = chunk.to_vec();
+            while views.len() < COLUMNS {
+                views.push(NSView::new(mtm));
+            }
+            let row = stack(mtm, &views, false);
+            row.setDistribution(NSStackViewDistribution::FillEqually);
+            return row;
+        })
+        .collect();
+}
+
+fn fill_rows(grid: &NSStackView, rows: &[Retained<NSStackView>]) {
+    for row in rows {
+        grid.addArrangedSubview(row);
+        row.widthAnchor().constraintEqualToAnchor(&grid.widthAnchor()).setActive(true);
+    }
+}
+
+fn choice(mtm: MainThreadMarker, image: &objc2_app_kit::NSImage, tip: &str, tag: usize) -> Retained<NSButton> {
+    let button = unsafe { NSButton::buttonWithImage_target_action(image, None, Some(sel!(pickIcon:)), mtm) };
+    button.setButtonType(NSButtonType::PushOnPushOff);
+    button.setBezelStyle(NSBezelStyle::TexturedRounded);
+    button.setBordered(false);
+    button.setToolTip(Some(&ns(tip)));
+    button.setTag(isize::try_from(tag).unwrap_or(0));
+    button.setContentTintColor(Some(&NSColor::labelColor()));
+    return button;
+}
+
+fn up(button: Retained<NSButton>) -> Retained<NSView> {
+    return Retained::into_super(Retained::into_super(button));
+}
+
+fn rgba_of(value: &str) -> Option<Rgba> {
+    return Tag::parse(value).map(Tag::reference).or_else(|| Rgba::parse(value));
+}
+
+impl FolderPicker {
+    fn apply(&self, sync: bool) {
+        let ivars = self.ivars();
+        let request = Request::FolderStyle {
+            id: ivars.folder.to_string(),
+            icon: Some(ivars.icon.borrow().clone().unwrap_or_default()),
+            color: Some(ivars.color.borrow().clone().unwrap_or_default()),
+        };
+        submit(move |app| Some(app.dispatch(&request)));
+        self.paint(sync);
     }
 
-    fn choose_icon(&self, tag: isize) {
+    fn paint(&self, sync: bool) {
         let ivars = self.ivars();
-        let Some((icon, _)) = usize::try_from(tag).ok().and_then(|index| ivars.icons.get(index)) else {
-            return;
-        };
-        *ivars.icon.borrow_mut() = Some(icon.clone());
-        self.apply();
+        let icon = ivars.icon.borrow().clone();
+        for (value, button) in ivars.choices.borrow().iter() {
+            let on = icon.as_deref() == Some(value.as_str());
+            button.setState(isize::from(on));
+            button.setBordered(on);
+        }
+        let color = ivars.color.borrow().clone();
+        let selected = color.as_deref().and_then(Tag::parse);
+        for (tag, button) in &ivars.tags {
+            let name = if Some(*tag) == selected { "checkmark.circle.fill" } else { "circle.fill" };
+            button.setImage(folders::symbol(name).as_deref());
+        }
+        let rgba = color.as_deref().and_then(rgba_of);
+        ivars.hex.setStringValue(&ns(&rgba.map(Rgba::to_hex).unwrap_or_default()));
+        if sync {
+            let shown = rgba.map_or_else(NSColor::controlAccentColor, folders::from_rgba);
+            ivars.well.setColor(&shown);
+        }
     }
 
-    fn remove(&self, tag: isize) {
+    fn choose(&self, tag: isize) {
         let ivars = self.ivars();
-        let Some((icon, choice)) = usize::try_from(tag).ok().and_then(|index| ivars.icons.get(index)) else {
-            return;
-        };
-        let Some(response) = app::with(|app| app.remove_icon(icon)) else {
-            return;
-        };
-        if matches!(response.body, proto::ResponseBody::Err(_)) {
-            report(&response);
+        let value = usize::try_from(tag).ok().and_then(|index| ivars.choices.borrow().get(index).map(|c| c.0.clone()));
+        if let Some(value) = value {
+            *ivars.icon.borrow_mut() = Some(value);
+            self.apply(false);
+        }
+    }
+
+    fn choose_tag(&self, tag: isize) {
+        let ivars = self.ivars();
+        let tag = usize::try_from(tag).ok().and_then(|index| ivars.tags.get(index)).map(|entry| entry.0);
+        if let Some(tag) = tag {
+            *ivars.color.borrow_mut() = Some(tag.id().to_string());
+            self.apply(true);
+        }
+    }
+
+    fn from_well(&self, color: &NSColor) {
+        if let Some(rgba) = folders::to_rgba(color) {
+            *self.ivars().color.borrow_mut() = Some(rgba.to_hex());
+            self.apply(false);
+        }
+    }
+
+    fn from_hex(&self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            *self.ivars().color.borrow_mut() = None;
+            self.apply(true);
             return;
         }
-        choice.view.setHidden(true);
-        if ivars.icon.borrow().as_deref() == Some(icon.as_str()) {
-            *ivars.icon.borrow_mut() = None;
+        match Rgba::parse(text) {
+            Some(rgba) => {
+                *self.ivars().color.borrow_mut() = Some(rgba.opaque().to_hex());
+                self.apply(true);
+            }
+            None => self.paint(false),
         }
-        self.paint();
+    }
+
+    fn clear(&self) {
+        let ivars = self.ivars();
+        *ivars.icon.borrow_mut() = None;
+        *ivars.color.borrow_mut() = None;
+        self.apply(true);
     }
 
     fn browse(&self) {
@@ -184,298 +319,227 @@ impl StylePicker {
         }
     }
 
-    fn clear(&self) {
+    fn import(&self, path: &Path) {
+        match app::with(|app| app.import_icon(path)) {
+            Some(Ok(icon)) => {
+                *self.ivars().icon.borrow_mut() = Some(icon);
+                self.rebuild();
+                self.apply(false);
+            }
+            Some(Err(message)) => dialogs::notice(&message),
+            None => {}
+        }
+    }
+
+    fn remove(&self, tag: isize) {
         let ivars = self.ivars();
-        *ivars.icon.borrow_mut() = None;
-        *ivars.color.borrow_mut() = None;
-        self.apply();
+        let icon = usize::try_from(tag).ok().and_then(|index| ivars.choices.borrow().get(index).map(|c| c.0.clone()));
+        let Some(icon) = icon else {
+            return;
+        };
+        let Some(response) = app::with(|app| app.remove_icon(&icon)) else {
+            return;
+        };
+        if let ResponseBody::Err(body) = &response.body {
+            notice(body.message.clone());
+            return;
+        }
+        if ivars.icon.borrow().as_deref() == Some(icon.as_str()) {
+            *ivars.icon.borrow_mut() = None;
+        }
+        self.rebuild();
+        self.apply(false);
+    }
+
+    fn rebuild(&self) {
+        let ivars = self.ivars();
+        let mtm = self.mtm();
+        let target: &AnyObject = self;
+        let customs = app::with(|app| app.custom_icons()).unwrap_or_default();
+        let side = folders::symbol("folder.fill").map(|image| image.size());
+        let mut choices = ivars.choices.borrow_mut();
+        choices.retain(|(value, _)| value.starts_with(SYMBOL_PREFIX));
+        for view in ivars.images.arrangedSubviews().iter() {
+            view.removeFromSuperview();
+        }
+        let mut cells: Vec<Retained<NSView>> = Vec::new();
+        for value in customs {
+            let Some(Icon::Image(file)) = Icon::parse(&value) else {
+                continue;
+            };
+            let Some(source) = icon_file(&ivars.icons_dir.join(file)) else {
+                continue;
+            };
+            let image = source.copy();
+            if let Some(side) = side {
+                image.setSize(side);
+            }
+            let index = choices.len();
+            let button = choice(mtm, &image, &tr("Your image · right-click to remove"), index);
+            button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyDown);
+            unsafe { button.setTarget(Some(target)) };
+            let menu = NSMenu::new(mtm);
+            let remove = NSMenuItem::new(mtm);
+            remove.setTitle(&ns(&tr("Remove Image")));
+            remove.setTag(isize::try_from(index).unwrap_or(0));
+            unsafe {
+                remove.setTarget(Some(target));
+                remove.setAction(Some(sel!(removeImage:)));
+                button.setMenu(Some(&menu));
+            }
+            menu.addItem(&remove);
+            choices.push((value, button.clone()));
+            cells.push(up(button));
+        }
+        drop(choices);
+        fill_rows(&ivars.images, &equal(mtm, &cells));
+        ivars.images.setHidden(cells.is_empty());
+        ivars.body.layoutSubtreeIfNeeded();
+        ivars.popover.setContentSize(ivars.body.fittingSize());
     }
 
     fn closed(&self) {
+        let ivars = self.ivars();
+        ivars.well.deactivate();
+        let mtm = self.mtm();
+        if NSColorPanel::sharedColorPanelExists(mtm) {
+            NSColorPanel::sharedColorPanel(mtm).close();
+        }
         let closed = std::ptr::from_ref(self) as usize;
-        dispatch2::DispatchQueue::main().exec_async(move || {
+        DispatchQueue::main().exec_async(move || {
             PICKER.with_borrow_mut(|slot| {
-                if slot.as_ref().is_some_and(|picker| std::ptr::from_ref::<StylePicker>(picker) as usize == closed) {
+                if slot.as_ref().is_some_and(|picker| std::ptr::from_ref::<FolderPicker>(picker) as usize == closed) {
                     *slot = None;
                 }
             });
         });
     }
+}
 
-    fn import(&self, path: &Path) {
-        let _keep = self.retain();
-        match app::with(|app| app.import_icon(path)) {
-            Some(Ok(icon)) => {
-                *self.ivars().icon.borrow_mut() = Some(icon);
-                self.apply();
-                if !self.ivars().popover.isShown() {
-                    return;
-                }
-                let folder = self.ivars().folder;
-                self.ivars().popover.close();
-                crate::ui::later(move |ui, mtm| {
-                    if let Some(index) = ui.library.folder_ids.iter().position(|id| *id == folder) {
-                        show(mtm, ui, index);
-                    }
-                });
-            }
-            Some(Err(message)) => crate::ui::dialogs::notice(&message),
-            None => {}
+pub fn show(mtm: MainThreadMarker, index: usize, anchor: &NSView, rect: CGRect) {
+    let Some((folder, icon, color, icons_dir)) = UI.with_borrow(|ui| {
+        let library = &ui.as_ref()?.library;
+        if library.sealed(index) {
+            return None;
         }
-    }
-
-    fn apply(&self) {
-        let ivars = self.ivars();
-        let request = Request::FolderStyle {
-            id: ivars.folder.to_string(),
-            icon: Some(ivars.icon.borrow().clone().unwrap_or_default()),
-            color: Some(ivars.color.borrow().clone().unwrap_or_default()),
-        };
-        crate::ui::submit(move |app| Some(app.dispatch(&request)));
-        self.paint();
-    }
-
-    fn paint(&self) {
-        let ivars = self.ivars();
-        let icon = ivars.icon.borrow().clone();
-        let color = ivars.color.borrow().clone();
-        let image = folders::preview(icon.as_deref(), color.as_deref(), &ivars.icons_dir, ivars.fallback, PREVIEW);
-        ivars.preview.setImage(image.as_deref());
-        ivars.board.select(color.as_deref().and_then(Pick::parse));
-        let current = icon.as_deref().unwrap_or(&folders::symbol_value(ivars.fallback)).to_string();
-        for (value, choice) in &ivars.icons {
-            let on = *value == current;
-            choice.mark.setHidden(!on);
-            choice.button.setAccessibilitySelected(on);
+        let icon = library.icons.get(index).cloned().flatten().filter(|value| Icon::parse(value).is_some());
+        return Some((
+            *library.folder_ids.get(index)?,
+            icon,
+            library.colors.get(index).cloned().flatten(),
+            library.icons_dir.clone(),
+        ));
+    }) else {
+        return;
+    };
+    PICKER.with_borrow_mut(|slot| {
+        if let Some(previous) = slot.take() {
+            previous.ivars().popover.close();
         }
-    }
-}
+    });
 
-fn cell(
-    mtm: MainThreadMarker,
-    image: &objc2_app_kit::NSImage,
-    tag: usize,
-    action: objc2::runtime::Sel,
-    tip: &str,
-    theme: &Theme,
-) -> Choice {
-    let button = unsafe { NSButton::buttonWithImage_target_action(image, None, Some(action), mtm) };
-    widgets::hoverable(&button);
-    button.setTag(isize::try_from(tag).unwrap_or(0));
-    widgets::describe(&button, tip, tip);
-    let mark = Swatch::new(mtm, metrics::RADIUS_SMALL, Some(&theme.color(Key::PickerSelected)), None);
-    mark.setHidden(true);
-    let view = NSView::new(mtm);
-    view.addSubview(&mark);
-    view.addSubview(&button);
-    widgets::pin(&mark, &view, 0.0);
-    widgets::pin(&button, &view, 0.0);
-    view.widthAnchor().constraintEqualToConstant(CELL).setActive(true);
-    view.heightAnchor().constraintEqualToConstant(CELL).setActive(true);
-    return Choice { view, button, mark };
-}
-
-fn grid(mtm: MainThreadMarker, cells: &[Retained<NSView>]) -> Retained<NSView> {
-    let rows: Vec<Retained<objc2_app_kit::NSStackView>> = cells
-        .chunks(COLUMNS)
-        .map(|chunk| {
-            let views: Vec<&NSView> = chunk.iter().map(|cell| &**cell).collect();
-            return widgets::stack(mtm, &views, false, GAP);
-        })
-        .collect();
-    let views: Vec<&NSView> = rows.iter().map(|row| &***row as &NSView).collect();
-    let grid = widgets::stack(mtm, &views, true, GAP);
-    grid.setAlignment(NSLayoutAttribute::Leading);
-    return widgets::view(&grid);
-}
-
-fn dropped_image(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf> {
-    let kind = unsafe { NSPasteboardTypeFileURL };
-    let items = info.draggingPasteboard().pasteboardItems()?;
-    return items
-        .iter()
-        .filter_map(|item| item.stringForType(kind))
-        .filter_map(|text| NSURL::URLWithString(&text))
-        .filter_map(|url| url.path())
-        .map(|path| PathBuf::from(path.to_string()))
-        .find(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| IMAGE_TYPES.iter().any(|kind| extension.eq_ignore_ascii_case(kind)))
-        });
-}
-
-fn icon_buttons(
-    mtm: MainThreadMarker,
-    icons_dir: &Path,
-    custom: Vec<String>,
-    theme: &Theme,
-) -> (Vec<(String, Choice)>, usize) {
-    let mut icons: Vec<(String, Choice)> = Vec::new();
-    for symbol in folders::SYMBOLS {
-        let Some(image) = folders::painted(symbol, None, SWATCH) else {
+    let mut choices: Vec<(String, Retained<NSButton>)> = Vec::new();
+    let mut cells: Vec<Retained<NSView>> = Vec::new();
+    for name in SYMBOLS {
+        let Some(image) = folders::symbol(name) else {
             continue;
         };
-        let tag = icons.len();
-        let title = symbol.trim_end_matches(".fill").replace('.', " ");
-        let choice = cell(mtm, &image, tag, sel!(pickIcon:), &title, theme);
-        choice.button.setContentTintColor(Some(&theme.color(Key::TextSecondary)));
-        theme::register(&choice.button, Key::TextSecondary, Slot::Tint);
-        icons.push((folders::symbol_value(symbol), choice));
+        let title = name.trim_end_matches(".fill").replace('.', " ");
+        let button = choice(mtm, &image, &title, choices.len());
+        choices.push((format!("{SYMBOL_PREFIX}{name}"), button.clone()));
+        cells.push(up(button));
     }
-    let symbol_count = icons.len();
-    for value in custom {
-        let Some(Icon::Image(file)) = Icon::parse(&value) else {
-            continue;
-        };
-        let Some(image) = folders::picture(&icons_dir.join(file), metrics::ICON_LARGE) else {
-            continue;
-        };
-        let tag = icons.len();
-        let choice = cell(mtm, &image, tag, sel!(pickIcon:), &tr("Your image · right-click to remove"), theme);
-        icons.push((value, choice));
-    }
-    return (icons, symbol_count);
-}
+    let symbols = stack(mtm, &[], true);
+    fill_rows(&symbols, &equal(mtm, &cells));
 
-fn wire(picker: &StylePicker, symbol_count: usize) {
-    let mtm = picker.mtm();
-    let target: &AnyObject = picker;
-    for button in picker.ivars().icons.iter().map(|(_, choice)| &choice.button) {
-        unsafe { button.setTarget(Some(target)) };
+    let mut tags: Vec<(Tag, Retained<NSButton>)> = Vec::new();
+    let mut swatches: Vec<Retained<NSView>> = Vec::new();
+    for tag in Tag::ALL {
+        let image = folders::symbol("circle.fill").unwrap_or_else(|| objc2_app_kit::NSImage::new());
+        let button = unsafe {
+            NSButton::buttonWithImage_target_action(&image, None, Some(sel!(pickTag:)), mtm)
+        };
+        button.setBordered(false);
+        button.setTag(isize::try_from(tags.len()).unwrap_or(0));
+        button.setToolTip(Some(&ns(&tr(tag.title()))));
+        button.setContentTintColor(folders::color(tag.id()).as_deref());
+        tags.push((tag, button.clone()));
+        swatches.push(up(button));
     }
-    for (index, (_, choice)) in picker.ivars().icons.iter().enumerate().skip(symbol_count) {
-        let button = &choice.button;
-        let menu = NSMenu::new(mtm);
-        let remove = widgets::menu_item(
-            mtm,
-            &tr("Remove Image"),
-            sel!(removeImage:),
-            Some(target),
-            isize::try_from(index).unwrap_or(0),
-            None,
-        );
-        menu.addItem(&remove);
-        unsafe { button.setMenu(Some(&menu)) };
-    }
-    picker.ivars().popover.setDelegate(Some(ProtocolObject::from_ref(picker)));
-}
+    let tag_row = stack(mtm, &swatches, false);
+    tag_row.setDistribution(NSStackViewDistribution::FillEqually);
 
-fn images_view(mtm: MainThreadMarker, cells: &[Retained<NSView>], theme: &Theme) -> Retained<NSView> {
-    if !cells.is_empty() {
-        return grid(mtm, cells);
-    }
-    let hint = widgets::label(
+    let well: Retained<OpaqueWell> = unsafe { msg_send![OpaqueWell::alloc(mtm), initWithFrame: CGRect::ZERO] };
+    well.setColorWellStyle(NSColorWellStyle::Default);
+    well.setContentHuggingPriority_forOrientation(750.0, NSLayoutConstraintOrientation::Horizontal);
+    let hex = NSTextField::textFieldWithString(&ns(""), mtm);
+    hex.setPlaceholderString(Some(&ns("#RRGGBB")));
+    let reset = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Reset")), None, Some(sel!(reset:)), mtm) };
+    let colors = stack(
         mtm,
-        &tr("Drop a PNG, JPEG or HEIC here, or choose one."),
-        Text::Subheadline,
-        &theme.color(Key::TextTertiary),
+        &[Retained::into_super(Retained::into_super(Retained::into_super(well.clone()))), Retained::into_super(Retained::into_super(hex.clone())), up(reset.clone())],
+        false,
     );
-    return widgets::view(&hint);
-}
+    colors.setDistribution(NSStackViewDistribution::Fill);
 
-fn popover(mtm: MainThreadMarker, body: &NSView) -> Retained<NSPopover> {
-    let root: Retained<DropView> = unsafe { msg_send![DropView::alloc(mtm), initWithFrame: CGRect::ZERO] };
-    root.addSubview(body);
-    widgets::pin(body, &root, 0.0);
-    let types = [unsafe { NSPasteboardTypeFileURL }.copy()];
-    root.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
-    let controller = NSViewController::new(mtm);
-    controller.setView(&root);
-    let popover = NSPopover::new(mtm);
-    popover.setBehavior(NSPopoverBehavior::Transient);
-    popover.setContentViewController(Some(&controller));
-    popover.setContentSize(root.fittingSize());
-    return popover;
-}
+    let images = stack(mtm, &[], true);
+    let add = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Choose Image…")), None, Some(sel!(addImage:)), mtm) };
 
-pub fn show(mtm: MainThreadMarker, ui: &crate::ui::Ui, folder: usize) {
-    let library = &ui.library;
-    let Some(id) = library.folder_ids.get(folder).copied() else {
-        return;
-    };
-    if library.sealed(folder) {
-        return;
+    let arranged: [Retained<NSView>; 5] = [
+        Retained::into_super(tag_row.clone()),
+        Retained::into_super(colors.clone()),
+        Retained::into_super(symbols.clone()),
+        Retained::into_super(images.clone()),
+        up(add.clone()),
+    ];
+    let body = stack(mtm, &arranged, true);
+    body.widthAnchor().constraintGreaterThanOrEqualToConstant(PANEL_WIDTH).setActive(true);
+    body.setEdgeInsets(NSEdgeInsets { top: PADDING, left: PADDING, bottom: PADDING, right: PADDING });
+    let sections: [&NSView; 4] = [&tag_row, &colors, &symbols, &images];
+    for section in sections {
+        section.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
+        section.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -PADDING).setActive(true);
     }
-    let Some((view, rect)) = ui.sidebar.anchor(folder) else {
-        return;
-    };
-    let theme: &Theme = &ui.look.theme;
-    let icon = library.icons.get(folder).cloned().flatten().filter(|value| Icon::parse(value).is_some());
-    let color = library.colors.get(folder).cloned().flatten();
-    let fallback = folders::default_glyph(library, folder);
-    let custom = app::with(|app| app.custom_icons()).unwrap_or_default();
 
-    let preview = NSImageView::new(mtm);
-    preview.setContentTintColor(Some(&theme.color(Key::SidebarIcon)));
-    theme::register(&preview, Key::SidebarIcon, Slot::Tint);
-    preview.widthAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
-    preview.heightAnchor().constraintEqualToConstant(PREVIEW).setActive(true);
-    let name = widgets::label(mtm, &library.folders[folder], Text::Title3, &theme.color(Key::Text));
-    let header = widgets::stack(mtm, &[&preview, &name], false, metrics::SPACE_8);
+    let controller = NSViewController::new(mtm);
+    controller.setView(&body);
+    let popover = NSPopover::new(mtm);
+    popover.setBehavior(NSPopoverBehavior::Semitransient);
+    popover.setContentViewController(Some(&controller));
 
-    let board = Panel::new(mtm, theme, true);
-    board.configure(color.as_deref().and_then(Pick::parse), false, Some(&tr("Default")), Rc::new(|_| {}));
-    let swatches = board.view();
-
-    let (icons, symbol_count) = icon_buttons(mtm, &library.icons_dir, custom, theme);
-    let symbol_cells: Vec<Retained<NSView>> =
-        icons[..symbol_count].iter().map(|(_, choice)| choice.view.clone()).collect();
-    let symbols = grid(mtm, &symbol_cells);
-    let image_cells: Vec<Retained<NSView>> =
-        icons[symbol_count..].iter().map(|(_, choice)| choice.view.clone()).collect();
-    let images = images_view(mtm, &image_cells, theme);
-
-    let reset_button = widgets::compact(mtm, &tr("Reset"), Some(sel!(reset:)), None);
-    let add_button = widgets::compact(mtm, &tr("Choose Image…"), Some(sel!(addImage:)), None);
-    let done_button = widgets::compact(mtm, &tr("Done"), Some(sel!(done:)), None);
-    done_button.setKeyEquivalent(&ns("\r"));
-    let gap = widgets::spacer(mtm);
-    let footer = widgets::stack(mtm, &[&reset_button, &add_button, &gap, &done_button], false, metrics::SPACE_8);
-
-    let color_heading = widgets::header(mtm, &tr("Color"), theme);
-    let icon_heading = widgets::header(mtm, &tr("Icon"), theme);
-    let image_heading = widgets::header(mtm, &tr("Your Images"), theme);
-    let divider = widgets::divider(mtm, Key::PickerDivider, theme);
-    let views: [&NSView; 9] =
-        [&header, &color_heading, &swatches, &icon_heading, &symbols, &image_heading, &images, &divider, &footer];
-    let body = widgets::stack(mtm, &views, true, metrics::SPACE_8);
-    body.setAlignment(NSLayoutAttribute::Leading);
-    body.setEdgeInsets(widgets::insets(PADDING, PADDING, PADDING, PADDING));
-    body.setCustomSpacing_afterView(metrics::SPACE_16, &header);
-    body.setCustomSpacing_afterView(metrics::SPACE_12, &swatches);
-    body.setCustomSpacing_afterView(metrics::SPACE_12, &symbols);
-    body.setCustomSpacing_afterView(metrics::SPACE_12, &images);
-    divider.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
-    divider.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -PADDING).setActive(true);
-    footer.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), PADDING).setActive(true);
-    footer.trailingAnchor().constraintEqualToAnchor_constant(&body.trailingAnchor(), -PADDING).setActive(true);
-
-    let popover = popover(mtm, &body);
-
-    let picker = StylePicker::alloc(mtm).set_ivars(PickerIvars {
-        folder: id,
-        fallback,
-        icons_dir: library.icons_dir.clone(),
+    let picker = FolderPicker::alloc(mtm).set_ivars(Ivars {
+        folder,
+        icons_dir,
         icon: RefCell::new(icon),
         color: RefCell::new(color),
-        preview,
-        board: board.clone(),
-        icons,
+        choices: RefCell::new(choices),
+        tags,
+        images,
+        body: body.clone(),
+        well: Retained::into_super(well.clone()),
+        hex: hex.clone(),
         popover: popover.clone(),
     });
-    let picker: Retained<StylePicker> = unsafe { msg_send![super(picker), init] };
-    wire(&picker, symbol_count);
-    let weak = Weak::new(&*picker);
-    board.set_handler(Rc::new(move |pick| {
-        if let Some(picker) = weak.load() {
-            picker.pick(pick);
+    let picker: Retained<FolderPicker> = unsafe { msg_send![super(picker), init] };
+    let target: &AnyObject = &picker;
+    unsafe {
+        for (_, button) in picker.ivars().choices.borrow().iter() {
+            button.setTarget(Some(target));
         }
-    }));
-    for button in [&reset_button, &add_button, &done_button] {
-        unsafe { button.setTarget(Some(&picker)) };
+        for (_, button) in &picker.ivars().tags {
+            button.setTarget(Some(target));
+        }
+        well.setTarget(Some(target));
+        well.setAction(Some(sel!(colorChanged:)));
+        hex.setTarget(Some(target));
+        hex.setAction(Some(sel!(hexEntered:)));
+        reset.setTarget(Some(target));
+        add.setTarget(Some(target));
     }
-    picker.paint();
+    popover.setDelegate(Some(ProtocolObject::from_ref(&*picker)));
+    picker.rebuild();
+    picker.paint(true);
+
     PICKER.with_borrow_mut(|slot| *slot = Some(picker));
-    popover.showRelativeToRect_ofView_preferredEdge(rect, &view, NSRectEdge::MaxX);
+    popover.showRelativeToRect_ofView_preferredEdge(rect, anchor, NSRectEdge::MaxX);
 }

@@ -165,6 +165,9 @@ impl Desktop {
     }
 
     pub fn recover(&mut self, mtm: MainThreadMarker) {
+        if crate::dev::isolated() {
+            return;
+        }
         if !self.swap_path.exists() {
             return;
         }
@@ -186,6 +189,9 @@ impl Desktop {
         stills: &BTreeMap<String, String>,
         force: bool,
     ) {
+        if crate::dev::isolated() {
+            return;
+        }
         if force {
             self.applied.clear();
         }
@@ -347,6 +353,9 @@ impl Desktop {
     }
 
     pub fn restore(&mut self, mtm: MainThreadMarker) {
+        if crate::dev::isolated() {
+            return;
+        }
         let in_flight: BTreeSet<String> = self.pending.keys().cloned().collect();
         let since = self.verify_started;
         self.stop_verify();
@@ -361,6 +370,9 @@ impl Desktop {
     }
 
     pub fn revert(&mut self, mtm: MainThreadMarker, spaces: &[String]) {
+        if crate::dev::isolated() {
+            return;
+        }
         for space in spaces {
             if self.applied.remove(space).is_none() {
                 continue;

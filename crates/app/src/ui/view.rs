@@ -15,8 +15,8 @@ use crate::engine::still;
 use crate::media::thumb;
 use crate::model::{self, ItemId, ItemKind};
 use crate::paths::DirKind;
+use crate::ui::ns;
 use crate::ui::state::Scope;
-use crate::ui::widgets::ns;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Settings {
