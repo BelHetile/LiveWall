@@ -49,11 +49,11 @@ const ROW_THUMB: CGSize = CGSize::new(48.0, 30.0);
 const ROW_RADIUS: CGFloat = 4.0;
 const NAME: &str = "name";
 const COLUMNS: [(&str, &str, CGFloat); 5] = [
-    ("kind", i18n::key("Kind"), 70.0),
-    ("length", i18n::key("Duration"), 70.0),
+    ("kind", i18n::key("Kind"), 100.0),
+    ("length", i18n::key("Duration"), 100.0),
     ("resolution", i18n::key("Resolution"), 100.0),
     ("size", i18n::key("Size"), 80.0),
-    ("added", i18n::key("Date Added"), 100.0),
+    ("added", i18n::key("Date Added"), 130.0),
 ];
 
 #[derive(Clone)]

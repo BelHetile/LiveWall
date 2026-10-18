@@ -366,7 +366,7 @@ pub fn av1_notice(titles: &[String], converting: bool) {
     let next = if converting {
         tr("LiveWall converts it to HEVC; it plays once the conversion finishes.")
     } else {
-        tr("Use Optimize for This Mac to convert it to HEVC.")
+        tr("Use Optimize to convert it to HEVC.")
     };
     notice(format!("{} {}", trf("This Mac’s chip can’t decode AV1 video: %@.", &[Arg::Text(names)]), next));
 }

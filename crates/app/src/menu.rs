@@ -157,13 +157,13 @@ impl Menu {
         let title = state.title.clone().unwrap_or_else(|| tr("No wallpaper"));
         self.title.setTitle(&NSString::from_str(&title));
         self.title.setSubtitle(state.status.as_deref().map(NSString::from_str).as_deref());
-        self.library.setTitle(&NSString::from_str(&tr("Open library")));
+        self.library.setTitle(&NSString::from_str(&tr("Open Library")));
         self.pause.setTitle(&NSString::from_str(&if state.paused { tr("Resume") } else { tr("Pause") }));
         self.next.setTitle(&NSString::from_str(&tr("Next")));
         self.previous.setTitle(&NSString::from_str(&tr("Previous")));
         self.random.setTitle(&NSString::from_str(&tr("Random")));
         self.mute.setTitle(&NSString::from_str(&if state.muted { tr("Unmute") } else { tr("Mute") }));
-        self.login.setTitle(&NSString::from_str(&tr("Launch at login")));
+        self.login.setTitle(&NSString::from_str(&tr("Launch at Login")));
         self.login.setState(if state.launch_at_login { NSControlStateValueOn } else { NSControlStateValueOff });
         self.quit.setTitle(&NSString::from_str(&tr("Quit LiveWall")));
     }

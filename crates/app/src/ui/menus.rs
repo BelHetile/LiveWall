@@ -109,7 +109,7 @@ impl Menus {
                 item(mtm, &tr("Settings…"), Some(sel!(showSettings:)), Some(object), Some((",", command))),
                 separator(mtm),
                 item(mtm, &tr("Hide LiveWall"), Some(sel!(hide:)), None, None),
-                item(mtm, &tr("Hide others"), Some(sel!(hideOtherApplications:)), None, None),
+                item(mtm, &tr("Hide Others"), Some(sel!(hideOtherApplications:)), None, None),
                 separator(mtm),
                 item(mtm, &tr("Quit LiveWall"), Some(sel!(terminate:)), None, Some(("q", command))),
             ],

@@ -172,7 +172,7 @@ const RESERVED: &[(&str, u32, &str)] = &[
     ("q", CMD, i18n::key("app commands (⌘ + key)")),
     ("w", CMD, i18n::key("app commands (⌘ + key)")),
     ("h", CMD, i18n::key("app commands (⌘ + key)")),
-    ("h", OPTION | CMD, i18n::key("Hide others")),
+    ("h", OPTION | CMD, i18n::key("Hide Others")),
     ("m", CMD, i18n::key("app commands (⌘ + key)")),
     ("m", OPTION | CMD, i18n::key("Minimize all")),
     ("n", CMD, i18n::key("app commands (⌘ + key)")),

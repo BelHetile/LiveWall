@@ -783,7 +783,7 @@ impl Inspector {
             &[
                 (&tr("Horizontal"), vec![&offsets[0].0, &offsets[0].1]),
                 (&tr("Vertical"), vec![&offsets[1].0, &offsets[1].1]),
-                (&tr("Zoom"), vec![&offsets[2].0, &offsets[2].1]),
+                (&tr("Scale"), vec![&offsets[2].0, &offsets[2].1]),
             ],
             1,
         );

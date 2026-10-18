@@ -8,14 +8,6 @@
 	<string>%1$@ уже занято: %2$@. Нажмите другое сочетание.</string>
 	<key>%@ is already used by another app. Press another combination.</key>
 	<string>%@ уже занято другим приложением. Нажмите другое сочетание.</string>
-	<key>%@ left</key>
-	<string>осталось %@</string>
-	<key>%@ · %ld different wallpapers</key>
-	<string>%1$@ · разных обоев: %2$ld</string>
-	<key>%@. LiveWall can download yt-dlp, ffmpeg and deno into its own folder.</key>
-	<string>%@. LiveWall может скачать yt-dlp, ffmpeg и deno в свою папку.</string>
-	<key>%@/s</key>
-	<string>%@/с</string>
 	<key>%ld Minutes</key>
 	<string>%ld мин</string>
 	<key>1 Hour</key>
@@ -33,7 +25,7 @@
 	<key>A style named “%@” already exists.</key>
 	<string>Стиль «%@» уже существует.</string>
 	<key>About LiveWall</key>
-	<string>О LiveWall</string>
+	<string>О программе LiveWall</string>
 	<key>Accent</key>
 	<string>Акцент</string>
 	<key>Active Chip</key>
@@ -42,22 +34,10 @@
 	<string>Добавить</string>
 	<key>Add Files…</key>
 	<string>Добавить файлы…</string>
-	<key>Add Folder…</key>
-	<string>Добавить папку…</string>
-	<key>Add Wallpapers</key>
-	<string>Добавить обои</string>
-	<key>Add from Video Link</key>
-	<string>Добавить видео по ссылке</string>
 	<key>Add wallpapers from files, a folder or a video link</key>
 	<string>Добавить обои из файлов, папки или по ссылке на видео</string>
-	<key>Add wallpapers, or try a different search, filter or folder.</key>
-	<string>Добавьте обои или измените поиск, фильтр или папку.</string>
 	<key>Added %@</key>
 	<string>Добавлено %@</string>
-	<key>Adding to library…</key>
-	<string>Добавляю в библиотеку…</string>
-	<key>Advanced Colors</key>
-	<string>Дополнительные цвета</string>
 	<key>After %ld Seconds</key>
 	<string>Через %ld с</string>
 	<key>After 1 Minute</key>
@@ -79,9 +59,9 @@
 	<key>All Wallpapers</key>
 	<string>Все обои</string>
 	<key>All wallpapers are muted from the menu bar or hotkey</key>
-	<string>Звук всех обоев выключен из строки меню или сочетанием клавиш</string>
+	<string>Звук всех обоев выключен в строке меню или сочетанием клавиш</string>
 	<key>Always locked at launch and quit. Unlocking needs Touch ID or your password.</key>
-	<string>При запуске и выходе папки всегда заблокированы. Для разблокировки нужен Touch ID или пароль.</string>
+	<string>Папки всегда блокируются при запуске и завершении приложения. Для разблокировки нужен Touch ID или пароль.</string>
 	<key>An app is in fullscreen</key>
 	<string>Приложение открыто на весь экран</string>
 	<key>Animate Wallpaper Changes</key>
@@ -96,24 +76,14 @@
 	<string>окна приложения</string>
 	<key>Appearance</key>
 	<string>Оформление</string>
-	<key>Auto</key>
-	<string>Авто</string>
-	<key>Automatic</key>
-	<string>Автоматически</string>
 	<key>Background</key>
 	<string>Подложка</string>
 	<key>Base Colors</key>
 	<string>Основные цвета</string>
-	<key>Best Available</key>
-	<string>Лучшее доступное</string>
 	<key>Blue</key>
 	<string>Синий</string>
-	<key>Brightness</key>
-	<string>Яркость</string>
 	<key>Bring All to Front</key>
 	<string>Все окна — на передний план</string>
-	<key>Buttons, selection and sliders</key>
-	<string>Кнопки, выделение и ползунки</string>
 	<key>Cancel</key>
 	<string>Отмена</string>
 	<key>Canvas</key>
@@ -133,69 +103,43 @@
 	<key>Chips</key>
 	<string>Чипы</string>
 	<key>Choose Image…</key>
-	<string>Выбрать картинку…</string>
-	<key>Choose a LiveWall style file.</key>
-	<string>Выберите файл стиля LiveWall.</string>
-	<key>Choose a specific desktop</key>
-	<string>Выбрать конкретный рабочий стол</string>
+	<string>Выбрать изображение…</string>
 	<key>Chrome</key>
 	<string>Оформление окна</string>
 	<key>Click, then press a shortcut. ⌫ clears it, ⎋ cancels.</key>
 	<string>Нажмите, затем введите сочетание. ⌫ — очистить, ⎋ — отмена.</string>
-	<key>Close Window</key>
-	<string>Закрыть окно</string>
-	<key>Color</key>
-	<string>Цвет</string>
-	<key>Colors the window, the sidebar and cards</key>
-	<string>Окрашивает окно, боковую панель и карточки</string>
 	<key>Convert videos that need it for smooth playback</key>
-	<string>Конвертировать видео, которым это нужно для плавного воспроизведения</string>
+	<string>Преобразовывать видео для плавного воспроизведения, если это необходимо</string>
 	<key>Copy</key>
 	<string>Скопировать</string>
 	<key>Copy Added Files into Library</key>
 	<string>Копировать файлы в библиотеку</string>
 	<key>Couldn’t download the video: %@</key>
 	<string>Не удалось скачать видео: %@</string>
-	<key>Couldn’t export the style: %@</key>
-	<string>Не удалось экспортировать стиль: %@</string>
-	<key>Couldn’t read the style file.</key>
-	<string>Не удалось прочитать файл стиля.</string>
 	<key>Counts</key>
 	<string>Счётчики</string>
 	<key>Create</key>
 	<string>Создать</string>
 	<key>Custom</key>
-	<string>Свой</string>
+	<string>Вручную</string>
 	<key>Cut</key>
 	<string>Вырезать</string>
 	<key>Cycles through the current folder</key>
 	<string>По кругу в текущей папке</string>
 	<key>Daily</key>
-	<string>Раз в день</string>
+	<string>Каждый день</string>
 	<key>Dark</key>
 	<string>Тёмное</string>
-	<key>Dark appearance</key>
-	<string>Тёмное оформление</string>
 	<key>Date Added (Newest)</key>
 	<string>Дата добавления (сначала новые)</string>
 	<key>Date Added (Oldest)</key>
 	<string>Дата добавления (сначала старые)</string>
-	<key>Default</key>
-	<string>По умолчанию</string>
 	<key>Default Volume</key>
 	<string>Громкость по умолчанию</string>
 	<key>Delete</key>
 	<string>Удалить</string>
-	<key>Delete Folder…</key>
-	<string>Удалить папку…</string>
 	<key>Delete the folder “%@”?</key>
 	<string>Удалить папку «%@»?</string>
-	<key>Delete the style “%@”?</key>
-	<string>Удалить стиль «%@»?</string>
-	<key>Delete…</key>
-	<string>Удалить…</string>
-	<key>Deselect</key>
-	<string>Снять выделение</string>
 	<key>Desktop</key>
 	<string>Рабочий стол</string>
 	<key>Desktop %@</key>
@@ -216,20 +160,10 @@
 	<string>Дисплей спит</string>
 	<key>Divider</key>
 	<string>Разделитель</string>
-	<key>Done</key>
-	<string>Готово</string>
-	<key>Download</key>
-	<string>Скачать</string>
 	<key>Download Status</key>
 	<string>Статус загрузки</string>
 	<key>Download from URL…</key>
 	<string>Скачать по ссылке…</string>
-	<key>Downloading %@</key>
-	<string>Загрузка %@</string>
-	<key>Downloading %ld videos · %@</key>
-	<string>Загрузка видео (%1$ld) · %2$@</string>
-	<key>Drop a PNG, JPEG or HEIC here, or choose one.</key>
-	<string>Перетащите сюда PNG, JPEG или HEIC или выберите файл.</string>
 	<key>Duration</key>
 	<string>Длительность</string>
 	<key>Dusk</key>
@@ -245,13 +179,7 @@
 	<key>Error Status</key>
 	<string>Статус ошибки</string>
 	<key>Every</key>
-	<string>Каждые</string>
-	<key>Export</key>
-	<string>Экспортировать</string>
-	<key>Export…</key>
-	<string>Экспорт…</string>
-	<key>External Display Connects</key>
-	<string>Подключён внешний дисплей</string>
+	<string>Интервал</string>
 	<key>Fade</key>
 	<string>Растворение</string>
 	<key>Field</key>
@@ -268,12 +196,8 @@
 	<string>Найти</string>
 	<key>Finder search</key>
 	<string>поиск в Finder</string>
-	<key>Fine-tune single parts. Dark colors follow the light ones until you change them.</key>
-	<string>Тонкая настройка отдельных частей. Тёмные цвета следуют за светлыми, пока вы их не измените.</string>
 	<key>Fit</key>
 	<string>Вписать</string>
-	<key>Folder Icon &amp; Color…</key>
-	<string>Иконка и цвет папки…</string>
 	<key>Folder name</key>
 	<string>Название папки</string>
 	<key>Folders</key>
@@ -281,15 +205,9 @@
 	<key>Force Quit</key>
 	<string>принудительное завершение</string>
 	<key>Frame Rate Limit</key>
-	<string>Предел частоты кадров</string>
+	<string>Ограничение частоты кадров</string>
 	<key>Free Memory When Paused</key>
 	<string>Освобождать память на паузе</string>
-	<key>From Files…</key>
-	<string>Из файлов…</string>
-	<key>From Folder…</key>
-	<string>Из папки…</string>
-	<key>From Video Link…</key>
-	<string>По ссылке на видео…</string>
 	<key>Full screen</key>
 	<string>полный экран</string>
 	<key>GIF</key>
@@ -298,14 +216,8 @@
 	<string>GIF</string>
 	<key>General</key>
 	<string>Основные</string>
-	<key>General Colors</key>
-	<string>Общие цвета</string>
-	<key>Getting video info…</key>
-	<string>Получаю сведения о видео…</string>
 	<key>Glass Tint</key>
 	<string>Оттенок стекла</string>
-	<key>Global</key>
-	<string>Глобальные</string>
 	<key>Good Status</key>
 	<string>Статус «в порядке»</string>
 	<key>Graphite</key>
@@ -314,10 +226,8 @@
 	<string>Серый</string>
 	<key>Green</key>
 	<string>Зелёный</string>
-	<key>Grid</key>
-	<string>Сетка</string>
 	<key>Grow</key>
-	<string>Рост</string>
+	<string>Увеличение</string>
 	<key>Hairline</key>
 	<string>Тонкая линия</string>
 	<key>Harbour</key>
@@ -326,20 +236,14 @@
 	<string>меню «Справка»</string>
 	<key>Hide LiveWall</key>
 	<string>Скрыть LiveWall</string>
-	<key>Hide When Locked</key>
-	<string>Скрывать при блокировке</string>
-	<key>Hide others</key>
-	<string>скрыть остальные</string>
+	<key>Hide Others</key>
+	<string>Скрыть остальные</string>
 	<key>Hide while locked</key>
 	<string>Скрывать при блокировке</string>
 	<key>Horizontal</key>
 	<string>По горизонтали</string>
 	<key>Hover</key>
 	<string>При наведении</string>
-	<key>Icon</key>
-	<string>Иконка</string>
-	<key>Icon &amp; Color…</key>
-	<string>Иконка и цвет…</string>
 	<key>Icon Picker</key>
 	<string>Выбор значка</string>
 	<key>Icons</key>
@@ -347,61 +251,39 @@
 	<key>Idle Status</key>
 	<string>Статус простоя</string>
 	<key>Image</key>
-	<string>Картинка</string>
+	<string>Изображение</string>
 	<key>Images</key>
-	<string>Картинки</string>
-	<key>Import</key>
-	<string>Импортировать</string>
-	<key>Import…</key>
-	<string>Импорт…</string>
-	<key>In the Library</key>
-	<string>В библиотеке</string>
+	<string>Изображения</string>
 	<key>Inactive For</key>
 	<string>Бездействие</string>
-	<key>Includes AirPlay and mirroring</key>
-	<string>Включая AirPlay и видеоповтор</string>
 	<key>Includes the screen saver</key>
 	<string>Включая заставку</string>
 	<key>Inspector</key>
 	<string>Инспектор</string>
-	<key>Install and Download</key>
-	<string>Установить и скачать</string>
-	<key>Install download tools?</key>
-	<string>Установить инструменты для скачивания?</string>
-	<key>Launch at login</key>
-	<string>Запускать при входе в систему</string>
+	<key>Launch at Login</key>
+	<string>Открывать при входе в систему</string>
 	<key>Library</key>
 	<string>Библиотека</string>
 	<key>Light</key>
 	<string>Светлое</string>
-	<key>Light appearance</key>
-	<string>Светлое оформление</string>
 	<key>Linen</key>
 	<string>Лён</string>
 	<key>List</key>
 	<string>Список</string>
 	<key>Listen to the preview; the desktop copy is muted meanwhile</key>
-	<string>Слушать превью; на рабочем столе звук пока выключен</string>
-	<key>Listening to a preview of another wallpaper in the inspector</key>
-	<string>Звучит превью других обоев в инспекторе</string>
-	<key>Listening to the inspector preview; this desktop's copy is muted until you stop</key>
-	<string>Звучит превью в инспекторе; на этом рабочем столе звук выключен, пока вы не остановите</string>
+	<string>Слушать звук в инспекторе; на рабочем столе звук пока выключен</string>
 	<key>LiveWall converts it to HEVC; it plays once the conversion finishes.</key>
-	<string>LiveWall перекодирует его в HEVC; оно заиграет после завершения.</string>
+	<string>LiveWall конвертирует видео в HEVC; воспроизведение начнётся после завершения.</string>
 	<key>LiveWall deletes its copy. Your original file isn’t affected.</key>
-	<string>LiveWall удаляет свою копию. Исходный файл не затрагивается.</string>
+	<string>LiveWall удалит свою копию. Исходный файл не будет затронут.</string>
 	<key>LiveWall is busy</key>
 	<string>LiveWall занят</string>
-	<key>LiveWall switches to the System style.</key>
-	<string>LiveWall переключится на стиль «Система».</string>
 	<key>Location</key>
 	<string>Расположение</string>
 	<key>Lock</key>
 	<string>Блокировка</string>
 	<key>Lock Automatically</key>
 	<string>Блокировать автоматически</string>
-	<key>Lock Folder</key>
-	<string>Заблокировать папку</string>
 	<key>Lock Private Folders</key>
 	<string>Заблокировать приватные папки</string>
 	<key>Lock Screen</key>
@@ -409,7 +291,7 @@
 	<key>Lock Screen · Frame at %@</key>
 	<string>Экран блокировки · кадр на %@</string>
 	<key>Locked folders keep their wallpapers hidden until you unlock them with Touch ID.</key>
-	<string>Закрытые папки скрывают свои обои, пока вы не откроете их через Touch ID.</string>
+	<string>Заблокированные папки скрывают свои обои, пока вы не разблокируете их с помощью Touch ID.</string>
 	<key>Log Out</key>
 	<string>выход из системы</string>
 	<key>Low Power Mode</key>
@@ -420,22 +302,16 @@
 	<string>Mac перегрет</string>
 	<key>Mac is running hot</key>
 	<string>Mac перегревается</string>
-	<key>Match Toolbar</key>
-	<string>Как в панели</string>
-	<key>Merging video and audio…</key>
-	<string>Соединяю видео и звук…</string>
 	<key>Minimize</key>
 	<string>Свернуть</string>
 	<key>Minimize all</key>
 	<string>свернуть все</string>
 	<key>Mission Control</key>
 	<string>Mission Control</string>
-	<key>Mode</key>
-	<string>Режим</string>
 	<key>Move one space left</key>
-	<string>переход на стол влево</string>
+	<string>переход на рабочий стол слева</string>
 	<key>Move one space right</key>
-	<string>переход на стол вправо</string>
+	<string>переход на рабочий стол справа</string>
 	<key>Move to</key>
 	<string>Переместить в</string>
 	<key>Mute</key>
@@ -445,73 +321,51 @@
 	<key>Name (Z–A)</key>
 	<string>Название (Я–А)</string>
 	<key>Needs at least one of ⌘ ⌃ ⌥, or an F-key</key>
-	<string>Нужен хотя бы один из ⌘ ⌃ ⌥ или клавиша F</string>
+	<string>Нужен хотя бы один модификатор ⌘ ⌃ ⌥ или функциональная клавиша</string>
 	<key>Never</key>
 	<string>Никогда</string>
 	<key>New Folder</key>
 	<string>Новая папка</string>
-	<key>New Folder…</key>
-	<string>Новая папка…</string>
 	<key>Next</key>
-	<string>Следующие</string>
+	<string>Следующие обои</string>
 	<key>Next Wallpaper</key>
 	<string>Следующие обои</string>
 	<key>No Selection</key>
 	<string>Ничего не выбрано</string>
-	<key>No Wallpapers</key>
-	<string>Нет обоев</string>
 	<key>No wallpaper</key>
 	<string>Нет обоев</string>
-	<key>No wallpaper on this desktop</key>
-	<string>На этом рабочем столе нет обоев</string>
 	<key>None</key>
 	<string>Нет</string>
 	<key>Not when LiveWall starts at login</key>
-	<string>Кроме запуска при входе в систему</string>
-	<key>Nothing playing</key>
-	<string>Ничего не играет</string>
-	<key>Now Showing</key>
-	<string>Сейчас на экране</string>
+	<string>Кроме автоматического запуска при входе в систему</string>
 	<key>OK</key>
 	<string>ОК</string>
 	<key>Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them</key>
-	<string>Выкл.: рабочий стол и экран блокировки показывают их; библиотека и меню скрывают</string>
+	<string>Выкл.: обои остаются на рабочем столе и экране блокировки, но скрыты в библиотеке и строке меню</string>
 	<key>On %@</key>
 	<string>На: %@</string>
-	<key>On Login</key>
-	<string>При входе</string>
 	<key>Open Library at Launch</key>
 	<string>Открывать библиотеку при запуске</string>
 	<key>Open at Login</key>
-	<string>Открывать при входе</string>
-	<key>Open library</key>
+	<string>Открывать при входе в систему</string>
+	<key>Open Library</key>
 	<string>Открыть библиотеку</string>
 	<key>Optimize</key>
 	<string>Оптимизировать</string>
 	<key>Optimize on Import</key>
 	<string>Оптимизировать при импорте</string>
-	<key>Optimize…</key>
-	<string>Оптимизировать…</string>
 	<key>Optimizing…</key>
 	<string>Оптимизация…</string>
 	<key>Orange</key>
 	<string>Оранжевый</string>
-	<key>PLACEMENT</key>
-	<string>РАЗМЕЩЕНИЕ</string>
-	<key>PLAYBACK</key>
-	<string>ВОСПРОИЗВЕДЕНИЕ</string>
 	<key>Paste</key>
 	<string>Вставить</string>
-	<key>Paste a link from YouTube, Vimeo or any site yt-dlp supports. The video is downloaded into your library.</key>
-	<string>Вставьте ссылку с YouTube, Vimeo или любого сайта, который поддерживает yt-dlp. Видео скачается в вашу библиотеку.</string>
 	<key>Pause</key>
 	<string>Пауза</string>
 	<key>Pause Automatically</key>
 	<string>Ставить на паузу автоматически</string>
 	<key>Pause Playback</key>
 	<string>Пауза воспроизведения</string>
-	<key>Paused</key>
-	<string>На паузе</string>
 	<key>Paused by you</key>
 	<string>Пауза (вручную)</string>
 	<key>Paused: %@</key>
@@ -519,17 +373,15 @@
 	<key>Pink</key>
 	<string>Розовый</string>
 	<key>Play / Pause</key>
-	<string>Пуск / пауза</string>
+	<string>Воспроизведение / пауза</string>
 	<key>Play Wallpaper Sound</key>
 	<string>Воспроизводить звук обоев</string>
 	<key>Playback</key>
 	<string>Воспроизведение</string>
-	<key>Playing</key>
-	<string>Играет</string>
 	<key>Preview Border</key>
 	<string>Рамка превью</string>
 	<key>Previous</key>
-	<string>Предыдущие</string>
+	<string>Предыдущие обои</string>
 	<key>Previous Wallpaper</key>
 	<string>Предыдущие обои</string>
 	<key>Privacy</key>
@@ -537,33 +389,27 @@
 	<key>Private</key>
 	<string>Приватная</string>
 	<key>Private wallpaper</key>
-	<string>Скрытые обои</string>
+	<string>Приватные обои</string>
 	<key>Progress</key>
 	<string>Прогресс</string>
 	<key>Purple</key>
 	<string>Фиолетовый</string>
-	<key>Quality</key>
-	<string>Качество</string>
 	<key>Quit LiveWall</key>
 	<string>Завершить LiveWall</string>
 	<key>Raised Card</key>
 	<string>Приподнятая карточка</string>
 	<key>Random</key>
-	<string>Случайные</string>
+	<string>Случайные обои</string>
 	<key>Random Wallpaper</key>
 	<string>Случайные обои</string>
 	<key>Recording</key>
 	<string>Запись</string>
 	<key>Red</key>
 	<string>Красный</string>
-	<key>Redo</key>
-	<string>Повторить</string>
 	<key>Remove</key>
 	<string>Удалить</string>
 	<key>Remove Image</key>
-	<string>Удалить картинку</string>
-	<key>Remove Lock</key>
-	<string>Снять блокировку</string>
+	<string>Удалить изображение</string>
 	<key>Remove from Library</key>
 	<string>Удалить из библиотеки</string>
 	<key>Remove from Library…</key>
@@ -574,20 +420,12 @@
 	<string>Переименовать</string>
 	<key>Rename Folder</key>
 	<string>Переименовать папку</string>
-	<key>Rename Folder…</key>
-	<string>Переименовать папку…</string>
-	<key>Rename Style</key>
-	<string>Переименовать стиль</string>
-	<key>Rename…</key>
-	<string>Переименовать…</string>
 	<key>Reset</key>
 	<string>Сбросить</string>
-	<key>Reset playback and placement for this wallpaper</key>
-	<string>Сбросить воспроизведение и размещение этих обоев</string>
 	<key>Reset to Defaults</key>
 	<string>Сбросить настройки</string>
 	<key>Restore Defaults</key>
-	<string>Восстановить по умолчанию</string>
+	<string>Восстановить значения по умолчанию</string>
 	<key>Resume</key>
 	<string>Продолжить</string>
 	<key>Rotation</key>
@@ -611,11 +449,7 @@
 	<key>Segmented Control</key>
 	<string>Переключатель</string>
 	<key>Select All</key>
-	<string>Выбрать всё</string>
-	<key>Select a wallpaper to preview it and
-change how it plays.</key>
-	<string>Выберите обои, чтобы посмотреть превью и
-настроить воспроизведение.</string>
+	<string>Выбрать все</string>
 	<key>Selected Cell</key>
 	<string>Выбранная ячейка</string>
 	<key>Selected Title</key>
@@ -628,16 +462,14 @@ change how it plays.</key>
 	<string>Разделитель</string>
 	<key>Sequoia</key>
 	<string>Секвойя</string>
-	<key>Set This Frame as Lock Screen</key>
-	<string>Этот кадр — на экран блокировки</string>
 	<key>Set as Lock Screen</key>
-	<string>На экран блокировки</string>
+	<string>Сделать экраном блокировки</string>
 	<key>Set as Wallpaper</key>
 	<string>Сделать обоями</string>
 	<key>Set on All Desktops</key>
-	<string>На все рабочие столы</string>
+	<string>Установить на все рабочие столы</string>
 	<key>Set on Desktop</key>
-	<string>Поставить на рабочий стол</string>
+	<string>Установить на рабочий стол</string>
 	<key>Settings</key>
 	<string>Настройки</string>
 	<key>Settings…</key>
@@ -648,12 +480,10 @@ change how it plays.</key>
 	<string>Поле сочетания клавиш</string>
 	<key>Shortcuts</key>
 	<string>Сочетания клавиш</string>
-	<key>Show</key>
-	<string>Показывать</string>
 	<key>Show Inspector</key>
 	<string>Показать инспектор</string>
 	<key>Show Sidebar</key>
-	<string>Показать боковую панель</string>
+	<string>Показать боковое меню</string>
 	<key>Show or hide the Dock</key>
 	<string>показать или скрыть Dock</string>
 	<key>Shuffle</key>
@@ -668,12 +498,8 @@ change how it plays.</key>
 	<string>Мягкое выделение</string>
 	<key>Sort &amp; Filter</key>
 	<string>Сортировка и фильтр</string>
-	<key>Sort By</key>
-	<string>Сортировать по</string>
 	<key>Sound</key>
 	<string>Звук</string>
-	<key>Sound is on</key>
-	<string>Звук включён</string>
 	<key>Space</key>
 	<string>Пробел</string>
 	<key>Speed</key>
@@ -683,23 +509,19 @@ change how it plays.</key>
 	<key>Startup</key>
 	<string>Запуск</string>
 	<key>Stop listening; the desktop plays its own sound again</key>
-	<string>Перестать слушать; рабочий стол снова играет свой звук</string>
+	<string>Перестать слушать; звук на рабочем столе снова включён</string>
 	<key>Stretch</key>
 	<string>Растянуть</string>
 	<key>Style</key>
 	<string>Стиль</string>
-	<key>Style File</key>
-	<string>Файл стиля</string>
-	<key>Style name</key>
-	<string>Название стиля</string>
 	<key>Swaps a paused video for a still frame</key>
-	<string>Заменяет видео на паузе неподвижным кадром</string>
+	<string>Заменяет приостановленное видео неподвижным кадром</string>
 	<key>Switch input source</key>
 	<string>смена раскладки</string>
 	<key>Switch windows</key>
 	<string>переключение окон</string>
 	<key>System</key>
-	<string>Система</string>
+	<string>Авто</string>
 	<key>Take Private Wallpapers off the Desktop</key>
 	<string>Убирать приватные обои с рабочего стола</string>
 	<key>Terracotta</key>
@@ -710,30 +532,22 @@ change how it plays.</key>
 	<string>Текст</string>
 	<key>Text on Accent</key>
 	<string>Текст на акценте</string>
-	<key>The dark color follows the light one until you change it</key>
-	<string>Тёмный цвет следует за светлым, пока вы его не измените</string>
 	<key>The folder is empty.</key>
 	<string>Папка пуста.</string>
 	<key>The style file isn’t valid JSON: %@</key>
 	<string>Файл стиля содержит некорректный JSON: %@</string>
 	<key>The wallpaper inside moves to Unfiled.</key>
 	<string>Обои внутри перейдут в «Без папки».</string>
-	<key>The wallpaper on this desktop is playing</key>
-	<string>Обои на этом рабочем столе воспроизводятся</string>
 	<key>There’s no style named “%@”.</key>
 	<string>Стиля «%@» нет.</string>
 	<key>They become public.</key>
-	<string>Они станут видны всем.</string>
+	<string>Они перестанут быть приватными.</string>
 	<key>This Mac’s chip can’t decode AV1 video: %@.</key>
-	<string>Чип этого Mac не умеет декодировать видео AV1: %@.</string>
-	<key>This desktop shows a still image</key>
-	<string>На этом рабочем столе неподвижная картинка</string>
+	<string>Чип этого Mac не поддерживает декодирование AV1: %@.</string>
 	<key>This isn’t a LiveWall style file.</key>
 	<string>Это не файл стиля LiveWall.</string>
 	<key>This style was made by a newer version of LiveWall (format %@). Update LiveWall to import it.</key>
 	<string>Этот стиль создан более новой версией LiveWall (формат %@). Обновите LiveWall, чтобы импортировать его.</string>
-	<key>This wallpaper is muted in the inspector</key>
-	<string>Звук этих обоев выключен в инспекторе</string>
 	<key>Thumbnail Well</key>
 	<string>Подложка миниатюры</string>
 	<key>Tile</key>
@@ -760,8 +574,6 @@ change how it plays.</key>
 	<string>Переходы</string>
 	<key>Type Shortcut…</key>
 	<string>Введите сочетание…</string>
-	<key>Undo</key>
-	<string>Отменить</string>
 	<key>Unfiled</key>
 	<string>Без папки</string>
 	<key>Unknown color “%@”. Run lwctl style keys to list them.</key>
@@ -771,29 +583,23 @@ change how it plays.</key>
 	<key>Unloaded</key>
 	<string>Выгружено</string>
 	<key>Unloaded to free memory; the desktop shows the paused frame.</key>
-	<string>Выгружено, чтобы освободить память; на рабочем столе кадр паузы.</string>
+	<string>Выгружено, чтобы освободить память; на рабочем столе виден кадр паузы.</string>
 	<key>Unlock Private Folders…</key>
 	<string>Разблокировать приватные папки…</string>
-	<key>Unlock private folders to move a wallpaper into a private folder</key>
-	<string>Откройте приватные папки, чтобы переместить обои в приватную папку</string>
-	<key>Unlock private folders to open this folder</key>
-	<string>Откройте приватные папки, чтобы открыть эту папку</string>
 	<key>Unlock private wallpaper folders</key>
 	<string>разблокировать приватные папки с обоями</string>
 	<key>Unmute</key>
 	<string>Включить звук</string>
 	<key>Unsupported Key</key>
 	<string>Клавиша не поддерживается</string>
-	<key>Use Optimize for This Mac to convert it to HEVC.</key>
-	<string>Используйте «Оптимизировать для этого Mac», чтобы перекодировать в HEVC.</string>
+	<key>Use Optimize to convert it to HEVC.</key>
+	<string>Нажмите «Оптимизировать», чтобы конвертировать видео в HEVC.</string>
 	<key>Use This Frame</key>
 	<string>Этот кадр</string>
 	<key>Use as Icon</key>
-	<string>Сделать иконкой</string>
-	<key>Use for Lock Screen</key>
-	<string>На экран блокировки</string>
+	<string>Использовать как значок</string>
 	<key>Uses more battery to keep track of windows</key>
-	<string>Расходует больше заряда на слежение за окнами</string>
+	<string>Сильнее расходует заряд батареи из-за отслеживания окон</string>
 	<key>Vertical</key>
 	<string>По вертикали</string>
 	<key>Video</key>
@@ -808,8 +614,6 @@ change how it plays.</key>
 	<string>Тише</string>
 	<key>Volume Up</key>
 	<string>Громче</string>
-	<key>Wallpaper</key>
-	<string>Обои</string>
 	<key>Wallpapers</key>
 	<string>Обои</string>
 	<key>Warning Status</key>
@@ -832,26 +636,24 @@ change how it plays.</key>
 	<string>Работают в любом приложении, на текущем рабочем столе.</string>
 	<key>Yellow</key>
 	<string>Жёлтый</string>
-	<key>Your Images</key>
-	<string>Ваши картинки</string>
 	<key>Your image · right-click to remove</key>
-	<string>Ваша картинка · удалить — правый клик</string>
+	<string>Ваше изображение · удалить — правый клик</string>
+	<key>Scale</key>
+	<string>Масштаб</string>
 	<key>Zoom</key>
 	<string>Изменить масштаб</string>
 	<key>app commands (⌘ + key)</key>
 	<string>команды приложений (⌘ + клавиша)</string>
 	<key>app focused</key>
 	<string>другое приложение</string>
-	<key>as Grid</key>
-	<string>как сетка</string>
 	<key>as List</key>
-	<string>как список</string>
+	<string>Списком</string>
 	<key>by you</key>
 	<string>вручную</string>
 	<key>cannot open the image</key>
-	<string>Не удалось открыть изображение</string>
+	<string>не удалось открыть изображение</string>
 	<key>cannot write PNG</key>
-	<string>Не удалось сохранить PNG</string>
+	<string>не удалось сохранить PNG</string>
 	<key>color must be a tag name or a #RRGGBB hex value</key>
 	<string>цвет должен быть названием метки или значением #RRGGBB</string>
 	<key>covered</key>
@@ -869,7 +671,7 @@ change how it plays.</key>
 	<key>invalid folder id</key>
 	<string>неверный идентификатор папки</string>
 	<key>invalid image path</key>
-	<string>Неверный путь к изображению</string>
+	<string>неверный путь к изображению</string>
 	<key>invalid item id</key>
 	<string>неверный идентификатор элемента</string>
 	<key>invalid url</key>
@@ -879,7 +681,7 @@ change how it plays.</key>
 	<key>library is empty</key>
 	<string>библиотека пуста</string>
 	<key>locked</key>
-	<string>закрыто</string>
+	<string>заблокировано</string>
 	<key>media is not playable until optimized</key>
 	<string>видео не будет воспроизводиться до оптимизации</string>
 	<key>no optimize job for this item</key>
@@ -921,9 +723,9 @@ change how it plays.</key>
 	<key>Small Grid</key>
 	<string>Мелкая сетка</string>
 	<key>as Large Grid</key>
-	<string>как крупная сетка</string>
+	<string>Крупными значками</string>
 	<key>as Small Grid</key>
-	<string>как мелкая сетка</string>
+	<string>Мелкими значками</string>
 	<key>Name</key>
 	<string>Название</string>
 	<key>Kind</key>
