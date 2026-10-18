@@ -283,19 +283,6 @@ define_class!(
         fn hide_library(&self, _sender: Option<&AnyObject>) {
             later(Ui::hide);
         }
-
-        // !!! HARDCODED STUB !!! Does nothing yet. Real behaviour: select and scroll to the wallpaper
-        // !!! assigned to this slot in the library (needs the Ui state and the grid).
-        #[unsafe(method(showDesktopWallpaper:))]
-        fn show_desktop_wallpaper(&self, _sender: Option<&AnyObject>) {
-            eprintln!("STUB: show desktop wallpaper in library");
-        }
-
-        // !!! HARDCODED STUB !!! Does nothing yet. Same as above, for the lock screen slot.
-        #[unsafe(method(showLockWallpaper:))]
-        fn show_lock_wallpaper(&self, _sender: Option<&AnyObject>) {
-            eprintln!("STUB: show lock screen wallpaper in library");
-        }
     }
 );
 
@@ -312,10 +299,6 @@ pub struct Menus {
 }
 
 impl Menus {
-    pub fn target(&self) -> &AnyObject {
-        return &self._target;
-    }
-
     pub fn show_settings(&self, tab: isize) {
         settings::show(self._target.mtm(), Some(tab));
     }

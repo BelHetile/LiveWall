@@ -29,7 +29,7 @@ use proto::{ErrorCode, Request, Response, ResponseBody};
 
 use crate::app::{self, App};
 use crate::i18n::{Arg, tr, trf};
-use crate::model::ItemId;
+use crate::model::{ItemId, ItemKind};
 use crate::style::StyleError;
 use crate::ui::state::{Filter, Layout, Scope, Sort};
 use crate::ui::view::{Library, Thumbs};
@@ -90,7 +90,7 @@ impl Ui {
     }
 
     fn refresh(&mut self, _mtm: MainThreadMarker) {
-        self.toolbar.reload(self.library.desktops, self.filter.scope);
+        self.toolbar.reload(&self.library, &self.filter);
         self.sidebar.reload(&self.library, self.filter.folder);
         self.grid.reload(&self.library, &self.filter, self.selected);
         self.inspector.show(&self.library, self.selected_index(), self.filter.scope);
@@ -277,9 +277,10 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     let panes = windows::panes(&sidebar.controller, &grid.controller, &inspector.controller);
     let (window, restored) = windows::main_window(mtm, &panes.split);
     let menus = menus::Menus::new(mtm);
-    let toolbar = toolbar::Toolbar::new(mtm, menus.target());
-    toolbar.reload(library.desktops, filter.scope);
+    let toolbar = toolbar::Toolbar::new(mtm);
+    toolbar.reload(&library, &filter);
     toolbar.show_layout(filter.layout);
+    toolbar.show_query(&filter.query);
     window.setToolbar(Some(&toolbar.bar));
     if !restored {
         window.center();
@@ -378,6 +379,49 @@ fn set_layout(layout: Layout) {
             ui.filter.layout = layout;
             ui.grid.set_layout(layout);
             ui.toolbar.show_layout(layout);
+        }
+    });
+}
+
+fn set_sort(sort: Sort) {
+    update(|ui, mtm| {
+        if ui.filter.sort != sort {
+            ui.filter.sort = sort;
+            ui.refresh(mtm);
+        }
+    });
+}
+
+fn set_kind(kind: Option<ItemKind>) {
+    update(|ui, mtm| {
+        if ui.filter.kind != kind {
+            ui.filter.kind = kind;
+            ui.refresh(mtm);
+        }
+    });
+}
+
+fn set_query(query: String) {
+    update(|ui, mtm| {
+        if ui.filter.query != query {
+            ui.filter.query = query;
+            ui.refresh(mtm);
+        }
+    });
+}
+
+fn reveal_desktop() {
+    update(|ui, _| {
+        if let Some(index) = toolbar::desktop_item(&ui.library, ui.filter.scope) {
+            ui.choose(ui.item_id(Some(index)), true);
+        }
+    });
+}
+
+fn reveal_lock() {
+    update(|ui, _| {
+        if let Some(index) = toolbar::lock_item(&ui.library) {
+            ui.choose(ui.item_id(Some(index)), true);
         }
     });
 }

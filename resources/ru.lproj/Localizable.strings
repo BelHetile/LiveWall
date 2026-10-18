@@ -774,5 +774,43 @@
 	<string>Дата добавления</string>
 	<key>Placement</key>
 	<string>Размещение</string>
+	<key>Sort By</key>
+	<string>Сортировать по</string>
+	<key>Show</key>
+	<string>Показать</string>
+	<key>Nothing playing</key>
+	<string>Ничего не воспроизводится</string>
+	<key>No wallpaper on this desktop</key>
+	<string>На этом рабочем столе нет обоев</string>
+	<key>This desktop shows a still image</key>
+	<string>На этом рабочем столе показано статичное изображение</string>
+	<key>Playing</key>
+	<string>Воспроизведение</string>
+	<key>The wallpaper on this desktop is playing</key>
+	<string>Обои на этом рабочем столе воспроизводятся</string>
+	<key>Paused</key>
+	<string>Пауза</string>
+	<key>Sound is on</key>
+	<string>Звук включён</string>
+	<key>This wallpaper is muted in the inspector</key>
+	<string>Звук этих обоев выключен в инспекторе</string>
+	<key>Listening to the inspector preview; this desktop’s copy is muted until you stop</key>
+	<string>Звук воспроизводится в инспекторе; на этом рабочем столе он выключен, пока вы не остановите просмотр</string>
+	<key>Listening to a preview of another wallpaper in the inspector</key>
+	<string>В инспекторе воспроизводится звук других обоев</string>
+	<key>Getting video info…</key>
+	<string>Получение информации о видео…</string>
+	<key>Merging video and audio…</key>
+	<string>Объединение видео и звука…</string>
+	<key>Adding to library…</key>
+	<string>Добавление в библиотеку…</string>
+	<key>Downloading %@</key>
+	<string>Загрузка: %@</string>
+	<key>%@/s</key>
+	<string>%@/с</string>
+	<key>%@ left</key>
+	<string>осталось %@</string>
+	<key>Downloading %ld videos · %@</key>
+	<string>Загрузка видео: %ld · %@</string>
 </dict>
 </plist>
