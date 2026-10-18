@@ -391,6 +391,13 @@ pub fn reopen() {
     later(|ui, mtm| ui.open(mtm));
 }
 
+pub fn show_settings() {
+    later(|_, mtm| {
+        show_in_dock(mtm, true);
+        settings::show(mtm, None);
+    });
+}
+
 fn set_scope(scope: Scope) {
     update(|ui, mtm| {
         if ui.filter.scope != scope {
@@ -466,7 +473,7 @@ fn progress_tick() {
     }
 }
 
-fn toggle_privacy() {
+pub fn toggle_privacy() {
     submit(|app| {
         if app.is_unlocked() {
             app.lock();

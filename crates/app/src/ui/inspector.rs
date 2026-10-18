@@ -450,6 +450,7 @@ pub fn value_field(mtm: MainThreadMarker, prefix: &str, suffix: &str, digits: us
     let formatter = NSNumberFormatter::new();
     formatter.setNumberStyle(NSNumberFormatterStyle::DecimalStyle);
     formatter.setUsesGroupingSeparator(false);
+    formatter.setLenient(true);
     formatter.setMinimumFractionDigits(digits);
     formatter.setMaximumFractionDigits(digits);
     if !prefix.is_empty() {

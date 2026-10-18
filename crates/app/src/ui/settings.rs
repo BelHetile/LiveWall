@@ -718,7 +718,7 @@ fn playback(build: &mut Builder) -> Retained<NSTabViewItem> {
     form.section(&tr("Transitions"), &build.check(&tr("Animate Wallpaper Changes"), TRANSITION));
     let style = build.choice(&titles(&STYLES), STYLE);
     form.line(&tr("Style"), &style);
-    let (length, mut controls) = build.knob(200.0, 3000.0, " ms", DURATION);
+    let (length, mut controls) = build.knob(200.0, 3000.0, &format!("\u{a0}{}", tr("ms")), DURATION);
     form.line(&tr("Duration"), &length);
     controls.push(control(&style));
     build.group(TRANSITION, controls);

@@ -255,6 +255,9 @@ impl App {
                 status: None,
                 muted: settings.muted,
                 launch_at_login: settings.launch_at_login,
+                unlocked,
+                has_private: library.folders.iter().any(|folder| folder.locked),
+                rotatable: library.items.iter().filter(|item| item.playable && (unlocked || !library.is_private(item))).count() > 1,
             },
         );
 
@@ -779,6 +782,8 @@ impl App {
                 let _ = self.set_login_item(enabled);
             }
             MenuAction::OpenLibrary => crate::ui::reopen(),
+            MenuAction::Settings => crate::ui::show_settings(),
+            MenuAction::TogglePrivacy => crate::ui::toggle_privacy(),
             MenuAction::Quit => self.shutdown(),
         }
     }
@@ -799,6 +804,9 @@ impl App {
             status: self.pause_reason().map(|reason| reason.text()),
             muted: self.settings.muted,
             launch_at_login: self.settings.launch_at_login,
+            unlocked: self.unlocked,
+            has_private: self.library.folders.iter().any(|folder| folder.locked),
+            rotatable: self.selectable_ids().len() > 1,
         });
     }
 

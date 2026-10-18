@@ -334,6 +334,8 @@
 	<string>Переместить в</string>
 	<key>Mute</key>
 	<string>Выключить звук</string>
+	<key>ms</key>
+	<string>мс</string>
 	<key>Name (A–Z)</key>
 	<string>Название (А–Я)</string>
 	<key>Name (Z–A)</key>
