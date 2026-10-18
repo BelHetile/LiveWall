@@ -24,7 +24,7 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{NSSplitViewDidResizeSubviewsNotification, NSWindowDidChangeOcclusionStateNotification, NSWindowOcclusionState};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString};
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSString};
 use proto::{Request, Response, ResponseBody};
 
 use crate::app::{self, App};
@@ -98,19 +98,54 @@ impl Ui {
 
     #[allow(deprecated)]
     fn open(&self, mtm: MainThreadMarker) {
-        let isolated = crate::dev::isolated();
-        if !isolated {
-            show_in_dock(mtm, true);
-        }
+        show_in_dock(mtm, true);
         if self.window.isMiniaturized() {
             self.window.deminiaturize(None);
         }
-        if isolated {
+        if crate::dev::isolated() {
             self.window.orderFrontRegardless();
         } else {
             self.window.makeKeyAndOrderFront(None);
             NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
         }
+        self.focus();
+    }
+
+    fn closed(&mut self, mtm: MainThreadMarker) {
+        self.sync_visibility(mtm);
+        let shown = self.window.isVisible() || self.window.isMiniaturized() || settings::visible();
+        show_in_dock(mtm, shown);
+    }
+
+    fn hide(&mut self, mtm: MainThreadMarker) {
+        self.end_sheets();
+        self.window.close();
+        self.closed(mtm);
+    }
+
+    fn end_sheets(&self) {
+        windows::end_sheets(&self.window);
+        if let Some(window) = settings::window() {
+            windows::end_sheets(&window);
+        }
+    }
+
+    fn focus(&self) {
+        let view = self.grid.responder(self.filter.layout);
+        self.window.makeFirstResponder(Some(&view));
+    }
+
+    fn item_id(&self, index: Option<usize>) -> Option<ItemId> {
+        return index.and_then(|index| self.library.items.get(index)).map(|item| item.id);
+    }
+
+    fn choose(&mut self, id: Option<ItemId>, reveal: bool) {
+        if self.selected == id && !reveal {
+            return;
+        }
+        self.selected = id;
+        self.grid.select(id, reveal);
+        self.inspector.show(&self.library, self.selected_index(), self.filter.scope);
     }
 }
 
@@ -167,7 +202,6 @@ fn notice(message: String) {
 }
 
 pub fn show_in_dock(mtm: MainThreadMarker, visible: bool) {
-    let visible = visible && !crate::dev::isolated();
     let policy =
         if visible { NSApplicationActivationPolicy::Regular } else { NSApplicationActivationPolicy::Accessory };
     let application = NSApplication::sharedApplication(mtm);
@@ -272,11 +306,33 @@ pub fn install(mtm: MainThreadMarker) -> Result<(), String> {
     return Ok(());
 }
 
+fn launched_as_login_item() -> bool {
+    let key_prop_data = u32::from_be_bytes(*b"prdt");
+    let login_item = u32::from_be_bytes(*b"lgit");
+    let manager = NSAppleEventManager::sharedAppleEventManager();
+    let Some(event) = manager.currentAppleEvent() else {
+        return false;
+    };
+    let descriptor: Option<Retained<NSAppleEventDescriptor>> =
+        unsafe { objc2::msg_send![&*event, paramDescriptorForKeyword: key_prop_data] };
+    return descriptor.is_some_and(|descriptor| descriptor.enumCodeValue() == login_item);
+}
+
 pub fn launched() {
+    let login = launched_as_login_item();
     update(|ui, mtm| {
-        ui.open(mtm);
-        later(Ui::sync_visibility);
-        if let Some(tab) = env("LW_UI_SETTINGS").and_then(|tab| tab.parse::<isize>().ok()) {
+        let open = app::with(|app| app.settings().open_library_at_launch).unwrap_or(true);
+        let settings_tab = env("LW_UI_SETTINGS").and_then(|tab| tab.parse::<isize>().ok());
+        if crate::dev::isolated() || settings_tab.is_some() || (open && !login) {
+            ui.open(mtm);
+        }
+        later(|ui, mtm| {
+            ui.sync_visibility(mtm);
+            if ui.selected.is_some() {
+                ui.grid.select(ui.selected, true);
+            }
+        });
+        if let Some(tab) = settings_tab {
             ui._menus.show_settings(tab);
         }
         if let Some(path) = env("LW_UI_WINDOW_FILE")
@@ -341,23 +397,37 @@ pub fn changed() {
 
 pub fn restyled() {}
 
-pub fn dismiss_sheets() {}
+pub fn dismiss_sheets() {
+    update(|ui, _| ui.end_sheets());
+}
 
-pub fn focus() {}
+pub fn focus() {
+    update(|ui, _| ui.focus());
+}
 
-pub fn select(_index: Option<usize>) {}
+pub fn select(index: Option<usize>) {
+    update(|ui, _| ui.choose(ui.item_id(index), false));
+}
 
-pub fn reveal(_index: usize) {}
+pub fn reveal(index: usize) {
+    update(|ui, _| ui.choose(ui.item_id(Some(index)), true));
+}
 
-pub fn toggle_play() {}
+pub fn toggle_play() {
+    update(|ui, _| {
+        if let Some(index) = ui.selected_index() {
+            ui.inspector.toggle_play(&ui.library, index);
+        }
+    });
+}
 
-pub fn frame(_count: isize) {}
-
-pub fn recording(_on: bool) {}
-
-pub fn pick_style(_index: usize) {}
-
-pub fn invalidate() {}
+pub fn frame(count: isize) {
+    update(|ui, _| {
+        if let Some(index) = ui.selected_index() {
+            ui.inspector.frame(&ui.library, index, count);
+        }
+    });
+}
 
 pub fn style(_work: impl FnOnce(&mut App) -> Result<String, StyleError> + Send + 'static) {}
 

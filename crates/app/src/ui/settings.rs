@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, Message, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSColor, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
@@ -308,6 +308,24 @@ fn with_panel(body: impl FnOnce(&Panel)) {
             body(panel);
         }
     });
+}
+
+pub fn window() -> Option<Retained<NSWindow>> {
+    return PANEL.with(|panel| {
+        return panel.try_borrow().ok().and_then(|panel| panel.as_ref().map(|panel| panel.window.clone()));
+    });
+}
+
+pub fn visible() -> bool {
+    return window().is_some_and(|window| window.isVisible());
+}
+
+pub fn resigned(resigned: &NSWindow) {
+    if let Some(own) = window()
+        && *own == *resigned
+    {
+        own.makeFirstResponder(None);
+    }
 }
 
 fn target(mtm: MainThreadMarker) -> Retained<SettingsTarget> {
@@ -800,6 +818,7 @@ fn build(mtm: MainThreadMarker) -> Panel {
     window.setStyleMask(NSWindowStyleMask::Titled | NSWindowStyleMask::Closable);
     window.setToolbarStyle(NSWindowToolbarStyle::Preference);
     unsafe { window.setReleasedWhenClosed(false) };
+    window.setDelegate(Some(ProtocolObject::from_ref(&*windows::delegate(mtm))));
     window.center();
     return Panel {
         window,

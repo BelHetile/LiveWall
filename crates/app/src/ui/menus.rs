@@ -7,7 +7,7 @@ use objc2_app_kit::{
 use objc2_foundation::NSObject;
 
 use crate::i18n::tr;
-use crate::ui::{ns, settings};
+use crate::ui::{Ui, later, ns, settings};
 
 fn item(
     mtm: MainThreadMarker,
@@ -53,6 +53,11 @@ define_class!(
         #[unsafe(method(showSettings:))]
         fn show_settings(&self, _sender: Option<&AnyObject>) {
             settings::show(self.mtm(), None);
+        }
+
+        #[unsafe(method(hideLibrary:))]
+        fn hide_library(&self, _sender: Option<&AnyObject>) {
+            later(Ui::hide);
         }
 
         // !!! HARDCODED STUB !!! Does nothing yet. Real behaviour: select and scroll to the wallpaper
@@ -108,8 +113,9 @@ impl Menus {
                 separator(mtm),
                 item(mtm, &tr("Settings…"), Some(sel!(showSettings:)), Some(object), Some((",", command))),
                 separator(mtm),
-                item(mtm, &tr("Hide LiveWall"), Some(sel!(hide:)), None, None),
-                item(mtm, &tr("Hide Others"), Some(sel!(hideOtherApplications:)), None, None),
+                item(mtm, &tr("Hide LiveWall"), Some(sel!(hideLibrary:)), Some(object), Some(("h", command))),
+                item(mtm, &tr("Hide Others"), Some(sel!(hideOtherApplications:)), None, Some(("h", option))),
+                item(mtm, &tr("Show All"), Some(sel!(unhideAllApplications:)), None, None),
                 separator(mtm),
                 item(mtm, &tr("Quit LiveWall"), Some(sel!(terminate:)), None, Some(("q", command))),
             ],

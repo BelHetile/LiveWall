@@ -82,7 +82,7 @@ pub struct MenuState {
 }
 
 pub struct Menu {
-    status_item: Option<Retained<NSStatusItem>>,
+    status_item: Retained<NSStatusItem>,
     root: Retained<NSMenu>,
     _target: Retained<MenuTarget>,
     title: Retained<NSMenuItem>,
@@ -98,11 +98,8 @@ pub struct Menu {
 
 impl Menu {
     pub fn install(mtm: MainThreadMarker, state: &MenuState) -> Self {
-        let status_item = (!crate::dev::isolated()).then(|| {
-            let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
-            set_status_icon(&item, mtm);
-            return item;
-        });
+        let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
+        set_status_icon(&status_item, mtm);
 
         let target = MenuTarget::new(mtm);
         let root = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("LiveWall"));
@@ -131,9 +128,7 @@ impl Menu {
         let quit = make_quit_item(mtm, &target);
         root.addItem(&quit);
 
-        if let Some(item) = &status_item {
-            item.setMenu(Some(&root));
-        }
+        status_item.setMenu(Some(&root));
 
         let menu = Self {
             status_item,
@@ -186,9 +181,7 @@ impl Menu {
 
 impl Drop for Menu {
     fn drop(&mut self) {
-        if let Some(status_item) = &self.status_item {
-            NSStatusBar::systemStatusBar().removeStatusItem(status_item);
-        }
+        NSStatusBar::systemStatusBar().removeStatusItem(&self.status_item);
     }
 }
 

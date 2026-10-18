@@ -480,6 +480,8 @@
 	<string>Поле сочетания клавиш</string>
 	<key>Shortcuts</key>
 	<string>Сочетания клавиш</string>
+	<key>Show All</key>
+	<string>Показать все</string>
 	<key>Show Inspector</key>
 	<string>Показать инспектор</string>
 	<key>Show Sidebar</key>

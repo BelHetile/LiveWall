@@ -603,7 +603,7 @@ impl Inspector {
         self.sync(library, index);
     }
 
-    fn toggle_play(&mut self, library: &Library, index: usize) {
+    pub fn toggle_play(&mut self, library: &Library, index: usize) {
         self.playing = !self.playing;
         if let Some((player, _)) = &self.player {
             unsafe {
@@ -612,6 +612,20 @@ impl Inspector {
                 } else {
                     player.pause();
                 }
+            }
+        }
+        self.sync(library, index);
+    }
+
+    pub fn frame(&mut self, library: &Library, index: usize, count: isize) {
+        let Some((player, _)) = &self.player else {
+            return;
+        };
+        self.playing = false;
+        unsafe {
+            player.pause();
+            if let Some(item) = player.currentItem() {
+                item.stepByCount(count);
             }
         }
         self.sync(library, index);

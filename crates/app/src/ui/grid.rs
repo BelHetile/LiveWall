@@ -618,6 +618,40 @@ impl Grid {
         return Some(id);
     }
 
+    pub fn select(&self, id: Option<ItemId>, reveal: bool) {
+        let ivars = self.source.ivars();
+        let position = id.and_then(|id| ivars.ids.borrow().iter().position(|other| *other == id));
+        ivars.syncing.set(true);
+        match position.and_then(|position| isize::try_from(position).ok().map(|item| (position, item))) {
+            Some((row, item)) => {
+                let path = NSIndexPath::indexPathForItem_inSection(item, 0);
+                ivars.view.setSelectionIndexPaths(&NSSet::from_slice(&[&*path]));
+                ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
+                if reveal {
+                    if let Some(attributes) =
+                        ivars.view.collectionViewLayout().and_then(|layout| layout.layoutAttributesForItemAtIndexPath(&path))
+                    {
+                        ivars.view.scrollRectToVisible(attributes.frame());
+                    }
+                    ivars.table.scrollRowToVisible(item);
+                }
+            }
+            None => {
+                ivars.view.setSelectionIndexPaths(&NSSet::new());
+                ivars.table.selectRowIndexes_byExtendingSelection(&NSIndexSet::new(), false);
+            }
+        }
+        ivars.syncing.set(false);
+    }
+
+    pub fn responder(&self, layout: Layout) -> Retained<NSView> {
+        let ivars = self.source.ivars();
+        if layout == Layout::List {
+            return Retained::into_super(Retained::into_super(ivars.table.clone()));
+        }
+        return Retained::into_super(ivars.view.clone());
+    }
+
     pub fn set_layout(&self, layout: Layout) {
         self.scroll.setHidden(layout == Layout::List);
         self.list.setHidden(layout != Layout::List);

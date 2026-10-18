@@ -1,17 +1,19 @@
+use std::cell::OnceCell;
 use std::path::Path;
 
 use objc2::rc::Retained;
-use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
+use objc2::runtime::ProtocolObject;
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSBackingStoreType, NSImage, NSScreen,
-    NSSplitViewController, NSSplitViewItem, NSViewController, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSSplitViewController, NSSplitViewItem, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSBundle, NSData};
+use objc2_foundation::{NSBundle, NSData, NSNotification, NSObject, NSObjectProtocol};
 
 use crate::model::AppearanceMode;
-use crate::ui::{env, ns};
+use crate::ui::{Ui, env, later, ns, settings};
 
 const ICON: &[u8] = include_bytes!("../../../../resources/AppIcon.iconset/icon_512x512@2x.png");
 const WINDOW_SIZE: CGSize = CGSize::new(1500.0, 860.0);
@@ -30,6 +32,46 @@ pub struct Panes {
     pub split: Retained<NSSplitViewController>,
     pub sidebar: Retained<NSSplitViewItem>,
     pub inspector: Retained<NSSplitViewItem>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    pub struct WindowDelegate;
+
+    unsafe impl NSObjectProtocol for WindowDelegate {}
+
+    unsafe impl NSWindowDelegate for WindowDelegate {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            later(Ui::closed);
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, notification: &NSNotification) {
+            if let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) {
+                settings::resigned(&window);
+            }
+        }
+    }
+);
+
+thread_local! {
+    static DELEGATE: OnceCell<Retained<WindowDelegate>> = const { OnceCell::new() };
+}
+
+pub fn delegate(mtm: MainThreadMarker) -> Retained<WindowDelegate> {
+    return DELEGATE.with(|cell| cell.get_or_init(|| unsafe { msg_send![WindowDelegate::alloc(mtm), init] }).clone());
+}
+
+pub fn end_sheets(window: &NSWindow) {
+    while let Some(sheet) = window.attachedSheet() {
+        window.endSheet(&sheet);
+        if window.attachedSheet().is_some_and(|other| other == sheet) {
+            sheet.orderOut(None);
+            return;
+        }
+    }
 }
 
 pub fn application_icon(mtm: MainThreadMarker) {
@@ -111,6 +153,7 @@ pub fn main_window(mtm: MainThreadMarker, split: &NSSplitViewController) -> (Ret
         )
     };
     unsafe { window.setReleasedWhenClosed(false) };
+    window.setDelegate(Some(ProtocolObject::from_ref(&*delegate(mtm))));
     window.setTitle(&ns("LiveWall"));
     window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
     window.setToolbarStyle(NSWindowToolbarStyle::Unified);
