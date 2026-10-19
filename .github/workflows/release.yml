@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-15
+    runs-on: macos-26
     permissions:
       contents: write
     steps:
@@ -56,6 +56,9 @@ jobs:
           ARCHS="$(lipo -archs "$APP/Contents/MacOS/LiveWall")"
           echo "Architectures: $ARCHS"
           [[ "$ARCHS" == arm64 ]] || { echo "Expected an arm64 binary"; exit 1; }
+          SDK="$(otool -l "$APP/Contents/MacOS/LiveWall" | awk '/LC_BUILD_VERSION/{f=1} f&&$1=="sdk"{print $2; exit}')"
+          echo "SDK: $SDK"
+          [[ "${SDK%%.*}" -ge 26 ]] || { echo "Linked against SDK $SDK, need 26+ for Liquid Glass"; exit 1; }
           codesign --verify --deep --strict "$APP"
           plutil -lint "$APP/Contents/Info.plist"
           [[ -x "$APP/Contents/MacOS/lwctl" ]]

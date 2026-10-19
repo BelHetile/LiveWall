@@ -40,6 +40,7 @@ else
 fi
 
 echo "==> Building LiveWall $VERSION ($BUILD)"
+export MACOSX_DEPLOYMENT_TARGET=15.0
 cargo build --release --locked --bin LiveWall --bin lwctl
 TARGET="$(cargo metadata --format-version 1 --no-deps | sed -E 's/.*"target_directory":"([^"]+)".*/\1/')/release"
 
