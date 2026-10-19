@@ -1,13 +1,43 @@
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{
+    NSApplication, NSEventModifierFlags, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuItemValidation, NSText, NSWindow,
+};
+use objc2_foundation::{NSObject, NSObjectProtocol};
 use proto::HotkeyAction;
 
-use crate::ui::actions::{Actions, PRIVACY_KEY};
-use crate::ui::state::{TAG_ALL, TAG_NEW_FOLDER, folder_glyph, privacy_title};
-use crate::ui::widgets::{lock_mark, menu_item, ns};
-use crate::ui::{UI, inspector, settings, toolbar};
+use crate::app;
+use crate::i18n::{key, tr};
+use crate::model::ItemKind;
+use crate::ui::state::{Layout, privacy_title};
+use crate::ui::{UI, Ui, context, dialogs, inspector, later, ns, settings, submit, update};
+
+const PRIVACY_KEY: &str = "x";
+
+fn item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<Sel>,
+    target: Option<&AnyObject>,
+    key: Option<(&str, NSEventModifierFlags)>,
+) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(&ns(title));
+    unsafe {
+        item.setTarget(target);
+        item.setAction(action);
+    }
+    if let Some((key, modifiers)) = key {
+        item.setKeyEquivalent(&ns(key));
+        item.setKeyEquivalentModifierMask(modifiers);
+    }
+    return item;
+}
+
+fn separator(mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+    return NSMenuItem::separatorItem(mtm);
+}
 
 fn submenu(mtm: MainThreadMarker, bar: &NSMenu, title: &str, items: &[Retained<NSMenuItem>]) -> Retained<NSMenu> {
     let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &ns(title));
@@ -18,6 +48,11 @@ fn submenu(mtm: MainThreadMarker, bar: &NSMenu, title: &str, items: &[Retained<N
     holder.setSubmenu(Some(&menu));
     bar.addItem(&holder);
     return menu;
+}
+
+fn tagged(item: Retained<NSMenuItem>, tag: isize) -> Retained<NSMenuItem> {
+    item.setTag(tag);
+    return item;
 }
 
 fn command_item(
@@ -32,185 +67,381 @@ fn command_item(
         .position(|other| *other == action)
         .and_then(|index| isize::try_from(index).ok())
         .unwrap_or(0);
-    return menu_item(mtm, settings::action_title(action), sel!(run:), Some(target), tag, Some((key, modifiers)));
+    let title = tr(crate::hotkey::title(action));
+    return tagged(item(mtm, &title, Some(sel!(run:)), Some(target), Some((key, modifiers))), tag);
 }
 
-pub fn main_menu(mtm: MainThreadMarker, actions: &Actions) -> Retained<NSMenu> {
-    let command = NSEventModifierFlags::Command;
-    let shift = command | NSEventModifierFlags::Shift;
-    let option = command | NSEventModifierFlags::Option;
-    let target: &AnyObject = actions;
-    let bar = NSMenu::new(mtm);
-    submenu(
-        mtm,
-        &bar,
-        "LiveWall",
-        &[
-            menu_item(mtm, "About LiveWall", sel!(orderFrontStandardAboutPanel:), None, 0, None),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Settings…", sel!(showSettings:), Some(target), 0, Some((",", command))),
-            menu_item(
-                mtm,
-                privacy_title(false),
-                sel!(togglePrivacy:),
-                Some(target),
-                0,
-                Some((PRIVACY_KEY, option | NSEventModifierFlags::Control)),
-            ),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Hide LiveWall", sel!(hideLibrary:), Some(target), 0, Some(("h", command))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Quit LiveWall", sel!(quit:), Some(target), 0, Some(("q", command))),
-        ],
-    );
-    submenu(
-        mtm,
-        &bar,
-        "File",
-        &[
-            menu_item(mtm, "Add Files…", sel!(addFiles:), Some(target), 0, Some(("n", command))),
-            menu_item(mtm, "Add Folder…", sel!(addFiles:), Some(target), 1, Some(("n", option))),
-            menu_item(mtm, "Download from URL…", sel!(download:), Some(target), 0, Some(("l", command))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "New Folder…", sel!(folder:), Some(target), TAG_NEW_FOLDER, Some(("n", shift))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Close Window", sel!(performClose:), None, 0, Some(("w", command))),
-        ],
-    );
-    submenu(
-        mtm,
-        &bar,
-        "Edit",
-        &[
-            menu_item(mtm, "Undo", sel!(undo:), None, 0, Some(("z", command))),
-            menu_item(mtm, "Redo", sel!(redo:), None, 0, Some(("z", shift))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Cut", sel!(cut:), None, 0, Some(("x", command))),
-            menu_item(mtm, "Copy", sel!(copy:), None, 0, Some(("c", command))),
-            menu_item(mtm, "Paste", sel!(paste:), None, 0, Some(("v", command))),
-            menu_item(mtm, "Select All", sel!(selectAll:), None, 0, Some(("a", command))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Find", sel!(find:), Some(target), 0, Some(("f", command))),
-            menu_item(
-                mtm,
-                "Deselect",
-                sel!(deselect:),
-                Some(target),
-                0,
-                Some(("\u{1b}", NSEventModifierFlags::empty())),
-            ),
-        ],
-    );
-    submenu(
-        mtm,
-        &bar,
-        "View",
-        &[
-            menu_item(mtm, "as Grid", sel!(showGrid:), Some(target), 0, Some(("1", command))),
-            menu_item(mtm, "as List", sel!(showList:), Some(target), 0, Some(("2", command))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Show Inspector", sel!(toggleInspector:), None, 0, Some(("i", option))),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(
-                mtm,
-                "Enter Full Screen",
-                sel!(toggleFullScreen:),
-                None,
-                0,
-                Some(("f", command | NSEventModifierFlags::Control)),
-            ),
-        ],
-    );
-    wallpaper_menus(mtm, &bar, target);
-    return bar;
+fn with_ui<R>(read: impl FnOnce(&Ui) -> R) -> Option<R> {
+    return UI.with(|ui| ui.try_borrow().ok().and_then(|ui| ui.as_ref().map(read)));
 }
 
-fn wallpaper_menus(mtm: MainThreadMarker, bar: &NSMenu, target: &AnyObject) {
-    let command = NSEventModifierFlags::Command;
-    let shift = command | NSEventModifierFlags::Shift;
-    let option = command | NSEventModifierFlags::Option;
-    submenu(
-        mtm,
-        bar,
-        "Wallpaper",
-        &[
-            menu_item(mtm, "Set as Wallpaper", sel!(setWallpaper:), Some(target), 0, Some(("\r", command))),
-            menu_item(mtm, "Use for Lock Screen", sel!(setLock:), Some(target), 0, Some(("l", shift))),
-            menu_item(
-                mtm,
-                inspector::FRAME_TO_LOCK,
-                sel!(lockFrame:),
-                Some(target),
-                0,
-                Some(("l", shift | NSEventModifierFlags::Option)),
-            ),
-            menu_item(mtm, "Reset to Defaults", sel!(resetSettings:), Some(target), 0, Some(("r", option))),
-            menu_item(mtm, "Remove from Library…", sel!(delete:), Some(target), 0, Some(("\u{8}", command))),
-            NSMenuItem::separatorItem(mtm),
-            command_item(mtm, HotkeyAction::Next, "]", command, target),
-            command_item(mtm, HotkeyAction::Previous, "[", command, target),
-            command_item(mtm, HotkeyAction::Random, "r", command, target),
-            NSMenuItem::separatorItem(mtm),
-            command_item(mtm, HotkeyAction::TogglePause, "p", option, target),
-            command_item(mtm, HotkeyAction::VolumeUp, "\u{f700}", command, target),
-            command_item(mtm, HotkeyAction::VolumeDown, "\u{f701}", command, target),
-            command_item(mtm, HotkeyAction::ToggleMute, "m", shift, target),
-        ],
-    );
-    let window = submenu(
-        mtm,
-        bar,
-        "Window",
-        &[
-            menu_item(mtm, "Minimize", sel!(performMiniaturize:), None, 0, Some(("m", command))),
-            menu_item(mtm, "Zoom", sel!(performZoom:), None, 0, None),
-            NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Bring All to Front", sel!(arrangeInFront:), None, 0, None),
-        ],
-    );
-    NSApplication::sharedApplication(mtm).setWindowsMenu(Some(&window));
+fn editing(mtm: MainThreadMarker) -> bool {
+    return NSApplication::sharedApplication(mtm)
+        .keyWindow()
+        .and_then(|window| window.firstResponder())
+        .is_some_and(|responder| responder.downcast::<NSText>().is_ok());
 }
 
-pub fn context_menu(mtm: MainThreadMarker, index: usize) -> Option<Retained<NSMenu>> {
-    return UI.with_borrow(|ui| {
-        let ui = ui.as_ref()?;
-        let target: &AnyObject = &ui.actions;
-        let item = |title: &str, action: Sel, tag: isize| menu_item(mtm, title, action, Some(target), tag, None);
-        let menu = NSMenu::new(mtm);
-        menu.setAutoenablesItems(false);
-        let destinations = toolbar::scope_menu(mtm, &ui.library, ui.filter.scope, "", sel!(applyTo:), target);
-        destinations.removeItemAtIndex(0);
-        let wallpaper = NSMenuItem::new(mtm);
-        wallpaper.setTitle(&ns("Set as Wallpaper"));
-        wallpaper.setSubmenu(Some(&destinations));
-        wallpaper.setEnabled(ui.library.items.get(index).is_some_and(|entry| entry.playable));
-        menu.addItem(&wallpaper);
-        menu.addItem(&item("Set as Lock Screen", sel!(setLock:), 0));
-        if let Some(entry) = ui.library.items.get(index).filter(|entry| entry.optimizable) {
-            let optimize = item("Optimize…", sel!(optimize:), 0);
-            optimize.setEnabled(entry.progress.is_none());
-            menu.addItem(&optimize);
+fn validate(ui: &Ui, mtm: MainThreadMarker, menu_item: &NSMenuItem) -> bool {
+    let Some(action) = menu_item.action() else {
+        return true;
+    };
+    let selected = ui.selected_index().and_then(|index| ui.library.items.get(index));
+    let sheeted = ui.window.attachedSheet().is_some();
+    if action == sel!(togglePrivacy:) {
+        let unlocked = ui.library.unlocked;
+        menu_item.setTitle(&ns(&tr(privacy_title(unlocked))));
+        menu_item.setKeyEquivalent(&ns(if unlocked { PRIVACY_KEY } else { "" }));
+        menu_item.setHidden(!ui.library.has_locked);
+        return true;
+    }
+    if action == sel!(addFiles:) || action == sel!(downloadURL:) || action == sel!(newFolder:) {
+        return !sheeted;
+    }
+    if action == sel!(find:) {
+        return ui.window.isVisible();
+    }
+    if action == sel!(deselect:) {
+        return selected.is_some() && !editing(mtm);
+    }
+    if action == sel!(setLayout:) {
+        menu_item.setState(isize::from(ui.filter.layout.index() == menu_item.tag()));
+        return true;
+    }
+    if action == sel!(setWallpaper:) {
+        return selected.is_some_and(|item| item.playable);
+    }
+    if action == sel!(setLock:) {
+        return selected.is_some() && !ui.library.lock_follows;
+    }
+    if action == sel!(lockFrame:) {
+        return !ui.library.lock_follows && selected.is_some_and(|item| item.kind == ItemKind::Video);
+    }
+    if action == sel!(resetSettings:) {
+        return selected.is_some_and(|item| item.changed);
+    }
+    if action == sel!(optimize:) {
+        let optimizable = selected.is_some_and(|item| item.optimizable);
+        menu_item.setHidden(!optimizable);
+        return selected.is_some_and(|item| item.optimizable && item.progress.is_none());
+    }
+    if action == sel!(moveTo:) {
+        return selected.is_some();
+    }
+    if action == sel!(delete:) {
+        return selected.is_some() && !sheeted && !editing(mtm);
+    }
+    return true;
+}
+
+fn validate_command(menu_item: &NSMenuItem) -> bool {
+    let action = usize::try_from(menu_item.tag()).ok().and_then(|index| HotkeyAction::ALL.get(index)).copied();
+    let title = match action {
+        Some(HotkeyAction::TogglePause) => {
+            app::with(|app| app.paused()).map(|paused| if paused { key("Resume") } else { key("Pause") })
         }
-        menu.addItem(&NSMenuItem::separatorItem(mtm));
-        let folders = NSMenu::new(mtm);
-        let current = ui.library.items.get(index).and_then(|item| item.folder);
-        let unfiled = item("Unfiled", sel!(moveTo:), TAG_ALL);
-        unfiled.setState(isize::from(current.is_none()));
-        folders.addItem(&unfiled);
-        folders.addItem(&NSMenuItem::separatorItem(mtm));
-        for (position, name) in ui.library.folders.iter().enumerate() {
-            let entry = item(name, sel!(moveTo:), isize::try_from(position).unwrap_or(TAG_ALL));
-            lock_mark(&entry, folder_glyph(&ui.library, position), current == Some(position));
-            folders.addItem(&entry);
+        Some(HotkeyAction::ToggleMute) => {
+            app::with(|app| app.settings().muted).map(|muted| if muted { key("Unmute") } else { key("Mute") })
         }
-        folders.addItem(&NSMenuItem::separatorItem(mtm));
-        folders.addItem(&item("New Folder…", sel!(moveTo:), TAG_NEW_FOLDER));
-        let move_to = NSMenuItem::new(mtm);
-        move_to.setTitle(&ns("Move to"));
+        _ => None,
+    };
+    if let Some(title) = title {
+        menu_item.setTitle(&ns(&tr(title)));
+    }
+    return true;
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct MenuTarget;
+
+    unsafe impl NSObjectProtocol for MenuTarget {}
+
+    unsafe impl NSMenuItemValidation for MenuTarget {
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, menu_item: &NSMenuItem) -> bool {
+            let mtm = self.mtm();
+            if menu_item.action() == Some(sel!(run:)) {
+                validate_command(menu_item)
+            } else {
+                with_ui(|ui| validate(ui, mtm, menu_item)).unwrap_or(true)
+            }
+        }
+    }
+
+    unsafe impl NSMenuDelegate for MenuTarget {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn needs_update(&self, menu: &NSMenu) {
+            menu.removeAllItems();
+            let target: &AnyObject = self;
+            with_ui(|ui| {
+                if let Some(item) = ui.selected_index().and_then(|index| ui.library.items.get(index)) {
+                    context::fill_folders(self.mtm(), menu, ui, item, target);
+                }
+            });
+        }
+    }
+
+    impl MenuTarget {
+        #[unsafe(method(togglePrivacy:))]
+        fn toggle_privacy(&self, _sender: Option<&AnyObject>) {
+            crate::ui::toggle_privacy();
+        }
+
+        #[unsafe(method(addFiles:))]
+        fn add_files(&self, _sender: Option<&AnyObject>) {
+            dialogs::add_files(self.mtm());
+        }
+
+        #[unsafe(method(downloadURL:))]
+        fn download_url(&self, _sender: Option<&AnyObject>) {
+            dialogs::download_sheet(self.mtm());
+        }
+
+        #[unsafe(method(newFolder:))]
+        fn new_folder(&self, _sender: Option<&AnyObject>) {
+            dialogs::new_folder(self.mtm());
+        }
+
+        #[unsafe(method(find:))]
+        fn find(&self, _sender: Option<&AnyObject>) {
+            later(|ui, _| ui.toolbar.find());
+        }
+
+        #[unsafe(method(deselect:))]
+        fn deselect(&self, _sender: Option<&AnyObject>) {
+            crate::ui::select(None);
+        }
+
+        #[unsafe(method(setLayout:))]
+        fn set_layout(&self, sender: &NSMenuItem) {
+            crate::ui::set_layout(Layout::from_index(sender.tag()));
+        }
+
+        #[unsafe(method(setWallpaper:))]
+        fn set_wallpaper(&self, _sender: Option<&AnyObject>) {
+            let scope = with_ui(|ui| ui.filter.scope);
+            if let Some(scope) = scope {
+                context::apply(scope);
+            }
+        }
+
+        #[unsafe(method(setLock:))]
+        fn set_lock(&self, _sender: Option<&AnyObject>) {
+            inspector::lock(false);
+        }
+
+        #[unsafe(method(lockFrame:))]
+        fn lock_frame(&self, _sender: Option<&AnyObject>) {
+            inspector::lock(true);
+        }
+
+        #[unsafe(method(resetSettings:))]
+        fn reset_settings(&self, _sender: Option<&AnyObject>) {
+            context::reset();
+        }
+
+        #[unsafe(method(optimize:))]
+        fn optimize(&self, _sender: Option<&AnyObject>) {
+            context::optimize();
+        }
+
+        #[unsafe(method(moveTo:))]
+        fn move_to(&self, sender: &NSMenuItem) {
+            if sender.submenu().is_none() {
+                let folder = usize::try_from(sender.tag()).ok();
+                update(move |ui, _| {
+                    if let Some(id) = ui.selected {
+                        context::move_items(ui, &[id], folder);
+                    }
+                });
+            }
+        }
+
+        #[unsafe(method(delete:))]
+        fn delete(&self, _sender: Option<&AnyObject>) {
+            context::confirm_delete(self.mtm());
+        }
+
+        #[unsafe(method(run:))]
+        fn run(&self, sender: &NSMenuItem) {
+            if let Some(action) = usize::try_from(sender.tag()).ok().and_then(|index| HotkeyAction::ALL.get(index)) {
+                let action = *action;
+                submit(move |app| {
+                    app.run_hotkey(action);
+                    return None;
+                });
+            }
+        }
+
+        #[unsafe(method(showSettings:))]
+        fn show_settings(&self, _sender: Option<&AnyObject>) {
+            settings::show(self.mtm(), None);
+        }
+
+        #[unsafe(method(hideLibrary:))]
+        fn hide_library(&self, _sender: Option<&AnyObject>) {
+            later(Ui::hide);
+        }
+    }
+);
+
+impl MenuTarget {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let target: Retained<MenuTarget> = unsafe { msg_send![MenuTarget::alloc(mtm), init] };
+        return target;
+    }
+}
+
+pub struct Menus {
+    pub bar: Retained<NSMenu>,
+    target: Retained<MenuTarget>,
+}
+
+impl Menus {
+    pub fn show_settings(&self, tab: isize) {
+        settings::show(self.target.mtm(), Some(tab));
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub fn new(mtm: MainThreadMarker) -> Self {
+        let command = NSEventModifierFlags::Command;
+        let shift = command | NSEventModifierFlags::Shift;
+        let option = command | NSEventModifierFlags::Option;
+        let control = command | NSEventModifierFlags::Control;
+        let target = MenuTarget::new(mtm);
+        let object: &AnyObject = &target;
+        let bar = NSMenu::new(mtm);
+        let application = NSApplication::sharedApplication(mtm);
+        NSWindow::setAllowsAutomaticWindowTabbing(false, mtm);
+
+        let services = NSMenu::initWithTitle(NSMenu::alloc(mtm), &ns(&tr("Services")));
+        let services_item = item(mtm, &tr("Services"), None, None, None);
+        services_item.setSubmenu(Some(&services));
+        application.setServicesMenu(Some(&services));
+        submenu(
+            mtm,
+            &bar,
+            "LiveWall",
+            &[
+                item(mtm, &tr("About LiveWall"), Some(sel!(orderFrontStandardAboutPanel:)), None, None),
+                separator(mtm),
+                item(mtm, &tr("Settings…"), Some(sel!(showSettings:)), Some(object), Some((",", command))),
+                item(
+                    mtm,
+                    &tr(privacy_title(false)),
+                    Some(sel!(togglePrivacy:)),
+                    Some(object),
+                    Some((PRIVACY_KEY, option | NSEventModifierFlags::Control)),
+                ),
+                separator(mtm),
+                services_item,
+                separator(mtm),
+                item(mtm, &tr("Hide LiveWall"), Some(sel!(hideLibrary:)), Some(object), Some(("h", command))),
+                item(mtm, &tr("Hide Others"), Some(sel!(hideOtherApplications:)), None, Some(("h", option))),
+                item(mtm, &tr("Show All"), Some(sel!(unhideAllApplications:)), None, None),
+                separator(mtm),
+                item(mtm, &tr("Quit LiveWall"), Some(sel!(terminate:)), None, Some(("q", command))),
+            ],
+        );
+        submenu(
+            mtm,
+            &bar,
+            &tr("File"),
+            &[
+                item(mtm, &tr("Add Files…"), Some(sel!(addFiles:)), Some(object), Some(("o", command))),
+                item(mtm, &tr("Download from URL…"), Some(sel!(downloadURL:)), Some(object), Some(("l", command))),
+                separator(mtm),
+                item(mtm, &tr("New Folder…"), Some(sel!(newFolder:)), Some(object), Some(("n", shift))),
+                separator(mtm),
+                item(mtm, &tr("Close Window"), Some(sel!(performClose:)), None, Some(("w", command))),
+            ],
+        );
+        submenu(
+            mtm,
+            &bar,
+            &tr("Edit"),
+            &[
+                item(mtm, &tr("Undo"), Some(sel!(undo:)), None, Some(("z", command))),
+                item(mtm, &tr("Redo"), Some(sel!(redo:)), None, Some(("z", shift))),
+                separator(mtm),
+                item(mtm, &tr("Cut"), Some(sel!(cut:)), None, Some(("x", command))),
+                item(mtm, &tr("Copy"), Some(sel!(copy:)), None, Some(("c", command))),
+                item(mtm, &tr("Paste"), Some(sel!(paste:)), None, Some(("v", command))),
+                item(mtm, &tr("Select All"), Some(sel!(selectAll:)), None, Some(("a", command))),
+                separator(mtm),
+                item(mtm, &tr("Find"), Some(sel!(find:)), Some(object), Some(("f", command))),
+                item(
+                    mtm,
+                    &tr("Deselect"),
+                    Some(sel!(deselect:)),
+                    Some(object),
+                    Some(("\u{1b}", NSEventModifierFlags::empty())),
+                ),
+            ],
+        );
+        submenu(
+            mtm,
+            &bar,
+            &tr("View"),
+            &[
+                tagged(item(mtm, &tr("as Large Grid"), Some(sel!(setLayout:)), Some(object), Some(("1", command))), 0),
+                tagged(item(mtm, &tr("as Small Grid"), Some(sel!(setLayout:)), Some(object), Some(("2", command))), 1),
+                tagged(item(mtm, &tr("as List"), Some(sel!(setLayout:)), Some(object), Some(("3", command))), 2),
+                separator(mtm),
+                item(mtm, &tr("Show Sidebar"), Some(sel!(toggleSidebar:)), None, Some(("s", option))),
+                item(mtm, &tr("Show Inspector"), Some(sel!(toggleInspector:)), None, Some(("i", option))),
+                separator(mtm),
+                item(mtm, &tr("Enter Full Screen"), Some(sel!(toggleFullScreen:)), None, Some(("f", control))),
+            ],
+        );
+        let folders = NSMenu::initWithTitle(NSMenu::alloc(mtm), &ns(&tr("Move to")));
+        folders.setAutoenablesItems(false);
+        folders.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+        let move_to = item(mtm, &tr("Move to"), Some(sel!(moveTo:)), Some(object), None);
         move_to.setSubmenu(Some(&folders));
-        menu.addItem(&move_to);
-        menu.addItem(&NSMenuItem::separatorItem(mtm));
-        menu.addItem(&item("Remove from Library…", sel!(delete:), 0));
-        return Some(menu);
-    });
+        submenu(
+            mtm,
+            &bar,
+            &tr("Wallpaper"),
+            &[
+                item(mtm, &tr("Set as Wallpaper"), Some(sel!(setWallpaper:)), Some(object), Some(("\r", command))),
+                item(mtm, &tr("Set as Lock Screen"), Some(sel!(setLock:)), Some(object), Some(("l", shift))),
+                item(
+                    mtm,
+                    &tr("Set This Frame as Lock Screen"),
+                    Some(sel!(lockFrame:)),
+                    Some(object),
+                    Some(("l", shift | NSEventModifierFlags::Option)),
+                ),
+                item(mtm, &tr("Reset to Defaults"), Some(sel!(resetSettings:)), Some(object), Some(("r", option))),
+                item(mtm, &tr("Optimize…"), Some(sel!(optimize:)), Some(object), None),
+                move_to,
+                item(mtm, &tr("Remove from Library…"), Some(sel!(delete:)), Some(object), Some(("\u{8}", command))),
+                separator(mtm),
+                command_item(mtm, HotkeyAction::Next, "]", command, object),
+                command_item(mtm, HotkeyAction::Previous, "[", command, object),
+                command_item(mtm, HotkeyAction::Random, "r", command, object),
+                separator(mtm),
+                command_item(mtm, HotkeyAction::TogglePause, "p", option, object),
+                command_item(mtm, HotkeyAction::VolumeUp, "\u{f700}", command, object),
+                command_item(mtm, HotkeyAction::VolumeDown, "\u{f701}", command, object),
+                command_item(mtm, HotkeyAction::ToggleMute, "\u{f701}", option, object),
+            ],
+        );
+        let window = submenu(
+            mtm,
+            &bar,
+            &tr("Window"),
+            &[
+                item(mtm, &tr("Minimize"), Some(sel!(performMiniaturize:)), None, Some(("m", command))),
+                item(mtm, &tr("Zoom"), Some(sel!(performZoom:)), None, None),
+                separator(mtm),
+                item(mtm, &tr("Bring All to Front"), Some(sel!(arrangeInFront:)), None, None),
+            ],
+        );
+        application.setWindowsMenu(Some(&window));
+        return Self { bar, target };
+    }
 }

@@ -55,6 +55,9 @@ pub fn image_size(source: &CGImageSource) -> (u32, u32) {
     let height = cf_i64(properties.get(unsafe { kCGImagePropertyPixelHeight }).as_deref())
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(0);
+    if crate::media::orient::swaps_axes(crate::media::orient::orientation(source)) {
+        return (height, width);
+    }
     return (width, height);
 }
 

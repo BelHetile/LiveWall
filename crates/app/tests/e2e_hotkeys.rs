@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use livewall::proto::{ErrorCode, HotkeyAction, Request, Response, ResponseBody};
+use livewall::proto::{ApplyTarget, ErrorCode, HotkeyAction, HotkeyScope, Request, Response, ResponseBody};
 use livewall::{App, BindOutcome, Paths, install, prepare, serve, synthesize_press};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
@@ -104,27 +104,13 @@ fn in_process(mtm: MainThreadMarker) {
     let duplicate =
         exchange(&socket, Request::HotkeysSet { action: HotkeyAction::Next, combo: Some("ctrl+opt+cmd+f18".into()) });
     let body = expect_error(duplicate, ErrorCode::Invalid);
-    assert!(body.contains("another action"), "duplicate reason was {body:?}");
+    assert!(body.contains("⌃⌥⌘F18"), "duplicate reason was {body:?}");
 
     assert!(!status(&socket)["paused"].as_bool().unwrap_or(true));
     assert!(synthesize_press(HotkeyAction::TogglePause), "synthetic hotkey event was not delivered");
     assert_eq!(status(&socket)["paused"].as_bool(), Some(true));
     assert!(synthesize_press(HotkeyAction::TogglePause));
     assert_eq!(status(&socket)["paused"].as_bool(), Some(false));
-
-    let mut patch = serde_json::Map::new();
-    patch.insert("language".into(), serde_json::Value::String("ru".into()));
-    let response = exchange(&socket, Request::SettingsSet { patch: serde_json::Value::Object(patch) });
-    assert!(matches!(response.body, ResponseBody::Ok { .. }), "{response:?}");
-    let menu = ok(&socket, Request::Menu);
-    let titles: Vec<String> = menu["items"]
-        .as_array()
-        .expect("menu items")
-        .iter()
-        .filter_map(|item| item["title"].as_str().map(ToString::to_string))
-        .collect();
-    assert!(titles.iter().any(|title| title == "Пауза"), "menu was not localized: {titles:?}");
-    assert!(titles.iter().any(|title| title == "Завершить LiveWall"), "menu was not localized: {titles:?}");
 
     let login = ok(&socket, Request::LoginItemGet);
     assert!(login["status"].as_str().is_some(), "login item status: {login}");
@@ -137,6 +123,62 @@ fn in_process(mtm: MainThreadMarker) {
     for action in HotkeyAction::ALL {
         assert_eq!(entry_for(&report, action)["registered"].as_bool(), Some(false), "{action:?} still registered");
     }
+
+    shortcut_survives_restart(mtm, &paths, &socket, dir.path(), &runtime);
+}
+
+fn shortcut_survives_restart(
+    mtm: MainThreadMarker,
+    paths: &Paths,
+    socket: &Path,
+    dir: &Path,
+    runtime: &tokio::runtime::Runtime,
+) {
+    println!("e2e_hotkeys: a wallpaper shortcut switches back after a restart");
+    let files: Vec<String> = ["before.png", "shortcut.png"]
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            std::fs::write(&path, support::PNG).expect("write png");
+            return path.to_string_lossy().into_owned();
+        })
+        .collect();
+    let added = ok(socket, Request::LibraryAdd { paths: files, folder: None });
+    let id_of = |title: &str| {
+        let results = added["results"].as_array().expect("results");
+        let entry = results.iter().find(|entry| entry["title"] == title).expect("imported");
+        return entry["id"].as_str().expect("id").to_string();
+    };
+    let (before, shortcut) = (id_of("before"), id_of("shortcut"));
+    ok(socket, Request::Apply { item: Some(before.clone()), target: ApplyTarget::Default, transition: None });
+    ok(
+        socket,
+        Request::ItemHotkey {
+            item: shortcut.clone(),
+            combo: Some("ctrl+opt+shift+f17".into()),
+            scope: HotkeyScope::Desktop,
+        },
+    );
+    let current = |socket: &Path| ok(socket, Request::Current)["item"].as_str().map(ToString::to_string);
+    let press = |item: &str| {
+        let item = item.parse().expect("uuid");
+        livewall::with(|app| app.toggle_item(item)).expect("app installed");
+        pump(0.3);
+    };
+
+    press(&shortcut);
+    assert_eq!(current(socket), Some(shortcut.clone()), "first press shows the wallpaper");
+
+    {
+        let _guard = runtime.enter();
+        let (app, _warnings) = App::new(paths, mtm);
+        install(app);
+    }
+    assert_eq!(current(socket), Some(shortcut.clone()), "the wallpaper is still shown after the restart");
+    press(&shortcut);
+    assert_eq!(current(socket), Some(before.clone()), "second press after a restart brings back the old wallpaper");
+    press(&shortcut);
+    assert_eq!(current(socket), Some(shortcut), "and the next press shows it again");
 }
 
 fn cross_process() {

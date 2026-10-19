@@ -1,147 +1,159 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
-    NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView,
-    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSBezelStyle, NSButton, NSColor, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
+    NSEventModifierFlags, NSFont, NSForegroundColorAttributeName, NSGridCell, NSGridCellPlacement, NSGridRowAlignment,
+    NSGridView, NSImage, NSLineBreakMode, NSPopUpButton, NSResponder, NSSlider, NSStackView, NSTabViewController,
+    NSTabViewControllerTabStyle, NSTabViewItem, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSViewController, NSWindow, NSWindowStyleMask, NSWindowToolbarStyle,
 };
-use objc2_core_foundation::{CGFloat, CGRect};
-use objc2_foundation::{NSArray, NSString};
-use proto::HotkeyAction;
+use objc2_core_foundation::{CGFloat, CGRect, CGSize};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSEdgeInsets, NSObject, NSObjectProtocol,
+    NSString,
+};
+use proto::{HotkeyAction, HotkeyScope, Request, ResponseBody};
 use serde_json::{Value, json};
 
+use crate::app;
 use crate::hotkey;
-use crate::ui::palette::{Look, Rgb, Theme};
-use crate::ui::widgets::{self, NumberField, Units, Weight};
+use crate::i18n::{self, Arg, tr, trf};
+use crate::model::{AppearanceMode, ItemId};
+use crate::ui::inspector::{dragging, value_field};
+use crate::ui::{changed, dialogs, ns, submit, windows};
 
-const WIDTH: CGFloat = 540.0;
-const ESCAPE: u32 = 53;
-const DELETE: u32 = 51;
-const FORWARD_DELETE: u32 = 117;
-pub const ROTATE: isize = 1;
-pub const TRANSITION: isize = 2;
-pub const PAUSE: isize = 3;
-const CLOSE_INSET: CGFloat = 18.0;
-const LOGIN: isize = 4;
-const OPEN_LIBRARY: isize = 5;
-const FULLSCREEN: isize = 7;
-const COVERED: isize = 8;
-const HOT: isize = 9;
-const OPTIMIZE: isize = 10;
-const SOUND: isize = 11;
-const SHUFFLE: isize = 12;
-const LANGUAGE: isize = 13;
-const FRAME_RATE: isize = 14;
-const RELEASE: isize = 15;
-const STYLE: isize = 16;
-const EVERY: isize = 17;
+const INSET: CGFloat = 20.0;
+const SECTION_GAP: CGFloat = 14.0;
+const NOTE_WIDTH: CGFloat = 300.0;
+const CHECKBOX_INDENT: CGFloat = 20.0;
+const SLIDER_WIDTH: CGFloat = 160.0;
+const ESCAPE: u16 = 53;
+const DELETE: u16 = 51;
+const FORWARD_DELETE: u16 = 117;
+
+const LOGIN: isize = 1;
+const OPEN_LIBRARY: isize = 2;
+const PAUSE: isize = 3;
+const FULLSCREEN: isize = 4;
+const COVERED: isize = 5;
+const HOT: isize = 6;
+const RELEASE: isize = 7;
+const OPTIMIZE: isize = 8;
+const FRAME_RATE: isize = 9;
+const SOUND: isize = 10;
+const VOLUME: isize = 11;
+const TRANSITION: isize = 12;
+const STYLE: isize = 13;
+const DURATION: isize = 14;
+const ROTATE: isize = 15;
+const EVERY: isize = 16;
+const SHUFFLE: isize = 17;
 const LOCK_SCREEN: isize = 18;
-const LOCK_DISPLAY: isize = 19;
-const LOCK_IDLE: isize = 22;
-const IDLE_AFTER: isize = 23;
-const VOLUME: isize = 20;
-const DURATION: isize = 21;
-pub const ACCENT: isize = 1;
-pub const CANVAS: isize = 2;
+const LOCK_IDLE: isize = 19;
+const IDLE_AFTER: isize = 20;
+const HIDE_DESKTOP: isize = 21;
+const APPEARANCE: isize = 22;
+const LOCK_FOLLOWS: isize = 23;
 
-const LANGUAGES: [(&str, Option<&str>); 3] = [("System", None), ("English", Some("en")), ("Русский", Some("ru"))];
+const MODES: [(AppearanceMode, &str, &str); 3] = [
+    (AppearanceMode::System, "system", i18n::key("System")),
+    (AppearanceMode::Light, "light", i18n::key("Light")),
+    (AppearanceMode::Dark, "dark", i18n::key("Dark")),
+];
 const FRAME_RATES: [u32; 6] = [24, 30, 48, 60, 90, 120];
 const RELEASES: [(&str, u32); 5] = [
-    ("Never", 0),
-    ("After 15 Seconds", 15),
-    ("After 30 Seconds", 30),
-    ("After 1 Minute", 60),
-    ("After 5 Minutes", 300),
+    (i18n::key("Never"), 0),
+    (i18n::key("After 15 Seconds"), 15),
+    (i18n::key("After 30 Seconds"), 30),
+    (i18n::key("After 1 Minute"), 60),
+    (i18n::key("After 5 Minutes"), 300),
 ];
-const STYLES: [(&str, &str); 4] = [("Fade", "fade"), ("Wipe", "wipe"), ("Grow", "grow"), ("Wave", "wave")];
-const INTERVALS: [(&str, u32); 5] =
-    [("5 Minutes", 5), ("15 Minutes", 15), ("1 Hour", 60), ("Daily", 1440), ("On Login", 0)];
-const IDLE_MINUTES: [(&str, u32); 5] =
-    [("1 Minute", 1), ("5 Minutes", 5), ("15 Minutes", 15), ("30 Minutes", 30), ("1 Hour", 60)];
-const PAUSE_KEYS: [&str; 4] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot", "pause_when_focused"];
+const STYLES: [(&str, &str); 4] = [
+    (i18n::key("Fade"), "fade"),
+    (i18n::key("Wipe"), "wipe"),
+    (i18n::key("Grow"), "grow"),
+    (i18n::key("Wave"), "wave"),
+];
+const INTERVALS: [(&str, u32); 4] =
+    [(i18n::key("5 Minutes"), 5), (i18n::key("15 Minutes"), 15), (i18n::key("1 Hour"), 60), (i18n::key("Daily"), 1440)];
+const IDLE_MINUTES: [(&str, u32); 5] = [
+    (i18n::key("1 Minute"), 1),
+    (i18n::key("5 Minutes"), 5),
+    (i18n::key("15 Minutes"), 15),
+    (i18n::key("30 Minutes"), 30),
+    (i18n::key("1 Hour"), 60),
+];
+const PAUSE_KEYS: [&str; 3] = ["pause_when_fullscreen", "pause_when_maximized", "pause_when_hot"];
 
-type Knob = (Retained<NSSlider>, Retained<NumberField>);
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct SettingsTarget;
 
-pub enum Input {
-    Flag(bool),
-    Index(usize),
-    Number(f64),
-}
+    unsafe impl NSObjectProtocol for SettingsTarget {}
 
-pub enum Change {
-    Patch(Value),
-    Login(bool),
-}
+    impl SettingsTarget {
+        #[unsafe(method(toggle:))]
+        fn toggle(&self, sender: &NSButton) {
+            flag(sender.tag(), sender.state() == NSControlStateValueOn);
+        }
 
-pub fn change(tag: isize, input: &Input) -> Option<Change> {
-    let patch = |value: Value| Some(Change::Patch(value));
-    return match (tag, input) {
-        (LOGIN, Input::Flag(on)) => Some(Change::Login(*on)),
-        (OPEN_LIBRARY, Input::Flag(on)) => patch(json!({ "open_library_at_launch": on })),
-        (FULLSCREEN, Input::Flag(on)) => patch(json!({ "pause_when_fullscreen": on })),
-        (COVERED, Input::Flag(on)) => patch(json!({ "pause_when_maximized": on })),
-        (HOT, Input::Flag(on)) => patch(json!({ "pause_when_hot": on })),
-        (OPTIMIZE, Input::Flag(on)) => patch(json!({ "optimize_on_import": on })),
-        (SOUND, Input::Flag(on)) => patch(json!({ "muted": !on })),
-        (SHUFFLE, Input::Flag(on)) => patch(json!({ "shuffle": on })),
-        (LOCK_SCREEN, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
-        (LOCK_DISPLAY, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_display": on } })),
-        (LOCK_IDLE, Input::Flag(on)) => patch(json!({ "privacy": { "lock_on_idle": on } })),
-        (ROTATE, Input::Flag(on)) => patch(json!({ "auto_rotate": on })),
-        (PAUSE, Input::Flag(on)) => {
-            let mut map = serde_json::Map::new();
-            for key in PAUSE_KEYS {
-                map.insert(key.to_string(), json!(*on && key != "pause_when_focused"));
+        #[unsafe(method(choose:))]
+        fn choose(&self, sender: &NSPopUpButton) {
+            choose(self.mtm(), sender.tag(), usize::try_from(sender.indexOfSelectedItem()).unwrap_or(0));
+        }
+
+        #[unsafe(method(slide:))]
+        fn slide(&self, sender: &NSSlider) {
+            let tag = sender.tag();
+            let value = sender.doubleValue().round();
+            with_panel(|panel| panel.show_value(tag, value));
+            if !dragging(self.mtm()) {
+                number(tag, value);
             }
-            patch(Value::Object(map))
         }
-        (TRANSITION, Input::Flag(on)) => {
-            patch(json!({ "transition": { "kind": if *on { Value::Null } else { json!("none") } } }))
+
+        #[unsafe(method(typed:))]
+        fn typed(&self, sender: &NSTextField) {
+            let tag = sender.tag();
+            let value = if tag == VOLUME { sender.doubleValue().clamp(0.0, 100.0) } else { sender.doubleValue().clamp(200.0, 3000.0) };
+            with_panel(|panel| panel.show_value(tag, value));
+            number(tag, value);
         }
-        (LANGUAGE, Input::Index(index)) => LANGUAGES.get(*index).and_then(|(_, code)| {
-            return patch(json!({ "language": code }));
-        }),
-        (FRAME_RATE, Input::Index(index)) => {
-            FRAME_RATES.get(*index).and_then(|rate| patch(json!({ "optimize_fps_limit": rate })))
+
+        #[unsafe(method(restoreShortcuts:))]
+        fn restore_shortcuts(&self, _sender: Option<&AnyObject>) {
+            app::with(app::App::restore_hotkeys);
+            sync();
         }
-        (RELEASE, Input::Index(index)) => {
-            RELEASES.get(*index).and_then(|(_, seconds)| patch(json!({ "stop_after_seconds": seconds })))
-        }
-        (STYLE, Input::Index(index)) => {
-            STYLES.get(*index).and_then(|(_, kind)| patch(json!({ "transition": { "kind": kind } })))
-        }
-        (IDLE_AFTER, Input::Index(index)) => {
-            IDLE_MINUTES.get(*index).and_then(|(_, minutes)| patch(json!({ "privacy": { "idle_minutes": minutes } })))
-        }
-        (EVERY, Input::Index(index)) => {
-            INTERVALS.get(*index).filter(|(_, minutes)| *minutes > 0).and_then(|(_, minutes)| {
-                return patch(json!({ "rotate_minutes": minutes }));
-            })
-        }
-        (VOLUME, Input::Number(value)) => patch(json!({ "volume": (value / 100.0).clamp(0.0, 1.0) })),
-        (DURATION, Input::Number(value)) => patch(json!({ "transition": { "duration": value.max(0.0) / 1000.0 } })),
-        _ => None,
-    };
+    }
+);
+
+#[derive(Clone, Copy)]
+pub(crate) enum Bind {
+    Action(HotkeyAction),
+    Item(ItemId),
 }
 
-pub struct RecorderIvars {
-    action: HotkeyAction,
-    label: Retained<NSTextField>,
+pub(crate) struct RecorderIvars {
+    bind: Bind,
+    scope: Cell<HotkeyScope>,
     recording: Cell<bool>,
 }
 
 define_class!(
-    #[unsafe(super(NSView))]
+    #[unsafe(super(NSButton, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = RecorderIvars]
-    struct RecorderView;
+    pub(crate) struct Recorder;
 
-    impl RecorderView {
+    unsafe impl NSObjectProtocol for Recorder {}
+
+    impl Recorder {
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
@@ -178,67 +190,65 @@ define_class!(
 
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
-            self.equivalent(event)
+            if self.ivars().recording.get() {
+                self.key(event);
+                true
+            } else {
+                false
+            }
         }
     }
 );
 
-impl RecorderView {
-    fn new(mtm: MainThreadMarker, action: HotkeyAction) -> Retained<Self> {
-        let label = widgets::label(mtm, "", 12.0, &Weight::Medium, &NSColor::labelColor());
-        label.setAlignment(NSTextAlignment::Center);
-        let this = Self::alloc(mtm).set_ivars(RecorderIvars { action, label, recording: Cell::new(false) });
+impl Recorder {
+    pub(crate) fn new(mtm: MainThreadMarker, bind: Bind) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(RecorderIvars {
+            bind,
+            scope: Cell::new(HotkeyScope::Desktop),
+            recording: Cell::new(false),
+        });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        this.setWantsLayer(true);
-        if let Some(layer) = this.layer() {
-            layer.setCornerRadius(6.0);
-            layer.setBackgroundColor(Some(&widgets::cg(mtm, &NSColor::quaternarySystemFillColor())));
-        }
-        let label = &this.ivars().label;
-        this.addSubview(label);
-        label.setTranslatesAutoresizingMaskIntoConstraints(false);
-        label.leadingAnchor().constraintEqualToAnchor_constant(&this.leadingAnchor(), 6.0).setActive(true);
-        label.trailingAnchor().constraintEqualToAnchor_constant(&this.trailingAnchor(), -6.0).setActive(true);
-        label.centerYAnchor().constraintEqualToAnchor(&this.centerYAnchor()).setActive(true);
-        this.widthAnchor().constraintEqualToConstant(128.0).setActive(true);
-        this.heightAnchor().constraintEqualToConstant(24.0).setActive(true);
-        this.setToolTip(Some(&widgets::ns("Click, then press a shortcut. ⌫ clears it, ⎋ cancels.")));
+        this.setBezelStyle(NSBezelStyle::Push);
+        this.widthAnchor().constraintGreaterThanOrEqualToConstant(SLIDER_WIDTH).setActive(true);
         return this;
     }
 
     fn show(&self, combo: Option<&proto::KeyCombo>) {
+        self.show_text(combo.map(hotkey::display).as_deref());
+    }
+
+    pub(crate) fn show_text(&self, text: Option<&str>) {
         if self.ivars().recording.get() {
             return;
         }
-        let (text, color) = match combo {
-            Some(combo) => (hotkey::display(combo), NSColor::labelColor()),
-            None => ("None".to_string(), NSColor::tertiaryLabelColor()),
-        };
-        self.paint(&text, &color, None);
+        self.setHighlighted(false);
+        self.setTitle(&ns(&text.map_or_else(|| tr("None"), str::to_owned)));
     }
 
-    fn paint(&self, text: &str, color: &NSColor, border: Option<&NSColor>) {
-        let label = &self.ivars().label;
-        label.setStringValue(&widgets::ns(text));
-        label.setTextColor(Some(color));
-        if let Some(layer) = self.layer() {
-            layer.setBorderWidth(if border.is_some() { 1.5 } else { 0.0 });
-            if let Some(border) = border {
-                layer.setBorderColor(Some(&widgets::cg(self.mtm(), border)));
-            }
-        }
+    pub(crate) fn set_scope(&self, scope: HotkeyScope) {
+        self.ivars().scope.set(scope);
+    }
+
+    fn warn(&self, message: &str) {
+        let key: &NSAttributedStringKey = unsafe { NSForegroundColorAttributeName };
+        let color = NSColor::systemRedColor();
+        let attributes = NSDictionary::from_slices(&[key], &[&*color as &AnyObject]);
+        let title = unsafe {
+            NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &ns(message), Some(&attributes))
+        };
+        self.setAttributedTitle(&title);
     }
 
     fn begin(&self) {
         self.ivars().recording.set(true);
-        let accent = NSColor::controlAccentColor();
-        self.paint("Type Shortcut…", &NSColor::secondaryLabelColor(), Some(&accent));
-        crate::ui::recording(true);
+        self.setHighlighted(true);
+        self.setTitle(&ns(&tr("Type Shortcut…")));
+        recording(true);
     }
 
     fn end(&self) {
         self.ivars().recording.set(false);
-        crate::ui::recording(false);
+        recording(false);
     }
 
     fn finish(&self) {
@@ -247,27 +257,20 @@ impl RecorderView {
         }
     }
 
-    fn equivalent(&self, event: &NSEvent) -> bool {
-        if !self.ivars().recording.get() {
-            return false;
-        }
-        self.key(event);
-        return true;
-    }
-
     fn key(&self, event: &NSEvent) {
-        let action = self.ivars().action;
-        let code = u32::from(event.keyCode());
+        let bind = self.ivars().bind;
+        let scope = self.ivars().scope.get();
+        let code = event.keyCode();
         match code {
             ESCAPE => return self.finish(),
             DELETE | FORWARD_DELETE => {
-                let _ = crate::ui::rebind(action, None);
+                let _ = rebind(bind, scope, None);
                 return self.finish();
             }
             _ => {}
         }
-        let Some(name) = hotkey::key_name(code) else {
-            return self.paint("Unsupported Key", &NSColor::systemRedColor(), Some(&NSColor::systemRedColor()));
+        let Some(name) = hotkey::key_name(u32::from(code)) else {
+            return self.warn(&tr("Unsupported Key"));
         };
         let flags = event.modifierFlags();
         let mut parts: Vec<&str> = [
@@ -281,307 +284,288 @@ impl RecorderView {
         .map(|(_, part)| part)
         .collect();
         parts.push(name);
-        match crate::ui::rebind(action, Some(parts.join("+"))) {
+        match rebind(bind, scope, Some(parts.join("+"))) {
             Ok(()) => self.finish(),
-            Err(message) => self.paint(&message, &NSColor::systemRedColor(), Some(&NSColor::systemRedColor())),
+            Err(message) => self.warn(&message),
         }
     }
 }
 
-pub fn action_title(action: HotkeyAction) -> &'static str {
-    return match action {
-        HotkeyAction::Next => "Next Wallpaper",
-        HotkeyAction::Previous => "Previous Wallpaper",
-        HotkeyAction::VolumeUp => "Volume Up",
-        HotkeyAction::VolumeDown => "Volume Down",
-        HotkeyAction::TogglePause => "Play / Pause",
-        HotkeyAction::ToggleMute => "Mute",
-        HotkeyAction::Random => "Random Wallpaper",
-        HotkeyAction::Lock => "Lock Private Folders",
+fn rebind(bind: Bind, scope: HotkeyScope, combo: Option<String>) -> Result<(), String> {
+    let response = match bind {
+        Bind::Action(action) => app::with(|app| app.set_hotkey(action, combo)),
+        Bind::Item(item) => app::with(|app| app.set_item_hotkey(item, combo.as_deref(), scope)),
+    }
+    .ok_or_else(|| tr("LiveWall is busy"))?;
+    return match response.body {
+        ResponseBody::Ok { data } => {
+            if let Bind::Item(_) = bind {
+                if let Some(moved) = data.get("moved").and_then(Value::as_str) {
+                    let moved = moved.to_owned();
+                    DispatchQueue::main().exec_async(move || dialogs::notice(&moved));
+                }
+                DispatchQueue::main().exec_async(changed);
+            }
+            Ok(())
+        }
+        ResponseBody::Err(body) => Err(body.message),
     };
 }
 
-pub struct SwatchIvars {
-    index: usize,
-    ring: Retained<NSView>,
-}
-
-define_class!(
-    #[unsafe(super(NSView))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = SwatchIvars]
-    struct SwatchView;
-
-    impl SwatchView {
-        #[unsafe(method(mouseDown:))]
-        fn mouse_down(&self, _event: &NSEvent) {
-            crate::ui::pick_theme(self.ivars().index);
-        }
-    }
-);
-
-pub struct Settings {
-    pub window: Retained<NSWindow>,
-    mode: Retained<NSSegmentedControl>,
-    swatches: Vec<Retained<SwatchView>>,
-    accent: Retained<NSColorWell>,
-    canvas: Retained<NSColorWell>,
-    switches: Vec<Retained<NSSwitch>>,
-    popups: Vec<Retained<NSPopUpButton>>,
-    knobs: Vec<Knob>,
-    rotate: Vec<Retained<NSView>>,
-    transition: Vec<Retained<NSView>>,
-    pause: Vec<Retained<NSView>>,
-    idle: Vec<Retained<NSView>>,
-    recorders: Vec<Retained<RecorderView>>,
-    tabs: Retained<NSTabViewController>,
-}
-
-struct General {
-    page: Retained<NSView>,
-    pause: Vec<Retained<NSView>>,
-    switches: Vec<Retained<NSSwitch>>,
-    popups: Vec<Retained<NSPopUpButton>>,
-}
-
-struct Locking {
-    page: Retained<NSView>,
-    idle: Vec<Retained<NSView>>,
-    switches: Vec<Retained<NSSwitch>>,
-    popups: Vec<Retained<NSPopUpButton>>,
-}
-
-impl Settings {
-    pub fn new(mtm: MainThreadMarker, look: &Look, location: &str, target: &AnyObject) -> Self {
-        let General { page: general, pause, mut switches, mut popups } = general(mtm, location, target);
-        let (playback, rotate, transition, knobs, more_switches, more_popups) = playback(mtm, target);
-        switches.extend(more_switches);
-        popups.extend(more_popups);
-        let (appearance, mode, swatches, accent, canvas) = appearance(mtm, look, target);
-        let (shortcuts, recorders) = shortcuts(mtm, target);
-        let Locking { page: privacy, idle, switches: lock_switches, popups: lock_popups } = locking(mtm, target);
-        switches.extend(lock_switches);
-        popups.extend(lock_popups);
-        let tabs = NSTabViewController::new(mtm);
-        tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
-        tabs.setCanPropagateSelectedChildViewControllerTitle(true);
-        tabs.setTransitionOptions(NSViewControllerTransitionOptions::Crossfade);
-        let pages = [
-            ("General", "gearshape", &general),
-            ("Appearance", "paintpalette", &appearance),
-            ("Playback", "play.rectangle", &playback),
-            ("Shortcuts", "keyboard", &shortcuts),
-            ("Privacy", "lock", &privacy),
-        ];
-        let height = pages
-            .iter()
-            .filter_map(|(_, _, view)| view.subviews().firstObject())
-            .map(|stack| stack.fittingSize().height)
-            .fold(0.0, CGFloat::max);
-        let size = objc2_foundation::NSSize::new(WIDTH, height);
-        for (title, icon, view) in pages {
-            let controller = NSViewController::new(mtm);
-            controller.setView(view);
-            controller.setTitle(Some(&widgets::ns(title)));
-            controller.setPreferredContentSize(size);
-            let item = NSTabViewItem::tabViewItemWithViewController(&controller);
-            item.setLabel(&widgets::ns(title));
-            item.setImage(widgets::symbol(icon, 15.0).as_deref());
-            tabs.addTabViewItem(&item);
-        }
-        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
-        let window = NSWindow::windowWithContentViewController(&tabs);
-        window.setStyleMask(style);
-        window.setToolbarStyle(NSWindowToolbarStyle::Preference);
-        unsafe { window.setReleasedWhenClosed(false) };
-        window.setPreventsApplicationTerminationWhenModal(false);
-        window.setContentSize(size);
-        add_close(mtm, &window, style, target);
-        return Self {
-            window,
-            mode,
-            swatches,
-            accent,
-            canvas,
-            switches,
-            popups,
-            knobs,
-            rotate,
-            transition,
-            pause,
-            idle,
-            recorders,
-            tabs,
+pub(crate) fn rescope(item: ItemId, scope: HotkeyScope) {
+    DispatchQueue::main().exec_async(move || {
+        let combo = app::with(|app| {
+            app.library()
+                .items
+                .iter()
+                .find(|entry| entry.id == item)
+                .and_then(|entry| entry.hotkey.as_ref())
+                .map(|bound| hotkey::format(&bound.combo))
+        })
+        .flatten();
+        let Some(combo) = combo else {
+            return;
         };
+        if let Err(message) = rebind(Bind::Item(item), scope, Some(combo)) {
+            dialogs::notice(&message);
+        }
+    });
+}
+
+pub(crate) fn unbind(item: ItemId) {
+    DispatchQueue::main().exec_async(move || {
+        if let Err(message) = rebind(Bind::Item(item), HotkeyScope::Desktop, None) {
+            dialogs::notice(&message);
+        }
+    });
+}
+
+fn recording(on: bool) {
+    DispatchQueue::main().exec_async(move || {
+        app::with(|app| app.record_hotkey(on));
+        if !on {
+            sync();
+        }
+    });
+}
+
+struct Panel {
+    window: Retained<NSWindow>,
+    checks: Vec<Retained<NSButton>>,
+    popups: Vec<Retained<NSPopUpButton>>,
+    knobs: Vec<(Retained<NSSlider>, Retained<NSTextField>)>,
+    groups: Vec<(isize, Vec<Retained<NSControl>>)>,
+    recorders: Vec<Retained<Recorder>>,
+}
+
+thread_local! {
+    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+    static TARGET: RefCell<Option<Retained<SettingsTarget>>> = const { RefCell::new(None) };
+}
+
+fn with_panel(body: impl FnOnce(&Panel)) {
+    PANEL.with(|panel| {
+        if let Ok(panel) = panel.try_borrow()
+            && let Some(panel) = panel.as_ref()
+        {
+            body(panel);
+        }
+    });
+}
+
+pub fn window() -> Option<Retained<NSWindow>> {
+    return PANEL.with(|panel| {
+        return panel.try_borrow().ok().and_then(|panel| panel.as_ref().map(|panel| panel.window.clone()));
+    });
+}
+
+pub fn visible() -> bool {
+    return window().is_some_and(|window| window.isVisible());
+}
+
+pub fn resigned(resigned: &NSWindow) {
+    if let Some(own) = window()
+        && *own == *resigned
+    {
+        own.makeFirstResponder(None);
+    }
+}
+
+fn target(mtm: MainThreadMarker) -> Retained<SettingsTarget> {
+    return TARGET.with(|cell| {
+        return cell.borrow_mut().get_or_insert_with(|| unsafe { msg_send![SettingsTarget::alloc(mtm), init] }).clone();
+    });
+}
+
+fn send(request: Request) {
+    submit(move |app| Some(app.dispatch(&request)));
+    DispatchQueue::main().exec_async(sync);
+}
+
+fn patch(value: Value) {
+    send(Request::SettingsSet { patch: value });
+}
+
+fn flag(tag: isize, on: bool) {
+    match tag {
+        LOGIN => send(Request::LoginItemSet { enabled: on }),
+        OPEN_LIBRARY => patch(json!({ "open_library_at_launch": on })),
+        FULLSCREEN => patch(json!({ "pause_when_fullscreen": on })),
+        COVERED => patch(json!({ "pause_when_maximized": on })),
+        HOT => patch(json!({ "pause_when_hot": on })),
+        OPTIMIZE => patch(json!({ "optimize_on_import": on })),
+        SOUND => patch(json!({ "muted": !on })),
+        SHUFFLE => patch(json!({ "shuffle": on })),
+        ROTATE => patch(json!({ "auto_rotate": on })),
+        LOCK_FOLLOWS => patch(json!({ "lock_follows_wallpaper": on })),
+        LOCK_SCREEN => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
+        LOCK_IDLE => patch(json!({ "privacy": { "lock_on_idle": on } })),
+        HIDE_DESKTOP => patch(json!({ "privacy": { "hide_desktop": on } })),
+        PAUSE => patch(Value::Object(PAUSE_KEYS.iter().map(|key| ((*key).to_string(), json!(on))).collect())),
+        TRANSITION => patch(json!({ "transition": { "kind": if on { Value::Null } else { json!("none") } } })),
+        _ => {}
+    }
+}
+
+fn choose(mtm: MainThreadMarker, tag: isize, index: usize) {
+    let value = match tag {
+        APPEARANCE => MODES.get(index).map(|(mode, name, _)| {
+            windows::set_appearance(mtm, *mode);
+            return json!({ "appearance": { "mode": name } });
+        }),
+        FRAME_RATE => FRAME_RATES.get(index).map(|rate| json!({ "optimize_fps_limit": rate })),
+        RELEASE => RELEASES.get(index).map(|(_, seconds)| json!({ "stop_after_seconds": seconds })),
+        STYLE => STYLES.get(index).map(|(_, kind)| json!({ "transition": { "kind": kind } })),
+        EVERY => INTERVALS.get(index).map(|(_, minutes)| json!({ "rotate_minutes": minutes })),
+        IDLE_AFTER => IDLE_MINUTES.get(index).map(|(_, minutes)| json!({ "privacy": { "idle_minutes": minutes } })),
+        _ => None,
+    };
+    match value {
+        Some(value) => patch(value),
+        None => DispatchQueue::main().exec_async(sync),
+    }
+}
+
+fn number(tag: isize, value: f64) {
+    match tag {
+        VOLUME => patch(json!({ "volume": (value / 100.0).clamp(0.0, 1.0) })),
+        DURATION => patch(json!({ "transition": { "duration": value.max(0.0) / 1000.0 } })),
+        _ => {}
+    }
+}
+
+impl Panel {
+    fn show_value(&self, tag: isize, value: f64) {
+        if let Some((slider, field)) = self.knobs.iter().find(|(slider, _)| slider.tag() == tag) {
+            slider.setDoubleValue(value);
+            field.setDoubleValue(value);
+        }
     }
 
-    pub fn show(&self, parent: &NSWindow, tab: Option<isize>) {
-        if let Some(tab) = tab {
-            self.tabs.setSelectedTabViewItemIndex(tab);
-        }
-        if self.window.sheetParent().is_none() {
-            parent.beginSheet_completionHandler(&self.window, None);
-        }
-        self.window.makeFirstResponder(None);
-    }
-
-    pub fn close(&self) {
-        if let Some(parent) = self.window.sheetParent() {
-            parent.endSheet(&self.window);
-        }
-    }
-
-    pub fn sync_look(&self, look: &Look) {
-        self.mode.setSelectedSegmentBezelColor(Some(&look.colors.accent));
-        self.mode.setSelectedSegment(isize::try_from(look.mode).unwrap_or(0));
-        for swatch in &self.swatches {
-            widgets::alpha(&swatch.ivars().ring, if swatch.ivars().index == look.theme { 1.0 } else { 0.0 });
-        }
-        let palette = look.palette();
-        self.accent.setColor(&palette.accent.color(1.0));
-        self.canvas.setColor(&palette.canvas.color(1.0));
-        let custom = look.theme == look.custom_index();
-        self.accent.setEnabled(custom);
-        self.canvas.setEnabled(custom);
-    }
-
-    pub fn sync(&self, values: &Value) {
-        let flag = |key: &str| values.get(key).and_then(Value::as_bool).unwrap_or(false);
-        let number = |key: &str| values.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let privacy = values.get("privacy");
-        let locks = |key: &str| privacy.and_then(|map| map.get(key)).and_then(Value::as_bool).unwrap_or(false);
-        let transition = values.get("transition");
-        let kind = transition.and_then(|map| map.get("kind")).and_then(Value::as_str);
-        let master = PAUSE_KEYS.iter().any(|key| flag(key));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn sync(&self, values: &Value, hotkeys: &proto::Hotkeys) {
+        let get = |path: &[&str]| path.iter().try_fold(values, |value, key| value.get(*key));
+        let on = |path: &[&str]| get(path).and_then(Value::as_bool).unwrap_or(false);
+        let whole =
+            |path: &[&str]| get(path).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(0);
+        let kind = get(&["transition", "kind"]).and_then(Value::as_str);
+        let master = PAUSE_KEYS.iter().any(|key| on(&[key]));
         let animate = kind != Some("none");
-        let rotate = flag("auto_rotate");
-        for switch in &self.switches {
-            let on = match switch.tag() {
-                LOGIN => flag("launch_at_login"),
-                OPEN_LIBRARY => flag("open_library_at_launch"),
+        let rotate = on(&["auto_rotate"]);
+        let idle = on(&["privacy", "lock_on_idle"]);
+        for check in &self.checks {
+            let state = match check.tag() {
+                LOGIN => on(&["launch_at_login"]),
+                OPEN_LIBRARY => on(&["open_library_at_launch"]),
                 PAUSE => master,
-                FULLSCREEN => flag("pause_when_fullscreen"),
-                COVERED => flag("pause_when_maximized"),
-                HOT => flag("pause_when_hot"),
-                OPTIMIZE => flag("optimize_on_import"),
-                SOUND => !flag("muted"),
+                FULLSCREEN => on(&["pause_when_fullscreen"]),
+                COVERED => on(&["pause_when_maximized"]),
+                HOT => on(&["pause_when_hot"]),
+                OPTIMIZE => on(&["optimize_on_import"]),
+                SOUND => !on(&["muted"]),
                 TRANSITION => animate,
                 ROTATE => rotate,
-                SHUFFLE => flag("shuffle"),
-                LOCK_SCREEN => locks("lock_on_screen_lock"),
-                LOCK_DISPLAY => locks("lock_on_display"),
-                LOCK_IDLE => locks("lock_on_idle"),
+                SHUFFLE => on(&["shuffle"]),
+                LOCK_FOLLOWS => on(&["lock_follows_wallpaper"]),
+                LOCK_SCREEN => on(&["privacy", "lock_on_screen_lock"]),
+                LOCK_IDLE => idle,
+                HIDE_DESKTOP => on(&["privacy", "hide_desktop"]),
                 _ => continue,
             };
-            switch.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+            check.setState(if state { NSControlStateValueOn } else { NSControlStateValueOff });
         }
-        let language = values.get("language").and_then(Value::as_str);
-        let style = STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0));
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let (rate, release, interval) =
-            (number("optimize_fps_limit") as u32, number("stop_after_seconds") as u32, number("rotate_minutes") as u32);
-        let idle_minutes = privacy
-            .and_then(|map| map.get("idle_minutes"))
-            .and_then(Value::as_u64)
-            .and_then(|minutes| u32::try_from(minutes).ok())
-            .unwrap_or(0);
+        let mode = get(&["appearance", "mode"]).and_then(Value::as_str).unwrap_or("system");
+        let rate = whole(&["optimize_fps_limit"]);
+        let release = whole(&["stop_after_seconds"]);
+        let interval = whole(&["rotate_minutes"]);
+        let idle_minutes = whole(&["privacy", "idle_minutes"]);
         for popup in &self.popups {
             match popup.tag() {
-                IDLE_AFTER => show_choice(
-                    popup,
-                    IDLE_MINUTES.len(),
-                    IDLE_MINUTES.iter().position(|(_, value)| *value == idle_minutes),
-                    &format!("{idle_minutes} Minutes"),
-                ),
-                LANGUAGE => {
-                    show_choice(popup, LANGUAGES.len(), LANGUAGES.iter().position(|(_, code)| *code == language), "?");
-                }
-                FRAME_RATE => show_choice(
+                APPEARANCE => pick(popup, MODES.len(), MODES.iter().position(|(_, name, _)| *name == mode), ""),
+                FRAME_RATE => pick(
                     popup,
                     FRAME_RATES.len(),
                     FRAME_RATES.iter().position(|value| *value == rate),
                     &format!("{rate} fps"),
                 ),
-                RELEASE => show_choice(
+                RELEASE => pick(
                     popup,
                     RELEASES.len(),
                     RELEASES.iter().position(|(_, value)| *value == release),
-                    &format!("After {release} Seconds"),
+                    &trf("After %ld Seconds", &[Arg::Int(i64::from(release))]),
                 ),
-                STYLE => show_choice(popup, STYLES.len(), style, "Fade"),
-                EVERY => show_choice(
+                STYLE => {
+                    pick(popup, STYLES.len(), STYLES.iter().position(|(_, name)| Some(*name) == kind).or(Some(0)), "");
+                }
+                EVERY => pick(
                     popup,
                     INTERVALS.len(),
-                    INTERVALS.iter().position(|(_, value)| *value == interval && *value > 0),
-                    &format!("{interval} Minutes"),
+                    INTERVALS.iter().position(|(_, value)| *value == interval),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(interval))]),
+                ),
+                IDLE_AFTER => pick(
+                    popup,
+                    IDLE_MINUTES.len(),
+                    IDLE_MINUTES.iter().position(|(_, value)| *value == idle_minutes),
+                    &trf("%ld Minutes", &[Arg::Int(i64::from(idle_minutes))]),
                 ),
                 _ => {}
             }
         }
-        for (slider, field) in &self.knobs {
+        for (slider, _) in &self.knobs {
             let value = match slider.tag() {
-                VOLUME => values.get("volume").and_then(Value::as_f64).unwrap_or(1.0) * 100.0,
+                VOLUME => get(&["volume"]).and_then(Value::as_f64).unwrap_or(1.0) * 100.0,
                 DURATION => {
-                    transition
-                        .and_then(|map| map.get("duration"))
+                    get(&["transition", "duration"])
                         .and_then(Value::as_f64)
                         .unwrap_or(proto::Transition::DEFAULT_DURATION)
                         * 1000.0
                 }
                 _ => continue,
             };
-            slider.setDoubleValue(value);
-            field.show(value.round());
+            self.show_value(slider.tag(), value.round());
         }
-        self.toggled(PAUSE, master);
-        self.toggled(TRANSITION, animate);
-        self.toggled(ROTATE, rotate);
-        self.toggled(LOCK_IDLE, locks("lock_on_idle"));
-    }
-
-    pub fn toggled(&self, tag: isize, on: bool) {
-        let group = match tag {
-            ROTATE => &self.rotate,
-            TRANSITION => &self.transition,
-            PAUSE => &self.pause,
-            LOCK_IDLE => &self.idle,
-            _ => return,
-        };
-        for view in group {
-            widgets::alpha(view, if on { 1.0 } else { 0.4 });
-            if let Some(control) = view.downcast_ref::<objc2_app_kit::NSControl>() {
-                control.setEnabled(on);
+        for (tag, controls) in &self.groups {
+            let enabled = match *tag {
+                PAUSE => master,
+                TRANSITION => animate,
+                ROTATE => rotate,
+                LOCK_IDLE => idle,
+                _ => true,
+            };
+            for control in controls {
+                control.setEnabled(enabled);
+            }
+        }
+        for recorder in &self.recorders {
+            if let Bind::Action(action) = recorder.ivars().bind {
+                recorder.show(hotkeys.get(action));
             }
         }
     }
-
-    pub fn sync_shortcuts(&self, hotkeys: &proto::Hotkeys) {
-        for recorder in &self.recorders {
-            recorder.show(hotkeys.get(recorder.ivars().action));
-        }
-    }
-
-    pub fn slid(&self, tag: isize, value: f64) {
-        if let Some((_, field)) = self.knobs.iter().find(|(slider, _)| slider.tag() == tag) {
-            field.show(value.round());
-        }
-    }
-
-    pub fn typed(&self, tag: isize, value: f64) -> f64 {
-        let value = if tag == VOLUME { value.clamp(0.0, 100.0) } else { value.clamp(200.0, 3000.0) };
-        if let Some((slider, field)) = self.knobs.iter().find(|(slider, _)| slider.tag() == tag) {
-            slider.setDoubleValue(value);
-            field.show(value);
-        }
-        return value;
-    }
-
-    pub fn custom_colors(&self) -> Option<(Rgb, Rgb)> {
-        return Some((Rgb::from_color(&self.accent.color())?, Rgb::from_color(&self.canvas.color())?));
-    }
 }
 
-fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: &str) {
+fn pick(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: &str) {
     let base = isize::try_from(base).unwrap_or(0);
     while popup.numberOfItems() > base {
         popup.removeItemAtIndex(base);
@@ -589,403 +573,365 @@ fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: 
     if let Some(index) = index.and_then(|index| isize::try_from(index).ok()) {
         popup.selectItemAtIndex(index);
     } else {
-        popup.addItemWithTitle(&widgets::ns(extra));
+        popup.addItemWithTitle(&ns(extra));
         popup.selectItemAtIndex(base);
     }
 }
 
-fn add_close(mtm: MainThreadMarker, window: &NSWindow, style: NSWindowStyleMask, target: &AnyObject) {
-    let Some(close) = NSWindow::standardWindowButton_forStyleMask(NSWindowButton::CloseButton, style, mtm) else {
+pub fn sync() {
+    let Some((values, hotkeys)) =
+        app::with(|app| (serde_json::to_value(app.settings()).unwrap_or(Value::Null), app.settings().hotkeys.clone()))
+    else {
         return;
     };
-    let Some(frame) = window.contentView().and_then(|content| unsafe { content.superview() }) else {
-        return;
-    };
-    unsafe {
-        close.setTarget(Some(target));
-        close.setAction(Some(sel!(closeSettings:)));
-    }
-    close.setKeyEquivalent(&widgets::ns("\u{1b}"));
-    frame.addSubview(&close);
-    close.setTranslatesAutoresizingMaskIntoConstraints(false);
-    close.leadingAnchor().constraintEqualToAnchor_constant(&frame.leadingAnchor(), CLOSE_INSET).setActive(true);
-    close.topAnchor().constraintEqualToAnchor_constant(&frame.topAnchor(), CLOSE_INSET).setActive(true);
+    with_panel(|panel| panel.sync(&values, &hotkeys));
 }
 
-fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
-    let stack = widgets::stack(mtm, sections, true, 18.0);
-    stack.setAlignment(NSLayoutAttribute::Leading);
-    stack.setEdgeInsets(widgets::insets(20.0, 24.0, 24.0, 24.0));
-    for view in sections {
-        view.leadingAnchor().constraintEqualToAnchor_constant(&stack.leadingAnchor(), 24.0).setActive(true);
-        view.trailingAnchor().constraintEqualToAnchor_constant(&stack.trailingAnchor(), -24.0).setActive(true);
-    }
-    stack.widthAnchor().constraintEqualToConstant(WIDTH).setActive(true);
-    let container = widgets::Flipped::new(mtm);
-    container.addSubview(&stack);
-    stack.setTranslatesAutoresizingMaskIntoConstraints(false);
-    stack.topAnchor().constraintEqualToAnchor(&container.topAnchor()).setActive(true);
-    stack.leadingAnchor().constraintEqualToAnchor(&container.leadingAnchor()).setActive(true);
-    stack.trailingAnchor().constraintEqualToAnchor(&container.trailingAnchor()).setActive(true);
-    stack.bottomAnchor().constraintLessThanOrEqualToAnchor(&container.bottomAnchor()).setActive(true);
-    return Retained::into_super(container);
+struct Builder {
+    mtm: MainThreadMarker,
+    target: Retained<SettingsTarget>,
+    checks: Vec<Retained<NSButton>>,
+    popups: Vec<Retained<NSPopUpButton>>,
+    knobs: Vec<(Retained<NSSlider>, Retained<NSTextField>)>,
+    groups: Vec<(isize, Vec<Retained<NSControl>>)>,
+    recorders: Vec<Retained<Recorder>>,
 }
 
-fn form(mtm: MainThreadMarker, title: &str, rows: &[Retained<NSView>]) -> Retained<NSView> {
-    let card = widgets::card(mtm, &NSColor::quaternarySystemFillColor(), 10.0);
-    let mut views: Vec<Retained<NSView>> = Vec::new();
-    for (position, row) in rows.iter().enumerate() {
-        if position > 0 {
-            let line = widgets::card(mtm, &NSColor::separatorColor(), 0.0);
-            line.heightAnchor().constraintEqualToConstant(0.5).setActive(true);
-            views.push(Retained::into_super(line));
+fn control<T: AsRef<NSControl>>(view: &Retained<T>) -> Retained<NSControl> {
+    let control: &NSControl = (**view).as_ref();
+    return control.retain();
+}
+
+fn view<T: AsRef<NSView>>(view: &Retained<T>) -> Retained<NSView> {
+    let view: &NSView = (**view).as_ref();
+    return view.retain();
+}
+
+impl Builder {
+    fn check(&mut self, title: &str, tag: isize) -> Retained<NSButton> {
+        let button = unsafe {
+            NSButton::checkboxWithTitle_target_action(&ns(title), Some(&self.target), Some(sel!(toggle:)), self.mtm)
+        };
+        button.setTag(tag);
+        self.checks.push(button.clone());
+        return button;
+    }
+
+    fn choice(&mut self, items: &[String], tag: isize) -> Retained<NSPopUpButton> {
+        let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(self.mtm), CGRect::ZERO, false);
+        let titles: Vec<Retained<NSString>> = items.iter().map(|title| ns(title)).collect();
+        popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+        popup.setTag(tag);
+        unsafe {
+            popup.setTarget(Some(&self.target));
+            popup.setAction(Some(sel!(choose:)));
         }
-        views.push(row.clone());
+        self.popups.push(popup.clone());
+        return popup;
     }
-    let refs: Vec<&NSView> = views.iter().map(|view| &**view).collect();
-    let body = widgets::stack(mtm, &refs, true, 0.0);
-    for view in &refs {
-        view.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), 0.0).setActive(true);
-        view.trailingAnchor().constraintEqualToAnchor(&body.trailingAnchor()).setActive(true);
-    }
-    card.addSubview(&body);
-    widgets::pin(&body, &card, 0.0);
-    let header = widgets::label(mtm, title, 13.0, &Weight::Semibold, &NSColor::labelColor());
-    let section = widgets::stack(mtm, &[&header, &card], true, 8.0);
-    section.setAlignment(NSLayoutAttribute::Leading);
-    card.leadingAnchor().constraintEqualToAnchor(&section.leadingAnchor()).setActive(true);
-    card.trailingAnchor().constraintEqualToAnchor(&section.trailingAnchor()).setActive(true);
-    header.leadingAnchor().constraintEqualToAnchor_constant(&section.leadingAnchor(), 2.0).setActive(true);
-    return widgets::view(&section);
-}
 
-fn line(mtm: MainThreadMarker, title: &str, note: Option<&str>, control: &NSView) -> Retained<NSView> {
-    let name = widgets::label(mtm, title, 13.0, &Weight::Regular, &NSColor::labelColor());
-    let text: Retained<NSView> = match note {
-        Some(note) => {
-            let hint = widgets::label(mtm, note, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-            let stack = widgets::stack(mtm, &[&name, &hint], true, 2.0);
-            stack.setAlignment(NSLayoutAttribute::Leading);
-            widgets::view(&stack)
+    fn knob(&mut self, min: f64, max: f64, suffix: &str, tag: isize) -> (Retained<NSView>, Vec<Retained<NSControl>>) {
+        let slider = unsafe {
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(
+                min,
+                min,
+                max,
+                Some(&self.target),
+                Some(sel!(slide:)),
+                self.mtm,
+            )
+        };
+        slider.setTag(tag);
+        slider.widthAnchor().constraintEqualToConstant(SLIDER_WIDTH).setActive(true);
+        let field = value_field(self.mtm, "", suffix, 0);
+        field.setTag(tag);
+        unsafe {
+            field.setTarget(Some(&self.target));
+            field.setAction(Some(sel!(typed:)));
         }
-        None => widgets::view(&name),
-    };
-    let gap = widgets::spacer(mtm);
-    let row = widgets::stack(mtm, &[&text, &gap, control], false, 12.0);
-    row.setEdgeInsets(widgets::insets(0.0, 12.0, 0.0, 12.0));
-    row.heightAnchor().constraintGreaterThanOrEqualToConstant(if note.is_some() { 50.0 } else { 40.0 }).setActive(true);
-    return widgets::view(&row);
-}
-
-fn switch(mtm: MainThreadMarker, tag: isize, target: &AnyObject) -> Retained<NSSwitch> {
-    let control = NSSwitch::new(mtm);
-    control.setControlSize(NSControlSize::Small);
-    control.setTag(tag);
-    unsafe {
-        control.setTarget(Some(target));
-        control.setAction(Some(sel!(toggle:)));
+        let controls = vec![control(&slider), control(&field)];
+        self.knobs.push((slider.clone(), field.clone()));
+        return (row(self.mtm, &[&slider, &field]), controls);
     }
-    return control;
-}
 
-fn fixed_switch(mtm: MainThreadMarker) -> Retained<NSSwitch> {
-    let control = NSSwitch::new(mtm);
-    control.setControlSize(NSControlSize::Small);
-    control.setState(NSControlStateValueOn);
-    control.setEnabled(false);
-    return control;
-}
-
-fn choice(mtm: MainThreadMarker, items: &[&str], tag: isize, target: &AnyObject) -> Retained<NSPopUpButton> {
-    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
-    if let Some(menu) = popup.menu() {
-        menu.setAutoenablesItems(false);
+    fn group(&mut self, tag: isize, controls: Vec<Retained<NSControl>>) {
+        self.groups.push((tag, controls));
     }
-    let titles: Vec<Retained<NSString>> = items.iter().map(|title| widgets::ns(title)).collect();
-    popup.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-    popup.setTag(tag);
-    unsafe {
-        popup.setTarget(Some(target));
-        popup.setAction(Some(sel!(choose:)));
+}
+
+struct Form {
+    grid: Retained<NSGridView>,
+    sections: usize,
+}
+
+impl Form {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let grid = NSGridView::new(mtm);
+        grid.setRowAlignment(NSGridRowAlignment::FirstBaseline);
+        grid.setColumnSpacing(8.0);
+        grid.setRowSpacing(8.0);
+        return Self { grid, sections: 0 };
     }
-    return popup;
+
+    fn add(&mut self, title: Option<&str>, control: &NSView) {
+        let mtm = self.grid.mtm();
+        let label: Retained<NSView> = match title {
+            Some(title) => view(&NSTextField::labelWithString(&ns(&format!("{title}:")), mtm)),
+            None => NSGridCell::emptyContentView(mtm),
+        };
+        let views: [&NSView; 2] = [&label, control];
+        self.grid.addRowWithViews(&NSArray::from_slice(&views));
+    }
+
+    fn last_row_padding(&self, padding: CGFloat) {
+        self.grid.rowAtIndex(self.grid.numberOfRows() - 1).setTopPadding(padding);
+    }
+
+    fn section(&mut self, title: &str, control: &NSView) {
+        self.add(Some(title), control);
+        if self.sections > 0 {
+            self.last_row_padding(SECTION_GAP);
+        }
+        self.sections += 1;
+    }
+
+    fn line(&mut self, title: &str, control: &NSView) {
+        self.add(Some(title), control);
+    }
+
+    fn row(&mut self, control: &NSView) {
+        self.add(None, control);
+    }
+
+    fn indented(&mut self, control: &NSView) {
+        self.row(&inset(self.grid.mtm(), control, CHECKBOX_INDENT));
+    }
+
+    fn note(&mut self, text: &str, indent: CGFloat) {
+        let mtm = self.grid.mtm();
+        let label = NSTextField::wrappingLabelWithString(&ns(text), mtm);
+        label.setFont(Some(&NSFont::systemFontOfSize(NSFont::smallSystemFontSize())));
+        label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        label.setPreferredMaxLayoutWidth(NOTE_WIDTH);
+        self.row(&inset(mtm, &label, indent));
+        self.last_row_padding(-4.0);
+    }
+
+    fn page(self, title: &str, symbol: &str) -> Retained<NSTabViewItem> {
+        let mtm = self.grid.mtm();
+        if self.grid.numberOfColumns() > 0 {
+            self.grid.columnAtIndex(0).setXPlacement(NSGridCellPlacement::Trailing);
+        }
+        let root = NSView::new(mtm);
+        self.grid.setTranslatesAutoresizingMaskIntoConstraints(false);
+        root.addSubview(&self.grid);
+        self.grid.topAnchor().constraintEqualToAnchor_constant(&root.topAnchor(), INSET).setActive(true);
+        self.grid.bottomAnchor().constraintEqualToAnchor_constant(&root.bottomAnchor(), -INSET).setActive(true);
+        self.grid.leadingAnchor().constraintEqualToAnchor_constant(&root.leadingAnchor(), INSET).setActive(true);
+        self.grid.trailingAnchor().constraintEqualToAnchor_constant(&root.trailingAnchor(), -INSET).setActive(true);
+        let controller = NSViewController::new(mtm);
+        controller.setView(&root);
+        controller.setTitle(Some(&ns(title)));
+        let item = NSTabViewItem::tabViewItemWithViewController(&controller);
+        item.setLabel(&ns(title));
+        item.setImage(NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(symbol), None).as_deref());
+        return item;
+    }
 }
 
-fn knob(mtm: MainThreadMarker, value: f64, min: f64, max: f64, tag: isize, target: &AnyObject) -> Knob {
-    let action: Sel = sel!(settingSlide:);
-    let slider = unsafe {
-        NSSlider::sliderWithValue_minValue_maxValue_target_action(value, min, max, Some(target), Some(action), mtm)
-    };
-    slider.setControlSize(NSControlSize::Small);
-    slider.setTag(tag);
-    slider.widthAnchor().constraintEqualToConstant(150.0).setActive(true);
-    let (step, format): (f64, fn(f64) -> String) =
-        if tag == DURATION { (50.0, |value| format!("{value:.0} ms")) } else { (5.0, |value| format!("{value:.0}%")) };
-    let field =
-        NumberField::new(mtm, Units { step, format, parse: widgets::number }, tag, 62.0, sel!(settingTyped:), target);
-    field.show(value);
-    return (slider, field);
+fn inset(mtm: MainThreadMarker, view: &NSView, indent: CGFloat) -> Retained<NSView> {
+    let holder = NSStackView::stackViewWithViews(&NSArray::from_slice(&[view]), mtm);
+    holder.setEdgeInsets(NSEdgeInsets { top: 0.0, left: indent, bottom: 0.0, right: 0.0 });
+    return Retained::into_super(holder);
 }
 
-fn pair(mtm: MainThreadMarker, knob: &Knob) -> Retained<NSView> {
-    return widgets::view(&widgets::stack(mtm, &[&knob.0, &knob.1], false, 8.0));
+fn row(mtm: MainThreadMarker, views: &[&NSView]) -> Retained<NSView> {
+    let stack = NSStackView::stackViewWithViews(&NSArray::from_slice(views), mtm);
+    stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    stack.setSpacing(8.0);
+    return Retained::into_super(stack);
 }
 
-fn general(mtm: MainThreadMarker, location: &str, target: &AnyObject) -> General {
-    let login = switch(mtm, LOGIN, target);
-    let open_library = switch(mtm, OPEN_LIBRARY, target);
-    let language = choice(mtm, &LANGUAGES.map(|(title, _)| title), LANGUAGE, target);
-    let startup = form(
-        mtm,
-        "Startup",
-        &[
-            line(mtm, "Open at Login", None, &login),
-            line(mtm, "Open Library at Launch", Some("Not when LiveWall starts at login"), &open_library),
-            line(mtm, "Language", None, &language),
-        ],
-    );
-    let master = switch(mtm, PAUSE, target);
-    let fullscreen = switch(mtm, FULLSCREEN, target);
-    let covered = switch(mtm, COVERED, target);
-    let hot = switch(mtm, HOT, target);
-    let release = choice(mtm, &RELEASES.map(|(title, _)| title), RELEASE, target);
-    let pause = vec![widgets::view(&fullscreen), widgets::view(&covered), widgets::view(&hot)];
-    let power = form(
-        mtm,
-        "Pause Playback",
-        &[
-            line(mtm, "Pause Automatically", None, &master),
-            line(mtm, "When an App Is Full Screen", None, &fullscreen),
-            line(mtm, "When the Desktop Is Covered", Some("Uses more battery to keep track of windows"), &covered),
-            line(mtm, "When the Mac Gets Hot", None, &hot),
-            line(mtm, "Free Memory When Paused", Some("Swaps a paused video for a still frame"), &release),
-        ],
-    );
-    let place = widgets::label(mtm, location, 12.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    let change = widgets::compact(mtm, "Change…", None, None);
+fn titles<T>(items: &[(&str, T)]) -> Vec<String> {
+    return items.iter().map(|(title, _)| tr(title)).collect();
+}
+
+fn general(build: &mut Builder, location: &str) -> Retained<NSTabViewItem> {
+    let mtm = build.mtm;
+    let mut form = Form::new(mtm);
+    let modes: Vec<String> = MODES.iter().map(|(_, _, title)| tr(title)).collect();
+    form.section(&tr("Appearance"), &build.choice(&modes, APPEARANCE));
+    form.section(&tr("Startup"), &build.check(&tr("Open at Login"), LOGIN));
+    form.row(&build.check(&tr("Open Library at Launch"), OPEN_LIBRARY));
+    form.note(&tr("Not when LiveWall starts at login"), CHECKBOX_INDENT);
+    form.section(&tr("Pause Playback"), &build.check(&tr("Pause Automatically"), PAUSE));
+    let fullscreen = build.check(&tr("When an App Is Full Screen"), FULLSCREEN);
+    let covered = build.check(&tr("When the Desktop Is Covered"), COVERED);
+    let hot = build.check(&tr("When the Mac Gets Hot"), HOT);
+    form.indented(&fullscreen);
+    form.indented(&covered);
+    form.note(&tr("Uses more battery to keep track of windows"), CHECKBOX_INDENT * 2.0);
+    form.indented(&hot);
+    build.group(PAUSE, vec![control(&fullscreen), control(&covered), control(&hot)]);
+    form.line(&tr("Free Memory When Paused"), &build.choice(&titles(&RELEASES), RELEASE));
+    form.note(&tr("Swaps a paused video for a still frame"), 0.0);
+    let place = NSTextField::labelWithString(&ns(location), mtm);
+    place.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+    place.setAllowsExpansionToolTips(true);
+    place.widthAnchor().constraintLessThanOrEqualToConstant(NOTE_WIDTH - 80.0).setActive(true);
+    let change = unsafe { NSButton::buttonWithTitle_target_action(&ns(&tr("Change…")), None, None, mtm) };
     change.setEnabled(false);
-    let library_row = widgets::stack(mtm, &[&place, &change], false, 8.0);
-    let optimize = switch(mtm, OPTIMIZE, target);
-    let frame_rate =
-        choice(mtm, &FRAME_RATES.map(|rate| format!("{rate} fps")).each_ref().map(String::as_str), FRAME_RATE, target);
-    let library = form(
-        mtm,
-        "Library",
-        &[
-            line(mtm, "Location", None, &library_row),
-            line(mtm, "Copy Added Files into Library", None, &fixed_switch(mtm)),
-            line(mtm, "Optimize on Import", Some("Convert videos that need it for smooth playback"), &optimize),
-            line(mtm, "Frame Rate Limit", None, &frame_rate),
-        ],
-    );
-    return General {
-        page: page(mtm, &[&startup, &power, &library]),
-        pause,
-        switches: vec![login, open_library, master, fullscreen, covered, hot, optimize],
-        popups: vec![language, release, frame_rate],
+    form.section(&tr("Location"), &row(mtm, &[&place, &change]));
+    let copy = unsafe {
+        NSButton::checkboxWithTitle_target_action(&ns(&tr("Copy Added Files into Library")), None, None, mtm)
     };
+    copy.setState(NSControlStateValueOn);
+    copy.setEnabled(false);
+    form.line(&tr("Library"), &copy);
+    form.row(&build.check(&tr("Optimize on Import"), OPTIMIZE));
+    form.note(&tr("Convert videos that need it for smooth playback"), CHECKBOX_INDENT);
+    let rates: Vec<String> = FRAME_RATES.iter().map(|rate| format!("{rate} fps")).collect();
+    form.line(&tr("Frame Rate Limit"), &build.choice(&rates, FRAME_RATE));
+    return form.page(&tr("General"), "gearshape");
 }
 
-type PlaybackPage = (
-    Retained<NSView>,
-    Vec<Retained<NSView>>,
-    Vec<Retained<NSView>>,
-    Vec<Knob>,
-    Vec<Retained<NSSwitch>>,
-    Vec<Retained<NSPopUpButton>>,
-);
+fn playback(build: &mut Builder) -> Retained<NSTabViewItem> {
+    let mut form = Form::new(build.mtm);
+    form.section(&tr("Sound"), &build.check(&tr("Play Wallpaper Sound"), SOUND));
+    let (volume, _) = build.knob(0.0, 100.0, "%", VOLUME);
+    form.line(&tr("Default Volume"), &volume);
+    form.section(&tr("Transitions"), &build.check(&tr("Animate Wallpaper Changes"), TRANSITION));
+    let style = build.choice(&titles(&STYLES), STYLE);
+    form.line(&tr("Style"), &style);
+    let (length, mut controls) = build.knob(200.0, 3000.0, &format!("\u{a0}{}", tr("ms")), DURATION);
+    form.line(&tr("Duration"), &length);
+    controls.push(control(&style));
+    build.group(TRANSITION, controls);
+    form.section(&tr("Rotation"), &build.check(&tr("Change Wallpaper"), ROTATE));
+    form.note(&tr("Cycles through the current folder"), CHECKBOX_INDENT);
+    let every = build.choice(&titles(&INTERVALS), EVERY);
+    form.line(&tr("Every"), &every);
+    let shuffle = build.check(&tr("Shuffle"), SHUFFLE);
+    form.row(&shuffle);
+    build.group(ROTATE, vec![control(&every), control(&shuffle)]);
+    form.section(&tr("Lock Screen"), &build.check(&tr("Follow the Wallpaper"), LOCK_FOLLOWS));
+    form.note(&tr("Changes whenever the wallpaper changes"), CHECKBOX_INDENT);
+    return form.page(&tr("Playback"), "play.rectangle");
+}
 
-fn playback(mtm: MainThreadMarker, target: &AnyObject) -> PlaybackPage {
-    let volume = knob(mtm, 100.0, 0.0, 100.0, VOLUME, target);
-    let sound = switch(mtm, SOUND, target);
-    let sound_card = form(
-        mtm,
-        "Sound",
-        &[line(mtm, "Play Wallpaper Sound", None, &sound), line(mtm, "Default Volume", None, &pair(mtm, &volume))],
-    );
-    let animate = switch(mtm, TRANSITION, target);
-    let style = choice(mtm, &STYLES.map(|(title, _)| title), STYLE, target);
-    let length = knob(mtm, 1000.0, 200.0, 3000.0, DURATION, target);
-    let transition_group = vec![widgets::view(&style), widgets::view(&length.0), widgets::view(&length.1)];
-    let transitions = form(
-        mtm,
-        "Transitions",
-        &[
-            line(mtm, "Animate Wallpaper Changes", None, &animate),
-            line(mtm, "Style", None, &style),
-            line(mtm, "Duration", None, &pair(mtm, &length)),
-        ],
-    );
-    let every = choice(mtm, &INTERVALS.map(|(title, _)| title), EVERY, target);
-    if let Some(item) = every.itemAtIndex(4) {
-        item.setEnabled(false);
+fn shortcuts(build: &mut Builder) -> Retained<NSTabViewItem> {
+    let mtm = build.mtm;
+    let mut form = Form::new(mtm);
+    for (position, action) in HotkeyAction::ALL.iter().enumerate() {
+        let recorder = Recorder::new(mtm, Bind::Action(*action));
+        let title = tr(hotkey::title(*action));
+        if position == 0 {
+            form.section(&title, &recorder);
+        } else {
+            form.line(&title, &recorder);
+        }
+        build.recorders.push(recorder);
     }
-    let shuffle = switch(mtm, SHUFFLE, target);
-    let rotate = switch(mtm, ROTATE, target);
-    let rotate_group = vec![widgets::view(&every), widgets::view(&shuffle)];
-    let rotation = form(
-        mtm,
-        "Rotation",
-        &[
-            line(mtm, "Change Wallpaper", Some("Cycles through the current folder"), &rotate),
-            line(mtm, "Every", None, &every),
-            line(mtm, "Shuffle", None, &shuffle),
-        ],
-    );
-    return (
-        page(mtm, &[&sound_card, &transitions, &rotation]),
-        rotate_group,
-        transition_group,
-        vec![volume, length],
-        vec![sound, animate, shuffle, rotate],
-        vec![style, every],
-    );
-}
-
-fn shortcuts(mtm: MainThreadMarker, target: &AnyObject) -> (Retained<NSView>, Vec<Retained<RecorderView>>) {
-    let recorders: Vec<Retained<RecorderView>> =
-        HotkeyAction::ALL.iter().map(|action| RecorderView::new(mtm, *action)).collect();
-    let rows: Vec<Retained<NSView>> =
-        recorders.iter().map(|recorder| line(mtm, action_title(recorder.ivars().action), None, recorder)).collect();
-    let global = form(mtm, "Global", &rows);
-    let restore = widgets::compact(mtm, "Restore Defaults", Some(sel!(restoreShortcuts:)), Some(target));
-    let hint = widgets::label(
-        mtm,
-        "Work in any app, on the current desktop.",
-        11.0,
-        &Weight::Regular,
-        &NSColor::secondaryLabelColor(),
-    );
-    let gap = widgets::spacer(mtm);
-    let footer = widgets::view(&widgets::stack(mtm, &[&hint, &gap, &restore], false, 8.0));
-    let keys = |text: &str| widgets::label(mtm, text, 12.0, &Weight::Medium, &NSColor::secondaryLabelColor());
-    let library = form(
-        mtm,
-        "In the Library",
-        &[line(mtm, "Set on Desktop", None, &keys("1 – 9")), line(mtm, "Set on All Desktops", None, &keys("`"))],
-    );
-    return (page(mtm, &[&global, &footer, &library]), recorders);
-}
-
-fn locking(mtm: MainThreadMarker, target: &AnyObject) -> Locking {
-    let screen = switch(mtm, LOCK_SCREEN, target);
-    let display = switch(mtm, LOCK_DISPLAY, target);
-    let idle = switch(mtm, LOCK_IDLE, target);
-    let after = choice(mtm, &IDLE_MINUTES.map(|(title, _)| title), IDLE_AFTER, target);
-    let automatic = form(
-        mtm,
-        "Lock Automatically",
-        &[
-            line(mtm, "Screen Locks or Sleeps", Some("Includes the screen saver"), &screen),
-            line(mtm, "External Display Connects", Some("Includes AirPlay and mirroring"), &display),
-            line(mtm, "After Inactivity", None, &idle),
-            line(mtm, "Inactive For", None, &after),
-        ],
-    );
-    let hint = widgets::label(
-        mtm,
-        "Always locked at launch and quit. Unlocking needs Touch ID or your password.",
-        11.0,
-        &Weight::Regular,
-        &NSColor::secondaryLabelColor(),
-    );
-    return Locking {
-        page: page(mtm, &[&automatic, &hint]),
-        idle: vec![widgets::view(&after)],
-        switches: vec![screen, display, idle],
-        popups: vec![after],
-    };
-}
-
-type AppearancePage = (
-    Retained<NSView>,
-    Retained<NSSegmentedControl>,
-    Vec<Retained<SwatchView>>,
-    Retained<NSColorWell>,
-    Retained<NSColorWell>,
-);
-
-fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> AppearancePage {
-    let labels: Vec<Retained<NSString>> = Look::MODES.iter().map(|title| widgets::ns(title)).collect();
-    let mode = unsafe {
-        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
-            &NSArray::from_retained_slice(&labels),
-            NSSegmentSwitchTracking::SelectOne,
-            Some(target),
-            Some(sel!(mode:)),
+    form.note(&tr("Click, then press a shortcut. ⌫ clears it, ⎋ cancels."), 0.0);
+    form.note(&tr("Work in any app, on the current desktop."), 0.0);
+    let restore = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &ns(&tr("Restore Defaults")),
+            Some(&build.target),
+            Some(sel!(restoreShortcuts:)),
             mtm,
         )
     };
-    let swatches: Vec<Retained<SwatchView>> = look
-        .themes
-        .iter()
-        .enumerate()
-        .map(|(index, (name, palette))| swatch(mtm, index, name, &Theme::new(*palette)))
-        .collect();
-    let refs: Vec<&NSView> = swatches.iter().map(|view| &***view).collect();
-    let row = widgets::stack(mtm, &refs, false, 14.0);
-    row.setEdgeInsets(widgets::insets(14.0, 12.0, 12.0, 12.0));
-    mode.setSelectedSegmentBezelColor(Some(&look.colors.accent));
-    let well = |tag: isize| {
-        let well = NSColorWell::colorWellWithStyle(NSColorWellStyle::Minimal, mtm);
-        well.setSupportsAlpha(false);
-        well.setTag(tag);
-        unsafe {
-            well.setTarget(Some(target));
-            well.setAction(Some(sel!(customColor:)));
-        }
-        well.widthAnchor().constraintEqualToConstant(44.0).setActive(true);
-        return well;
+    form.row(&restore);
+    let keys = |text: &str| -> Retained<NSView> {
+        let label = NSTextField::labelWithString(&ns(text), mtm);
+        label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        return view(&label);
     };
-    let accent = well(ACCENT);
-    let canvas = well(CANVAS);
-    let window = form(mtm, "Appearance", &[line(mtm, "Mode", None, &mode)]);
-    let theme = form(
-        mtm,
-        "Theme",
-        &[
-            widgets::view(&row),
-            line(mtm, "Accent", Some("Selection, buttons and sliders"), &accent),
-            line(mtm, "Canvas", Some("Tint behind the wallpaper wall"), &canvas),
-        ],
-    );
-    return (page(mtm, &[&window, &theme]), mode, swatches, accent, canvas);
+    form.section(&tr("Set on Desktop"), &keys("1 – 9"));
+    form.line(&tr("Set on All Desktops"), &keys("`"));
+    return form.page(&tr("Shortcuts"), "keyboard");
 }
 
-fn swatch(mtm: MainThreadMarker, index: usize, name: &str, theme: &Theme) -> Retained<SwatchView> {
-    let size = 30.0;
-    let ring = NSView::new(mtm);
-    ring.setWantsLayer(true);
-    if let Some(layer) = ring.layer() {
-        layer.setCornerRadius(size / 2.0 + 4.0);
-        layer.setBorderWidth(2.5);
-        layer.setBorderColor(Some(&widgets::cg(mtm, &theme.accent)));
+fn privacy(build: &mut Builder) -> Retained<NSTabViewItem> {
+    let mut form = Form::new(build.mtm);
+    form.section(&tr("Lock Automatically"), &build.check(&tr("Screen Locks or Sleeps"), LOCK_SCREEN));
+    form.note(&tr("Includes the screen saver"), CHECKBOX_INDENT);
+    form.row(&build.check(&tr("After Inactivity"), LOCK_IDLE));
+    let after = build.choice(&titles(&IDLE_MINUTES), IDLE_AFTER);
+    form.line(&tr("Inactive For"), &after);
+    build.group(LOCK_IDLE, vec![control(&after)]);
+    form.section(&tr("While Locked"), &build.check(&tr("Take Private Wallpapers off the Desktop"), HIDE_DESKTOP));
+    form.note(
+        &tr("Off: the desktop and the lock screen keep showing them; the library and the menu bar hide them"),
+        CHECKBOX_INDENT,
+    );
+    form.note(&tr("Always locked at launch and quit. Unlocking needs Touch ID or your password."), 0.0);
+    return form.page(&tr("Privacy"), "lock");
+}
+
+fn location() -> String {
+    return app::with(|app| app.paths().wallpapers_dir())
+        .and_then(|path| path.parent().map(|parent| parent.to_string_lossy().into_owned()))
+        .map(|path| match std::env::var("HOME") {
+            Ok(home) if path.starts_with(&home) => path.replacen(&home, "~", 1),
+            _ => path,
+        })
+        .unwrap_or_default();
+}
+
+fn build(mtm: MainThreadMarker) -> Panel {
+    let mut build = Builder {
+        mtm,
+        target: target(mtm),
+        checks: Vec::new(),
+        popups: Vec::new(),
+        knobs: Vec::new(),
+        groups: Vec::new(),
+        recorders: Vec::new(),
+    };
+    let items = [general(&mut build, &location()), playback(&mut build), shortcuts(&mut build), privacy(&mut build)];
+    let pages: Vec<Retained<NSViewController>> = items.iter().filter_map(|item| item.viewController(mtm)).collect();
+    let width = pages.iter().map(|page| page.view().fittingSize().width).fold(0.0, CGFloat::max);
+    for page in &pages {
+        page.setPreferredContentSize(CGSize::new(width, page.view().fittingSize().height));
     }
-    let dot = NSView::new(mtm);
-    dot.setWantsLayer(true);
-    if let Some(layer) = dot.layer() {
-        layer.setCornerRadius(size / 2.0);
-        layer.setBackgroundColor(Some(&widgets::cg(mtm, &theme.accent)));
-        layer.setBorderWidth(4.0);
-        layer.setBorderColor(Some(&widgets::cg(mtm, &theme.canvas)));
+    let tabs = NSTabViewController::new(mtm);
+    tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
+    for item in &items {
+        tabs.addTabViewItem(item);
     }
-    let caption = widgets::label(mtm, name, 11.0, &Weight::Regular, &NSColor::secondaryLabelColor());
-    caption.setAlignment(NSTextAlignment::Center);
-    let this = SwatchView::alloc(mtm).set_ivars(SwatchIvars { index, ring: ring.clone() });
-    let this: Retained<SwatchView> = unsafe { msg_send![super(this), init] };
-    for view in [&*ring, &*dot, &**caption] {
-        this.addSubview(view);
-        view.setTranslatesAutoresizingMaskIntoConstraints(false);
-        view.centerXAnchor().constraintEqualToAnchor(&this.centerXAnchor()).setActive(true);
-    }
-    ring.widthAnchor().constraintEqualToConstant(size + 8.0).setActive(true);
-    ring.heightAnchor().constraintEqualToConstant(size + 8.0).setActive(true);
-    ring.topAnchor().constraintEqualToAnchor(&this.topAnchor()).setActive(true);
-    dot.widthAnchor().constraintEqualToConstant(size).setActive(true);
-    dot.heightAnchor().constraintEqualToConstant(size).setActive(true);
-    dot.centerYAnchor().constraintEqualToAnchor(&ring.centerYAnchor()).setActive(true);
-    caption.topAnchor().constraintEqualToAnchor_constant(&ring.bottomAnchor(), 4.0).setActive(true);
-    caption.bottomAnchor().constraintEqualToAnchor(&this.bottomAnchor()).setActive(true);
-    this.widthAnchor().constraintEqualToConstant(54.0).setActive(true);
-    return this;
+    let window = NSWindow::windowWithContentViewController(&tabs);
+    window.setStyleMask(NSWindowStyleMask::Titled | NSWindowStyleMask::Closable);
+    window.setToolbarStyle(NSWindowToolbarStyle::Preference);
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setDelegate(Some(ProtocolObject::from_ref(&*windows::delegate(mtm))));
+    window.center();
+    return Panel {
+        window,
+        checks: build.checks,
+        popups: build.popups,
+        knobs: build.knobs,
+        groups: build.groups,
+        recorders: build.recorders,
+    };
+}
+
+#[allow(deprecated)]
+pub fn show(mtm: MainThreadMarker, tab: Option<isize>) {
+    PANEL.with(|panel| {
+        let mut panel = panel.borrow_mut();
+        let panel = panel.get_or_insert_with(|| build(mtm));
+        if let Some(tab) = tab
+            && let Some(tabs) = panel
+                .window
+                .contentViewController()
+                .and_then(|controller| controller.downcast::<NSTabViewController>().ok())
+        {
+            tabs.setSelectedTabViewItemIndex(tab);
+        }
+        panel.window.makeKeyAndOrderFront(None);
+        objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    });
+    sync();
 }

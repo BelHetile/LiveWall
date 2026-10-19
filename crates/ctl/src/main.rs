@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use proto::{
-    ApplyTarget, FillMode, Geometry, HotkeyAction, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
-    TransitionKind,
+    ApplyTarget, FillMode, Geometry, HotkeyAction, HotkeyScope, MAX_LINE, Request, RequestEnvelope, Response,
+    ResponseBody, TransitionKind,
 };
 use serde_json::Value;
 
@@ -58,6 +58,10 @@ enum Command {
     Library(LibraryCommand),
     #[command(subcommand)]
     Folder(FolderCommand),
+    #[command(subcommand)]
+    Icon(IconCommand),
+    #[command(subcommand)]
+    LockScreen(LockScreenCommand),
     Apply {
         #[arg(long)]
         item: Option<String>,
@@ -87,6 +91,12 @@ enum Command {
         muted: Option<bool>,
         #[arg(long)]
         still_time: Option<f32>,
+    },
+    ItemHotkey {
+        item: String,
+        combo: Option<String>,
+        #[arg(long, value_enum, default_value_t = HotkeyScope::Desktop)]
+        scope: HotkeyScope,
     },
     #[command(subcommand)]
     Settings(SettingsCommand),
@@ -171,6 +181,30 @@ enum FolderCommand {
         #[arg(long, action = clap::ArgAction::Set)]
         hidden: Option<bool>,
     },
+    Style {
+        id: String,
+        #[arg(long)]
+        icon: Option<String>,
+        #[arg(long, help = "#RRGGBB, a tag color (red, orange, yellow, green, blue, purple, pink, gray) or none")]
+        color: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum IconCommand {
+    Import { path: String },
+    List,
+    Remove { icon: String },
+}
+
+#[derive(Subcommand)]
+enum LockScreenCommand {
+    Set {
+        item: String,
+        #[arg(long)]
+        time: Option<f32>,
+    },
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -343,6 +377,10 @@ fn connect() -> Result<UnixStream, u8> {
     return Ok(stream);
 }
 
+fn cleared(value: String) -> String {
+    return if value.eq_ignore_ascii_case("none") { String::new() } else { value };
+}
+
 fn build_request(command: Command) -> Result<Request, String> {
     let request = match command {
         Command::Pause => Request::Pause,
@@ -373,6 +411,20 @@ fn build_request(command: Command) -> Result<Request, String> {
             FolderCommand::Rename { id, name } => Request::FolderRename { id, name },
             FolderCommand::Delete { id } => Request::FolderDelete { id },
             FolderCommand::Lock { id, locked, hidden } => Request::FolderLock { id, locked, hidden },
+            FolderCommand::Style { id, icon, color } => {
+                Request::FolderStyle { id, icon: icon.map(cleared), color: color.map(cleared) }
+            }
+        },
+        Command::Icon(command) => match command {
+            IconCommand::Import { path } => Request::IconImport {
+                path: std::path::absolute(&path).map_err(|error| error.to_string())?.to_string_lossy().into_owned(),
+            },
+            IconCommand::List => Request::IconList,
+            IconCommand::Remove { icon } => Request::IconRemove { icon },
+        },
+        Command::LockScreen(command) => match command {
+            LockScreenCommand::Set { item, time } => Request::LockScreen { item: Some(item), time },
+            LockScreenCommand::Clear => Request::LockScreen { item: None, time: None },
         },
         Command::Apply { item, target, transition } => {
             Request::Apply { item, target: target.build()?, transition: transition.build()? }
@@ -383,6 +435,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::SetItem { item, volume, speed, muted, still_time } => {
             Request::SetItem { item, volume, speed, muted, still_time }
         }
+        Command::ItemHotkey { item, combo, scope } => Request::ItemHotkey { item, combo, scope },
         Command::Settings(command) => match command {
             SettingsCommand::Get => Request::SettingsGet,
             SettingsCommand::Set { patch } => {

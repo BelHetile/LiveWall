@@ -185,6 +185,16 @@ impl Default for Hotkeys {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum HotkeyScope {
+    #[default]
+    Desktop,
+    Lock,
+    Both,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApplyTarget {
@@ -484,6 +494,17 @@ pub enum Request {
         muted: Option<bool>,
         still_time: Option<f32>,
     },
+    ItemHotkey {
+        item: String,
+        combo: Option<String>,
+        #[serde(default)]
+        scope: HotkeyScope,
+    },
+    LockScreen {
+        item: Option<String>,
+        #[serde(default)]
+        time: Option<f32>,
+    },
     SettingsGet,
     SettingsSet {
         patch: Value,
@@ -525,6 +546,20 @@ pub enum Request {
     },
     OptimizeCancel {
         id: String,
+    },
+    FolderStyle {
+        id: String,
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    IconImport {
+        path: String,
+    },
+    IconList,
+    IconRemove {
+        icon: String,
     },
 }
 
@@ -668,6 +703,10 @@ mod tests {
                 muted: Some(false),
                 still_time: Some(12.0),
             },
+            Request::ItemHotkey { item: "a".into(), combo: Some("ctrl+opt+cmd+1".into()), scope: HotkeyScope::Both },
+            Request::ItemHotkey { item: "a".into(), combo: None, scope: HotkeyScope::Desktop },
+            Request::LockScreen { item: Some("a".into()), time: Some(3.5) },
+            Request::LockScreen { item: None, time: None },
             Request::SettingsGet,
             Request::SettingsSet { patch: json!({ "muted": false }) },
             Request::HotkeysGet,
@@ -686,6 +725,15 @@ mod tests {
             Request::Optimize { id: "a".into() },
             Request::OptimizeStatus { id: "a".into() },
             Request::OptimizeCancel { id: "a".into() },
+            Request::FolderStyle {
+                id: "f".into(),
+                icon: Some("symbol:star.fill".into()),
+                color: Some("#E07A5F".into()),
+            },
+            Request::FolderStyle { id: "f".into(), icon: Some(String::new()), color: None },
+            Request::IconImport { path: "/tmp/a.png".into() },
+            Request::IconList,
+            Request::IconRemove { icon: "image:a.png".into() },
         ];
     }
 

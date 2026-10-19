@@ -2,10 +2,13 @@ use std::fmt;
 
 use proto::{HotkeyAction, Hotkeys, KeyCombo, Modifier};
 
+use crate::i18n::{self, tr};
+
 pub const CMD: u32 = 0x0100;
 pub const SHIFT: u32 = 0x0200;
 pub const OPTION: u32 = 0x0800;
 pub const CONTROL: u32 = 0x1000;
+pub const ITEM_BASE: u32 = 1000;
 
 const KEYS: &[(&str, u32)] = &[
     ("a", 0x00),
@@ -144,51 +147,51 @@ const GLYPHS: &[(&str, &str)] = &[
 ];
 
 const RESERVED: &[(&str, u32, &str)] = &[
-    ("space", CMD, "Spotlight"),
-    ("space", OPTION | CMD, "Finder search"),
-    ("space", CONTROL | CMD, "Emoji & Symbols"),
-    ("space", CONTROL, "Switch input source"),
-    ("tab", CMD, "App switcher"),
-    ("tab", SHIFT | CMD, "App switcher"),
-    ("`", CMD, "Switch windows"),
-    ("`", SHIFT | CMD, "Switch windows"),
-    ("up", CONTROL, "Mission Control"),
-    ("down", CONTROL, "App windows"),
-    ("left", CONTROL, "Move one space left"),
-    ("right", CONTROL, "Move one space right"),
-    ("up", CONTROL | CMD, "Mission Control"),
-    ("down", CONTROL | CMD, "Show or hide the Dock"),
-    ("3", SHIFT | CMD, "Screenshot"),
-    ("4", SHIFT | CMD, "Screenshot"),
-    ("5", SHIFT | CMD, "Screenshot"),
-    ("6", SHIFT | CMD, "Screenshot"),
-    ("escape", OPTION | CMD, "Force Quit"),
-    ("/", SHIFT | CMD, "Help menu"),
-    ("f", CONTROL | CMD, "Full screen"),
-    ("q", CONTROL | CMD, "Lock Screen"),
-    ("q", SHIFT | CMD, "Log Out"),
-    ("q", CMD, "app commands (⌘ + key)"),
-    ("w", CMD, "app commands (⌘ + key)"),
-    ("h", CMD, "app commands (⌘ + key)"),
-    ("h", OPTION | CMD, "Hide others"),
-    ("m", CMD, "app commands (⌘ + key)"),
-    ("m", OPTION | CMD, "Minimize all"),
-    ("n", CMD, "app commands (⌘ + key)"),
-    ("o", CMD, "app commands (⌘ + key)"),
-    ("p", CMD, "app commands (⌘ + key)"),
-    ("s", CMD, "app commands (⌘ + key)"),
-    ("c", CMD, "app commands (⌘ + key)"),
-    ("v", CMD, "app commands (⌘ + key)"),
-    ("x", CMD, "app commands (⌘ + key)"),
-    ("z", CMD, "app commands (⌘ + key)"),
-    ("z", SHIFT | CMD, "app commands (⌘ + key)"),
-    ("a", CMD, "app commands (⌘ + key)"),
-    ("f", CMD, "app commands (⌘ + key)"),
-    ("g", CMD, "app commands (⌘ + key)"),
-    ("b", CMD, "app commands (⌘ + key)"),
-    ("t", CMD, "app commands (⌘ + key)"),
-    ("r", CMD, "app commands (⌘ + key)"),
-    (",", CMD, "app commands (⌘ + key)"),
+    ("space", CMD, i18n::key("Spotlight")),
+    ("space", OPTION | CMD, i18n::key("Finder search")),
+    ("space", CONTROL | CMD, i18n::key("Emoji & Symbols")),
+    ("space", CONTROL, i18n::key("Switch input source")),
+    ("tab", CMD, i18n::key("App switcher")),
+    ("tab", SHIFT | CMD, i18n::key("App switcher")),
+    ("`", CMD, i18n::key("Switch windows")),
+    ("`", SHIFT | CMD, i18n::key("Switch windows")),
+    ("up", CONTROL, i18n::key("Mission Control")),
+    ("down", CONTROL, i18n::key("App windows")),
+    ("left", CONTROL, i18n::key("Move one space left")),
+    ("right", CONTROL, i18n::key("Move one space right")),
+    ("up", CONTROL | CMD, i18n::key("Mission Control")),
+    ("down", CONTROL | CMD, i18n::key("Show or hide the Dock")),
+    ("3", SHIFT | CMD, i18n::key("Screenshot")),
+    ("4", SHIFT | CMD, i18n::key("Screenshot")),
+    ("5", SHIFT | CMD, i18n::key("Screenshot")),
+    ("6", SHIFT | CMD, i18n::key("Screenshot")),
+    ("escape", OPTION | CMD, i18n::key("Force Quit")),
+    ("/", SHIFT | CMD, i18n::key("Help menu")),
+    ("f", CONTROL | CMD, i18n::key("Full screen")),
+    ("q", CONTROL | CMD, i18n::key("Lock Screen")),
+    ("q", SHIFT | CMD, i18n::key("Log Out")),
+    ("q", CMD, i18n::key("app commands (⌘ + key)")),
+    ("w", CMD, i18n::key("app commands (⌘ + key)")),
+    ("h", CMD, i18n::key("app commands (⌘ + key)")),
+    ("h", OPTION | CMD, i18n::key("Hide Others")),
+    ("m", CMD, i18n::key("app commands (⌘ + key)")),
+    ("m", OPTION | CMD, i18n::key("Minimize all")),
+    ("n", CMD, i18n::key("app commands (⌘ + key)")),
+    ("o", CMD, i18n::key("app commands (⌘ + key)")),
+    ("p", CMD, i18n::key("app commands (⌘ + key)")),
+    ("s", CMD, i18n::key("app commands (⌘ + key)")),
+    ("c", CMD, i18n::key("app commands (⌘ + key)")),
+    ("v", CMD, i18n::key("app commands (⌘ + key)")),
+    ("x", CMD, i18n::key("app commands (⌘ + key)")),
+    ("z", CMD, i18n::key("app commands (⌘ + key)")),
+    ("z", SHIFT | CMD, i18n::key("app commands (⌘ + key)")),
+    ("a", CMD, i18n::key("app commands (⌘ + key)")),
+    ("f", CMD, i18n::key("app commands (⌘ + key)")),
+    ("g", CMD, i18n::key("app commands (⌘ + key)")),
+    ("b", CMD, i18n::key("app commands (⌘ + key)")),
+    ("t", CMD, i18n::key("app commands (⌘ + key)")),
+    ("r", CMD, i18n::key("app commands (⌘ + key)")),
+    (",", CMD, i18n::key("app commands (⌘ + key)")),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +215,19 @@ pub enum ValidationError {
     MissingModifier,
     Reserved(&'static str),
     Duplicate(HotkeyAction),
+}
+
+pub fn title(action: HotkeyAction) -> &'static str {
+    return match action {
+        HotkeyAction::Next => i18n::key("Next Wallpaper"),
+        HotkeyAction::Previous => i18n::key("Previous Wallpaper"),
+        HotkeyAction::VolumeUp => i18n::key("Volume Up"),
+        HotkeyAction::VolumeDown => i18n::key("Volume Down"),
+        HotkeyAction::TogglePause => i18n::key("Play / Pause"),
+        HotkeyAction::ToggleMute => i18n::key("Mute"),
+        HotkeyAction::Random => i18n::key("Random Wallpaper"),
+        HotkeyAction::Lock => i18n::key("Lock Private Folders"),
+    };
 }
 
 impl fmt::Display for ValidationError {
@@ -272,7 +288,6 @@ pub fn parse(input: &str) -> Result<KeyCombo, ParseError> {
     return Ok(KeyCombo { key, modifiers });
 }
 
-#[cfg(test)]
 pub fn format(combo: &KeyCombo) -> String {
     let mut parts: Vec<String> = Vec::new();
     for modifier in canonical_modifiers(&combo.modifiers) {
@@ -310,7 +325,7 @@ pub fn reserved(combo: &KeyCombo) -> Option<&'static str> {
     return RESERVED.iter().find(|(name, needed, _)| *name == key && *needed == mask).map(|(_, _, owner)| *owner);
 }
 
-pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+pub fn validate_shape(candidate: &KeyCombo) -> Result<(), ValidationError> {
     if keycode(&candidate.key).is_none() {
         return Err(ValidationError::UnknownKey(candidate.key.clone()));
     }
@@ -321,6 +336,23 @@ pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -
     if let Some(owner) = reserved(candidate) {
         return Err(ValidationError::Reserved(owner));
     }
+    return Ok(());
+}
+
+pub fn validate_item(candidate: &KeyCombo, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+    validate_shape(candidate)?;
+    for other in HotkeyAction::ALL {
+        if let Some(existing) = hotkeys.get(other)
+            && same(existing, candidate)
+        {
+            return Err(ValidationError::Duplicate(other));
+        }
+    }
+    return Ok(());
+}
+
+pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+    validate_shape(candidate)?;
     for other in HotkeyAction::ALL.into_iter().filter(|other| *other != action) {
         if let Some(existing) = hotkeys.get(other)
             && same(existing, candidate)
@@ -385,6 +417,9 @@ fn normalize_key(key: &str) -> String {
 }
 
 fn glyph(key: &str) -> String {
+    if key == "space" {
+        return tr("Space");
+    }
     if let Some((_, glyph)) = GLYPHS.iter().find(|(name, _)| *name == key) {
         return (*glyph).to_string();
     }
@@ -528,6 +563,38 @@ mod tests {
             Err(ValidationError::Duplicate(HotkeyAction::TogglePause))
         );
         assert_eq!(validate(&parse("ctrl+opt+cmd+space").expect("parse"), HotkeyAction::TogglePause, &hotkeys), Ok(()));
+    }
+
+    #[test]
+    fn shape_validation_has_no_duplicate_check() {
+        assert_eq!(validate_shape(&parse("ctrl+opt+cmd+space").expect("parse")), Ok(()));
+        assert_eq!(validate_shape(&parse("cmd+space").expect("parse")), Err(ValidationError::Reserved("Spotlight")));
+        assert_eq!(validate_shape(&parse("a").expect("parse")), Err(ValidationError::MissingModifier));
+        assert_eq!(
+            validate_shape(&KeyCombo::new("banana", vec![Modifier::Control])),
+            Err(ValidationError::UnknownKey("banana".into()))
+        );
+    }
+
+    #[test]
+    fn item_validation_rejects_any_global_duplicate() {
+        let hotkeys = Hotkeys::default();
+        assert_eq!(
+            validate_item(&parse("ctrl+opt+cmd+space").expect("parse"), &hotkeys),
+            Err(ValidationError::Duplicate(HotkeyAction::TogglePause))
+        );
+        assert_eq!(
+            validate_item(&parse("cmd+space").expect("parse"), &hotkeys),
+            Err(ValidationError::Reserved("Spotlight"))
+        );
+        assert_eq!(validate_item(&parse("ctrl+opt+cmd+1").expect("parse"), &hotkeys), Ok(()));
+    }
+
+    #[test]
+    fn action_ids_stay_below_item_base() {
+        for action in HotkeyAction::ALL {
+            assert!(registration_id(action) < ITEM_BASE);
+        }
     }
 
     #[test]

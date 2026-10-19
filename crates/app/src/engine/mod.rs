@@ -63,14 +63,18 @@ pub struct Engine {
     playing: usize,
     occlusion: Occlusion,
     wake: Wake,
+    reveal: bool,
+    follow_lock: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Playback {
     pub paused: bool,
     pub muted: bool,
     pub stop_after: u32,
     pub verdict: rules::Verdict,
-    pub unlocked: bool,
+    pub reveal: bool,
+    pub follow_lock: bool,
     pub silenced: Option<ItemId>,
 }
 
@@ -84,9 +88,13 @@ impl Engine {
         let owned = vec![
             paths.dir_for(DirKind::Stills, Visibility::Public),
             paths.dir_for(DirKind::Stills, Visibility::Private),
+            paths.dir_for(DirKind::Wallpapers, Visibility::Public),
+            paths.dir_for(DirKind::Wallpapers, Visibility::Private),
         ];
         let mut desktop = Desktop::new(paths.swap_state_file(), mode, owned);
-        desktop.recover(mtm);
+        if !crate::dev::isolated() {
+            desktop.recover(mtm);
+        }
         return Self {
             mtm,
             cgs,
@@ -102,6 +110,8 @@ impl Engine {
             playing: 0,
             occlusion: Occlusion::default(),
             wake: Wake::default(),
+            reveal: true,
+            follow_lock: false,
         };
     }
 
@@ -122,14 +132,18 @@ impl Engine {
         playback: &Playback,
         transition: Option<&transition::ResolvedTransition>,
     ) {
-        self.apply_assignments(library, transition.is_some(), playback.unlocked);
+        self.reveal = playback.reveal;
+        self.follow_lock = playback.follow_lock;
+        self.apply_assignments(library, transition.is_some(), playback.reveal);
         self.apply_frames(library);
         self.begin_transitions(transition);
         self.update_playback(library, playback);
     }
 
     pub fn hide_private(&mut self, library: &Library, playback: &Playback) {
-        self.finish_transitions_matching(|active| library.is_private_id(active.old));
+        if !playback.reveal {
+            self.finish_transitions_matching(|active| library.is_private_id(active.old));
+        }
         self.reapply(library, playback, None);
     }
 
@@ -249,6 +263,9 @@ impl Engine {
     }
 
     fn create_surface(&mut self, spec: spaces::SurfaceSpec) {
+        if crate::dev::isolated() {
+            return;
+        }
         let frame = self.display.frame;
         let window = WallpaperWindow::create(self.mtm, frame, spec.can_join_all);
         if let Some(space_id) = spec.space_id {
@@ -501,6 +518,7 @@ mod tests {
             muted: true,
             still_time: 0.0,
             optimized: false,
+            hotkey: None,
             width: 0,
             height: 0,
             duration: 0.0,

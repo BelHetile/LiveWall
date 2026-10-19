@@ -64,18 +64,29 @@ objc2-foundation = { workspace = true, features = [
   "NSAppleEventDescriptor",
   "NSAppleEventManager",
   "NSGeometry",
+  "NSIndexSet",
+  "NSIndexPath",
+  "NSSet",
   "NSOperation",
   "NSTimer",
   "NSDate",
   "NSRunLoop",
   "NSError",
   "NSLocale",
+  "NSFormatter",
+  "NSDateFormatter",
+  "NSByteCountFormatter",
+  "NSNumberFormatter",
   "NSDistributedNotificationCenter",
   "NSProcessInfo",
   "block2",
 ] }
 objc2-app-kit = { workspace = true, features = [
   "std",
+  "NSAccessibility",
+  "NSAccessibilityConstants",
+  "NSAccessibilityProtocols",
+  "NSBezierPath",
   "NSApplication",
   "NSResponder",
   "NSRunningApplication",
@@ -85,6 +96,7 @@ objc2-app-kit = { workspace = true, features = [
   "NSColor",
   "NSWorkspace",
   "NSGraphics",
+  "NSProgressIndicator",
   "NSMenu",
   "NSMenuItem",
   "NSStatusBar",
@@ -102,6 +114,11 @@ objc2-app-kit = { workspace = true, features = [
   "NSBox",
   "NSColorList",
   "NSColorWell",
+  "NSCollectionView",
+  "NSCollectionViewFlowLayout",
+  "NSCollectionViewLayout",
+  "NSColorPanel",
+  "NSGridView",
   "NSOpenPanel",
   "NSPanel",
   "NSParagraphStyle",
@@ -110,6 +127,9 @@ objc2-app-kit = { workspace = true, features = [
   "NSButtonCell",
   "NSClipView",
   "NSColorSpace",
+  "NSDragging",
+  "NSDraggingItem",
+  "NSDraggingSession",
   "NSEvent",
   "NSFont",
   "NSFontDescriptor",
@@ -118,7 +138,10 @@ objc2-app-kit = { workspace = true, features = [
   "NSLayoutAnchor",
   "NSLayoutConstraint",
   "NSMenuToolbarItem",
+  "NSPasteboard",
+  "NSPasteboardItem",
   "NSPopUpButton",
+  "NSPopover",
   "NSScrollView",
   "NSSearchField",
   "NSSearchToolbarItem",
@@ -132,6 +155,11 @@ objc2-app-kit = { workspace = true, features = [
   "NSTabView",
   "NSTabViewController",
   "NSTabViewItem",
+  "NSTableCellView",
+  "NSTableColumn",
+  "NSTableHeaderView",
+  "NSTableRowView",
+  "NSTableView",
   "NSText",
   "NSTextField",
   "NSTextView",
@@ -140,6 +168,7 @@ objc2-app-kit = { workspace = true, features = [
   "NSToolbarItem",
   "NSToolbarItemGroup",
   "NSTrackingArea",
+  "NSUserInterfaceItemIdentification",
   "NSUserInterfaceLayout",
   "NSViewController",
   "NSVisualEffectView",
@@ -147,7 +176,9 @@ objc2-app-kit = { workspace = true, features = [
   "block2",
   "objc2-quartz-core",
   "objc2-core-foundation",
+  "objc2-uniform-type-identifiers",
 ] }
+objc2-uniform-type-identifiers = { workspace = true, features = ["std", "UTType", "UTCoreTypes"] }
 objc2-core-foundation = { workspace = true, features = [
   "std",
   "CFArray",
@@ -256,7 +287,6 @@ objc2-local-authentication = { workspace = true, features = [
   "LAContext",
   "block2",
 ] }
-plist.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
 libc.workspace = true
@@ -264,3 +294,4 @@ proto.workspace = true
 
 [dev-dependencies]
 livewall = { path = ".", features = ["test-support"] }
+plist.workspace = true

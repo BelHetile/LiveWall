@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::style::{Rgba, Tag};
+
 pub const LIBRARY_VERSION: u32 = 1;
 
 pub type ItemId = Uuid;
@@ -71,6 +73,15 @@ pub struct Item {
     pub needs_optimize: bool,
     #[serde(default)]
     pub optimize_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<ItemHotkey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemHotkey {
+    pub combo: proto::KeyCombo,
+    #[serde(default)]
+    pub scope: proto::HotkeyScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,9 +91,90 @@ pub struct Folder {
     #[serde(default)]
     pub icon: Option<String>,
     #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
     pub locked: bool,
     #[serde(default)]
     pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon<'a> {
+    Symbol(&'a str),
+    Image(&'a str),
+}
+
+pub const SYMBOL_PREFIX: &str = "symbol:";
+pub const IMAGE_PREFIX: &str = "image:";
+
+impl<'a> Icon<'a> {
+    pub fn parse(value: &'a str) -> Option<Self> {
+        if let Some(name) = value.strip_prefix(SYMBOL_PREFIX) {
+            let valid = !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '.');
+            return valid.then_some(Self::Symbol(name));
+        }
+        if let Some(file) = value.strip_prefix(IMAGE_PREFIX) {
+            let valid = !file.is_empty()
+                && !file.starts_with('.')
+                && std::path::Path::new(file).extension().is_some_and(|extension| extension == "png")
+                && file
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+            return valid.then_some(Self::Image(file));
+        }
+        return None;
+    }
+}
+
+pub fn parse_color(value: &str) -> Option<String> {
+    if let Some(tag) = Tag::parse(value) {
+        return Some(tag.id().to_string());
+    }
+    let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    let valid = hex.len() == 6 && hex.chars().all(|character| character.is_ascii_hexdigit());
+    return valid.then(|| format!("#{}", hex.to_ascii_uppercase()));
+}
+
+const OLD_PRESETS: [&str; 8] = ["#D9785A", "#D9A441", "#7FA77F", "#5E8C6A", "#6A8CC4", "#9C88C9", "#C97C8C", "#9C7055"];
+
+impl Library {
+    pub fn style_folder(&mut self, id: FolderId, icon: Option<String>, color: Option<String>) -> bool {
+        let Some(folder) = self.folders.iter_mut().find(|folder| folder.id == id) else {
+            return false;
+        };
+        folder.icon = icon;
+        folder.color = color;
+        return true;
+    }
+
+    pub fn migrate_colors(&mut self) -> bool {
+        let mut changed = false;
+        for folder in &mut self.folders {
+            let Some(color) = folder.color.as_deref().filter(|color| OLD_PRESETS.contains(color)) else {
+                continue;
+            };
+            if let Some(rgba) = Rgba::parse(color) {
+                folder.color = Some(Tag::nearest(rgba).id().to_string());
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    pub fn drop_icon(&mut self, icon: &str) -> usize {
+        let mut cleared = 0;
+        for folder in &mut self.folders {
+            if folder.icon.as_deref() == Some(icon) {
+                folder.icon = None;
+                cleared += 1;
+            }
+        }
+        return cleared;
+    }
 }
 
 impl Item {
@@ -118,6 +210,10 @@ pub struct Placement {
     pub safe_default: Option<ItemId>,
     #[serde(default)]
     pub safe: BTreeMap<String, ItemId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shortcut_back: BTreeMap<String, ItemId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_lock_back: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,7 +234,7 @@ impl Default for Library {
 impl Library {
     pub fn create_folder(&mut self, name: String) -> FolderId {
         let id = Uuid::new_v4();
-        self.folders.push(Folder { id, name, icon: None, locked: false, hidden: false });
+        self.folders.push(Folder { id, name, icon: None, color: None, locked: false, hidden: false });
         return id;
     }
 
@@ -190,13 +286,6 @@ impl Library {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    En,
-    Ru,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuleScope {
@@ -232,11 +321,18 @@ pub struct Privacy {
     pub lock_on_display: bool,
     pub lock_on_idle: bool,
     pub idle_minutes: u32,
+    pub hide_desktop: bool,
 }
 
 impl Default for Privacy {
     fn default() -> Self {
-        return Self { lock_on_screen_lock: true, lock_on_display: true, lock_on_idle: false, idle_minutes: 15 };
+        return Self {
+            lock_on_screen_lock: true,
+            lock_on_display: true,
+            lock_on_idle: false,
+            idle_minutes: 15,
+            hide_desktop: true,
+        };
     }
 }
 
@@ -249,26 +345,11 @@ pub enum AppearanceMode {
     Dark,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Appearance {
     pub mode: AppearanceMode,
-    pub theme: String,
-    pub accent: String,
-    pub canvas: String,
     pub list: bool,
-}
-
-impl Default for Appearance {
-    fn default() -> Self {
-        return Self {
-            mode: AppearanceMode::System,
-            theme: "Violet".to_string(),
-            accent: "#866A8C".to_string(),
-            canvas: "#947C8E".to_string(),
-            list: false,
-        };
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -281,6 +362,7 @@ pub struct Settings {
     pub auto_rotate: bool,
     pub rotate_minutes: u32,
     pub shuffle: bool,
+    pub lock_follows_wallpaper: bool,
     pub pause_when_focused: bool,
     pub pause_when_maximized: bool,
     pub pause_when_fullscreen: bool,
@@ -291,7 +373,6 @@ pub struct Settings {
     pub stop_after_seconds: u32,
     pub launch_at_login: bool,
     pub open_library_at_launch: bool,
-    pub language: Option<Language>,
     pub hotkeys: Hotkeys,
     pub tools: Tools,
     pub transition: Transition,
@@ -308,6 +389,7 @@ impl Default for Settings {
             auto_rotate: false,
             rotate_minutes: 30,
             shuffle: false,
+            lock_follows_wallpaper: false,
             pause_when_focused: false,
             pause_when_maximized: true,
             pause_when_fullscreen: true,
@@ -318,7 +400,6 @@ impl Default for Settings {
             stop_after_seconds: 30,
             launch_at_login: false,
             open_library_at_launch: true,
-            language: None,
             hotkeys: Hotkeys::default(),
             tools: Tools::default(),
             transition: Transition::default(),
@@ -387,7 +468,6 @@ mod tests {
         assert_eq!(settings.optimize_fps_limit, 30);
         assert_eq!(settings.stop_after_seconds, 30);
         assert!(!settings.launch_at_login);
-        assert!(settings.language.is_none());
         assert_eq!(settings.hotkeys, Hotkeys::default());
     }
 
@@ -463,6 +543,10 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: Some(ItemHotkey {
+                combo: proto::KeyCombo::new("1", vec![proto::Modifier::Control]),
+                scope: proto::HotkeyScope::Both,
+            }),
         };
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");
@@ -494,7 +578,37 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: None,
         };
+    }
+
+    #[test]
+    fn shortcut_fields_default_for_legacy_library_and_round_trip() {
+        let legacy: Library = serde_json::from_str(
+            r#"{"items":[{"id":"11111111-1111-1111-1111-111111111111","kind":"video","path":"/a.mp4","title":"A","added_at":"1970-01-01T00:00:00Z"}],"placement":{"default":{"item":null}}}"#,
+        )
+        .expect("legacy");
+        assert!(legacy.items[0].hotkey.is_none());
+        assert!(legacy.placement.shortcut_back.is_empty());
+        assert!(legacy.placement.shortcut_lock_back.is_none());
+        let written = serde_json::to_string(&legacy).expect("serialize");
+        assert!(!written.contains("hotkey"));
+        assert!(!written.contains("shortcut_back"));
+        assert!(!written.contains("shortcut_lock_back"));
+
+        let mut library = Library::default();
+        let mut item = sample_item();
+        item.hotkey = Some(ItemHotkey {
+            combo: proto::KeyCombo::new("2", vec![proto::Modifier::Command]),
+            scope: proto::HotkeyScope::Lock,
+        });
+        let id = item.id;
+        library.items.push(item);
+        library.placement.shortcut_back.insert("S".into(), id);
+        library.placement.shortcut_lock_back = Some(LockAssignment { item: id, time: 2.5 });
+        let text = serde_json::to_string(&library).expect("serialize");
+        let back: Library = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, library);
     }
 
     #[test]
@@ -637,5 +751,69 @@ mod tests {
         settings.normalize();
         assert_eq!(settings.transition.duration, Some(0.0));
         assert_eq!(settings.transition.wave, Some([0.0, 5.0]));
+    }
+
+    #[test]
+    fn icon_values_are_validated() {
+        assert_eq!(Icon::parse("symbol:star.fill"), Some(Icon::Symbol("star.fill")));
+        assert_eq!(Icon::parse("image:abc-1.png"), Some(Icon::Image("abc-1.png")));
+        assert!(Icon::parse("symbol:").is_none());
+        assert!(Icon::parse("symbol:Star").is_none());
+        assert!(Icon::parse("image:.hidden.png").is_none());
+        assert!(Icon::parse("image:a.jpg").is_none());
+        assert!(Icon::parse("image:../a.png").is_none());
+        assert!(Icon::parse("star.fill").is_none());
+    }
+
+    #[test]
+    fn colors_are_normalized() {
+        assert_eq!(parse_color("#e07a5f").as_deref(), Some("#E07A5F"));
+        assert_eq!(parse_color(" 81B29A ").as_deref(), Some("#81B29A"));
+        assert_eq!(parse_color("Purple").as_deref(), Some("purple"));
+        assert_eq!(parse_color(" gray ").as_deref(), Some("gray"));
+        assert!(parse_color("grey").is_none());
+        assert!(parse_color("#E07A5").is_none());
+        assert!(parse_color("#GGGGGG").is_none());
+        assert!(parse_color("").is_none());
+    }
+
+    #[test]
+    fn old_folder_presets_become_tags_and_custom_colors_stay() {
+        let mut library = Library::default();
+        for color in ["#D9785A", "#6A8CC4", "#123456", "green"] {
+            let id = library.create_folder(color.into());
+            library.style_folder(id, None, Some(color.into()));
+        }
+        library.create_folder("plain".into());
+        assert!(library.migrate_colors());
+        let colors: Vec<Option<&str>> = library.folders.iter().map(|folder| folder.color.as_deref()).collect();
+        assert_eq!(colors, [Some("red"), Some("blue"), Some("#123456"), Some("green"), None]);
+        assert!(!library.migrate_colors());
+    }
+
+    #[test]
+    fn legacy_appearance_fields_are_ignored_and_dropped() {
+        let settings: Settings = serde_json::from_str(
+            r##"{"appearance":{"mode":"dark","style":"Dusk","theme":"Ocean","accent":"#112233","canvas":"#445566"}}"##,
+        )
+        .expect("legacy appearance");
+        assert_eq!(settings.appearance.mode, AppearanceMode::Dark);
+        let written = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(written["appearance"], serde_json::json!({ "mode": "dark", "list": false }));
+    }
+
+    #[test]
+    fn folder_styles_can_be_set_and_icons_dropped() {
+        let mut library = Library::default();
+        let folder = library.create_folder("F".into());
+        assert!(library.style_folder(folder, Some("symbol:star.fill".into()), Some("#E07A5F".into())));
+        assert_eq!(library.folders[0].icon.as_deref(), Some("symbol:star.fill"));
+        assert_eq!(library.folders[0].color.as_deref(), Some("#E07A5F"));
+        assert!(!library.style_folder(Uuid::new_v4(), None, None));
+        let other = library.create_folder("G".into());
+        assert!(library.style_folder(other, Some("symbol:star.fill".into()), None));
+        assert_eq!(library.drop_icon("symbol:star.fill"), 2);
+        assert!(library.folders.iter().all(|folder| folder.icon.is_none()));
+        assert_eq!(library.drop_icon("symbol:star.fill"), 0);
     }
 }

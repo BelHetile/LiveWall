@@ -10,12 +10,12 @@ use objc2_core_foundation::{CFMutableData, CFRetained, CFString};
 use objc2_core_graphics::CGImage;
 use objc2_core_media::{CMTime, kCMTimeZero};
 use objc2_foundation::NSError;
-use objc2_image_io::{CGImageDestination, CGImageSource};
+use objc2_image_io::CGImageDestination;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::app::{Event, post};
-use crate::cf::{cf_file_url, file_url};
+use crate::cf::file_url;
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 
@@ -93,15 +93,7 @@ fn generate_video(item: ItemId, path: &str, still_time: f64, dest: PathBuf) {
 fn spawn_frame(item: ItemId, path: &str, dest: PathBuf) {
     let path = path.to_string();
     tokio::task::spawn_blocking(move || {
-        let Some(url) = cf_file_url(&path) else {
-            failed(&dest);
-            return;
-        };
-        let Some(source) = (unsafe { CGImageSource::with_url(&url, None) }) else {
-            failed(&dest);
-            return;
-        };
-        let Some(image) = (unsafe { source.image_at_index(0, None) }) else {
+        let Some(image) = crate::media::orient::upright_image(Path::new(&path)) else {
             failed(&dest);
             return;
         };

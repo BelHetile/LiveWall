@@ -9,7 +9,7 @@ use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString};
 use serde::Serialize;
 
 use crate::app::{Event, post};
-use crate::i18n::Strings;
+use crate::i18n::tr;
 
 const STATUS_ICON: &[u8] = include_bytes!("../../../resources/status-icon@2x.png");
 const STATUS_ICON_POINTS: f64 = 18.0;
@@ -25,11 +25,15 @@ pub enum MenuAction {
     ToggleLaunchAtLogin = 6,
     Quit = 7,
     OpenLibrary = 8,
+    Settings = 9,
+    TogglePrivacy = 10,
 }
 
 impl MenuAction {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::OpenLibrary,
+        Self::Settings,
+        Self::TogglePrivacy,
         Self::TogglePause,
         Self::Next,
         Self::Previous,
@@ -73,12 +77,16 @@ impl MenuTarget {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MenuState {
     pub title: Option<String>,
     pub paused: bool,
     pub status: Option<String>,
     pub muted: bool,
     pub launch_at_login: bool,
+    pub unlocked: bool,
+    pub has_private: bool,
+    pub rotatable: bool,
 }
 
 pub struct Menu {
@@ -87,6 +95,8 @@ pub struct Menu {
     _target: Retained<MenuTarget>,
     title: Retained<NSMenuItem>,
     library: Retained<NSMenuItem>,
+    settings: Retained<NSMenuItem>,
+    privacy: Retained<NSMenuItem>,
     pause: Retained<NSMenuItem>,
     next: Retained<NSMenuItem>,
     previous: Retained<NSMenuItem>,
@@ -97,7 +107,7 @@ pub struct Menu {
 }
 
 impl Menu {
-    pub fn install(mtm: MainThreadMarker, state: &MenuState, strings: &Strings) -> Self {
+    pub fn install(mtm: MainThreadMarker, state: &MenuState) -> Self {
         let status_item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         set_status_icon(&status_item, mtm);
 
@@ -110,6 +120,10 @@ impl Menu {
         root.addItem(&title);
         let library = make_item(mtm, "", Some(MenuAction::OpenLibrary), &target);
         root.addItem(&library);
+        let settings = make_item(mtm, "", Some(MenuAction::Settings), &target);
+        root.addItem(&settings);
+        let privacy = make_item(mtm, "", Some(MenuAction::TogglePrivacy), &target);
+        root.addItem(&privacy);
         root.addItem(&NSMenuItem::separatorItem(mtm));
         let pause = make_item(mtm, "", Some(MenuAction::TogglePause), &target);
         let next = make_item(mtm, "", Some(MenuAction::Next), &target);
@@ -136,6 +150,8 @@ impl Menu {
             _target: target,
             title,
             library,
+            settings,
+            privacy,
             pause,
             next,
             previous,
@@ -144,33 +160,36 @@ impl Menu {
             login,
             quit,
         };
-        menu.update(state, strings);
+        menu.update(state);
         return menu;
     }
 
-    pub fn update(&self, state: &MenuState, strings: &Strings) {
-        let title = state.title.clone().unwrap_or_else(|| strings.get("No wallpaper"));
+    pub fn update(&self, state: &MenuState) {
+        let title = state.title.clone().unwrap_or_else(|| tr("No wallpaper"));
         self.title.setTitle(&NSString::from_str(&title));
         self.title.setSubtitle(state.status.as_deref().map(NSString::from_str).as_deref());
-        self.library.setTitle(&NSString::from_str(&strings.get("Open library")));
-        self.pause.setTitle(&NSString::from_str(&if state.paused {
-            strings.get("Resume")
-        } else {
-            strings.get("Pause")
-        }));
-        self.next.setTitle(&NSString::from_str(&strings.get("Next")));
-        self.previous.setTitle(&NSString::from_str(&strings.get("Previous")));
-        self.random.setTitle(&NSString::from_str(&strings.get("Random")));
-        self.mute.setTitle(&NSString::from_str(&if state.muted { strings.get("Unmute") } else { strings.get("Mute") }));
-        self.login.setTitle(&NSString::from_str(&strings.get("Launch at login")));
+        self.library.setTitle(&NSString::from_str(&tr("Open Library")));
+        self.pause.setTitle(&NSString::from_str(&if state.paused { tr("Resume") } else { tr("Pause") }));
+        self.settings.setTitle(&NSString::from_str(&tr("Settings…")));
+        let privacy = if state.unlocked { tr("Lock Private Folders") } else { tr("Unlock Private Folders…") };
+        self.privacy.setTitle(&NSString::from_str(&privacy));
+        self.privacy.setHidden(!state.has_private);
+        self.next.setTitle(&NSString::from_str(&tr("Next")));
+        self.previous.setTitle(&NSString::from_str(&tr("Previous")));
+        self.random.setTitle(&NSString::from_str(&tr("Random")));
+        self.next.setEnabled(state.rotatable);
+        self.previous.setEnabled(state.rotatable);
+        self.random.setEnabled(state.rotatable);
+        self.mute.setTitle(&NSString::from_str(&if state.muted { tr("Unmute") } else { tr("Mute") }));
+        self.login.setTitle(&NSString::from_str(&tr("Launch at Login")));
         self.login.setState(if state.launch_at_login { NSControlStateValueOn } else { NSControlStateValueOff });
-        self.quit.setTitle(&NSString::from_str(&strings.get("Quit LiveWall")));
+        self.quit.setTitle(&NSString::from_str(&tr("Quit LiveWall")));
     }
 
     pub fn report(&self) -> MenuReport {
         let mut items = Vec::new();
         for item in &self.root.itemArray().to_vec() {
-            if item.isSeparatorItem() {
+            if item.isSeparatorItem() || item.isHidden() {
                 continue;
             }
             items.push(MenuItemReport {

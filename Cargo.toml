@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/proto", "crates/ctl", "crates/app"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BelHetile/LiveWall"
@@ -44,6 +44,7 @@ tracing-oslog = "0.3"
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false }
 objc2-core-foundation = { version = "0.3.2", default-features = false }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
   "CGPath",

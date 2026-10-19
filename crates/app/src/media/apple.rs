@@ -38,12 +38,12 @@ use objc2_video_toolbox::{
 };
 
 use crate::cf::{cf_f64, cf_file_url, downcast_dict, file_url, ns_string, object};
-use crate::media::TranscodeError;
 use crate::media::av::{CM_TIMESCALE, format_description, image_size, load_track, thumbnail_options};
 use crate::media::plan::{
     AAC_BITRATE, AAC_CHANNELS, AAC_SAMPLE_RATE, Audio, GIF_DEFAULT_DELAY, GIF_MIN_DELAY, GifPlan, VideoPlan, bitrate,
     even, scale_dims,
 };
+use crate::media::{TranscodeError, orient};
 
 const AAC: u32 = u32::from_be_bytes(*b"aac ");
 const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
@@ -163,7 +163,7 @@ impl Pipeline {
         let transform = unsafe { track.preferredTransform() };
         let (width, height) = stored_dims(plan.width, plan.height, transform);
         let video_in = video_input(plan, codec, (width, height), &hdr_metadata(&track));
-        unsafe { video_in.setTransform(transform) };
+        unsafe { video_in.setTransform(orient::fit(transform, f64::from(width), f64::from(height))) };
         if !unsafe { writer.canAddInput(&video_in) } {
             return Err(TranscodeError::Failed("the video encoder is not available".to_string()));
         }

@@ -80,12 +80,18 @@ fn sweep_dir(dir: &Path, keep: &HashSet<OsString>) {
 
 impl Engine {
     pub fn refresh_desktop(&mut self, library: &Library, force: bool) {
+        if crate::dev::isolated() {
+            return;
+        }
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.update(self.mtm, &targets, &stills, force);
         self.sweep_stills();
     }
 
     pub fn on_unlock(&mut self, library: &Library) {
+        if crate::dev::isolated() {
+            return;
+        }
         let (targets, stills) = self.desktop_stills(library);
         self.desktop.on_unlock(self.mtm, &targets, &stills);
         self.sweep_stills();
@@ -145,25 +151,15 @@ impl Engine {
     fn resolve_stills(&mut self, library: &Library, targets: &[Target]) -> (BTreeMap<String, String>, Vec<String>) {
         let mut stills = BTreeMap::new();
         let mut blanked = Vec::new();
-        let lock = library.placement.lock.and_then(|lock| {
-            let item = library.playable_item(Some(lock.item).filter(|id| !library.is_private_id(*id)))?;
-            let entry = library.items.iter().find(|entry| entry.id == item)?;
-            return Some((entry, lock.time));
-        });
         for target in targets {
-            let (item, time) = if let Some(found) = lock {
-                found
-            } else {
-                let Some(item_id) = library.playable_item(library.resolve(Some(&target.space), false)) else {
-                    if library.blanked(&target.space) {
-                        blanked.push(target.space.clone());
-                    }
-                    continue;
-                };
-                let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
-                (item, item.still_time)
+            let Some((item_id, time)) = still_choice(library, &target.space, self.reveal, self.follow_lock) else {
+                if library.blanked(&target.space) {
+                    blanked.push(target.space.clone());
+                }
+                continue;
             };
-            if let Still::Ready(path) = self.stills.ensure(item, f64::from(time), Visibility::Public) {
+            let Some(item) = library.items.iter().find(|entry| entry.id == item_id) else { continue };
+            if let Still::Ready(path) = self.stills.ensure(item, f64::from(time), library.visibility(item)) {
                 stills.insert(target.space.clone(), path);
             }
         }
@@ -171,14 +167,122 @@ impl Engine {
     }
 }
 
+pub fn still_choice(library: &Library, space: &str, reveal: bool, follow_lock: bool) -> Option<(ItemId, f32)> {
+    let shown = |id: &ItemId| reveal || !library.is_private_id(*id);
+    if let Some(lock) = library.placement.lock.filter(|_| !follow_lock)
+        && let Some(item) = library.playable_item(Some(lock.item).filter(shown))
+    {
+        return Some((item, lock.time));
+    }
+    let item = library.playable_item(library.resolve(Some(space), reveal))?;
+    let time = library.items.iter().find(|entry| entry.id == item)?.still_time;
+    return Some((item, time));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Assignment, ItemKind, LockAssignment};
 
     fn still(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, b"png").expect("write still");
         return path;
+    }
+
+    fn entry(path: &str, still_time: f32) -> crate::model::Item {
+        return crate::model::Item {
+            id: uuid::Uuid::new_v4(),
+            kind: ItemKind::Video,
+            path: path.to_string(),
+            title: path.to_string(),
+            added_at: jiff::Timestamp::UNIX_EPOCH,
+            folder: None,
+            mode: proto::FillMode::Fill,
+            modes: BTreeMap::new(),
+            volume: 1.0,
+            speed: 1.0,
+            muted: true,
+            still_time,
+            optimized: false,
+            hotkey: None,
+            width: 0,
+            height: 0,
+            duration: 10.0,
+            fps: 30.0,
+            codec: None,
+            audio_codec: None,
+            hdr: false,
+            playable: true,
+            needs_optimize: false,
+            optimize_reason: None,
+        };
+    }
+
+    fn private_desktop() -> (Library, ItemId, ItemId) {
+        let mut library = Library::default();
+        let vault = library.create_folder("Vault".into());
+        library.set_folder_flags(vault, Some(true), None);
+        let open = entry("/open.mp4", 1.0);
+        let mut hidden = entry("/hidden.mp4", 4.0);
+        hidden.folder = Some(vault);
+        let ids = (open.id, hidden.id);
+        library.items.extend([open, hidden]);
+        library.placement.default.item = Some(ids.1);
+        library.placement.safe_default = Some(ids.0);
+        return (library, ids.0, ids.1);
+    }
+
+    #[test]
+    fn the_desktop_picture_follows_what_the_desktop_shows() {
+        let (library, open, hidden) = private_desktop();
+        assert_eq!(still_choice(&library, "S", true, false), Some((hidden, 4.0)));
+        assert_eq!(
+            still_choice(&library, "S", false, false),
+            Some((open, 1.0)),
+            "hidden from the desktop: public stand-in"
+        );
+    }
+
+    #[test]
+    fn a_private_lock_screen_follows_the_same_rule() {
+        let (mut library, open, hidden) = private_desktop();
+        library.placement.lock = Some(LockAssignment { item: hidden, time: 7.0 });
+        assert_eq!(still_choice(&library, "S", true, false), Some((hidden, 7.0)));
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 1.0)));
+        library.placement.lock = Some(LockAssignment { item: open, time: 2.0 });
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 2.0)));
+    }
+
+    #[test]
+    fn following_the_wallpaper_ignores_the_pinned_lock_screen() {
+        let (mut library, open, hidden) = private_desktop();
+        library.placement.lock = Some(LockAssignment { item: open, time: 2.0 });
+        assert_eq!(still_choice(&library, "S", true, true), Some((hidden, 4.0)));
+        assert_eq!(still_choice(&library, "S", true, false), Some((open, 2.0)));
+    }
+
+    #[test]
+    fn a_private_desktop_with_no_stand_in_is_left_off_the_still() {
+        let mut library = Library::default();
+        let vault = library.create_folder("Vault".into());
+        library.set_folder_flags(vault, Some(true), None);
+        let mut hidden = entry("/hidden.mp4", 4.0);
+        hidden.folder = Some(vault);
+        let id = hidden.id;
+        library.items.push(hidden);
+        library.placement.default.item = Some(id);
+        assert_eq!(still_choice(&library, "S", false, false), None);
+        assert_eq!(still_choice(&library, "S", true, false), Some((id, 4.0)));
+    }
+
+    #[test]
+    fn a_space_assignment_wins_over_the_default() {
+        let (mut library, open, hidden) = private_desktop();
+        library.placement.spaces.insert("S".into(), Assignment { item: Some(open), geometry_override: None });
+        assert_eq!(still_choice(&library, "S", true, false), Some((open, 1.0)));
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 1.0)));
+        let _ = hidden;
     }
 
     #[test]
