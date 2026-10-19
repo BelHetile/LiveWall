@@ -40,7 +40,11 @@ LW_E2E=1 cargo test -p livewall --test e2e_media
 ```
 
 The end-to-end suites need a logged-in desktop session, run the app with a temporary data directory and change
-the real desktop picture (restored when they finish). `e2e_media` needs `scripts/fixtures.sh` first.
+the real desktop picture (restored when they finish). Before running them:
+
+- run `scripts/fixtures.sh` (`e2e_desktop` and `e2e_media` skip without its videos);
+- `e2e_media` expects `ffmpeg`, `yt-dlp` and `deno` from Homebrew (`brew install ffmpeg yt-dlp deno`);
+- `e2e_hotkeys` needs the default shortcuts free, so quit your own LiveWall first.
 
 To run a development build without touching your own library:
 
