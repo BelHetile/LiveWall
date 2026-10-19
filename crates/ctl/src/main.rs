@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use proto::{
-    ApplyTarget, FillMode, Geometry, HotkeyAction, MAX_LINE, Request, RequestEnvelope, Response, ResponseBody,
-    TransitionKind,
+    ApplyTarget, FillMode, Geometry, HotkeyAction, HotkeyScope, MAX_LINE, Request, RequestEnvelope, Response,
+    ResponseBody, TransitionKind,
 };
 use serde_json::Value;
 
@@ -60,6 +60,8 @@ enum Command {
     Folder(FolderCommand),
     #[command(subcommand)]
     Icon(IconCommand),
+    #[command(subcommand)]
+    LockScreen(LockScreenCommand),
     Apply {
         #[arg(long)]
         item: Option<String>,
@@ -89,6 +91,12 @@ enum Command {
         muted: Option<bool>,
         #[arg(long)]
         still_time: Option<f32>,
+    },
+    ItemHotkey {
+        item: String,
+        combo: Option<String>,
+        #[arg(long, value_enum, default_value_t = HotkeyScope::Desktop)]
+        scope: HotkeyScope,
     },
     #[command(subcommand)]
     Settings(SettingsCommand),
@@ -187,6 +195,16 @@ enum IconCommand {
     Import { path: String },
     List,
     Remove { icon: String },
+}
+
+#[derive(Subcommand)]
+enum LockScreenCommand {
+    Set {
+        item: String,
+        #[arg(long)]
+        time: Option<f32>,
+    },
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -404,6 +422,10 @@ fn build_request(command: Command) -> Result<Request, String> {
             IconCommand::List => Request::IconList,
             IconCommand::Remove { icon } => Request::IconRemove { icon },
         },
+        Command::LockScreen(command) => match command {
+            LockScreenCommand::Set { item, time } => Request::LockScreen { item: Some(item), time },
+            LockScreenCommand::Clear => Request::LockScreen { item: None, time: None },
+        },
         Command::Apply { item, target, transition } => {
             Request::Apply { item, target: target.build()?, transition: transition.build()? }
         }
@@ -413,6 +435,7 @@ fn build_request(command: Command) -> Result<Request, String> {
         Command::SetItem { item, volume, speed, muted, still_time } => {
             Request::SetItem { item, volume, speed, muted, still_time }
         }
+        Command::ItemHotkey { item, combo, scope } => Request::ItemHotkey { item, combo, scope },
         Command::Settings(command) => match command {
             SettingsCommand::Get => Request::SettingsGet,
             SettingsCommand::Set { patch } => {

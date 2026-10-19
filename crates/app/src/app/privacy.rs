@@ -152,6 +152,8 @@ pub fn denies(library: &Library, request: &Request) -> bool {
         | Request::OptimizeCancel { id }
         | Request::SetGeometry { item: id, .. }
         | Request::SetItem { item: id, .. }
+        | Request::ItemHotkey { item: id, .. }
+        | Request::LockScreen { item: Some(id), .. }
         | Request::Apply { item: Some(id), .. } => item(id),
         Request::FolderRename { id, .. } | Request::FolderDelete { id } | Request::FolderStyle { id, .. } => folder(id),
         _ => false,
@@ -349,6 +351,7 @@ mod tests {
             muted: true,
             still_time: 2.0,
             optimized: false,
+            hotkey: None,
             width: 0,
             height: 0,
             duration: 0.0,
@@ -500,8 +503,10 @@ mod tests {
             Request::LibraryMove { ids: vec![open.clone()], folder: Some(folder.clone()) },
             Request::LibraryRename { id: private.clone(), title: "x".into() },
             Request::SetItem { item: private.clone(), volume: None, speed: None, muted: None, still_time: None },
+            Request::ItemHotkey { item: private.clone(), combo: None, scope: proto::HotkeyScope::Desktop },
             Request::SetGeometry { item: private.clone(), mode: FillMode::Fill, geometry: proto::Geometry::default() },
             Request::Apply { item: Some(private.clone()), target: ApplyTarget::Default, transition: None },
+            Request::LockScreen { item: Some(private.clone()), time: None },
             Request::Optimize { id: private.clone() },
             Request::OptimizeCancel { id: private },
             Request::FolderRename { id: folder.clone(), name: "x".into() },
@@ -516,6 +521,7 @@ mod tests {
             Request::Apply { item: Some(open.clone()), target: ApplyTarget::Default, transition: None },
             Request::Apply { item: None, target: ApplyTarget::Default, transition: None },
             Request::SetItem { item: open, volume: None, speed: None, muted: None, still_time: None },
+            Request::LockScreen { item: None, time: None },
             Request::FolderCreate { name: "x".into() },
             Request::Status,
             Request::Lock,

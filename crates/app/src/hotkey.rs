@@ -8,6 +8,7 @@ pub const CMD: u32 = 0x0100;
 pub const SHIFT: u32 = 0x0200;
 pub const OPTION: u32 = 0x0800;
 pub const CONTROL: u32 = 0x1000;
+pub const ITEM_BASE: u32 = 1000;
 
 const KEYS: &[(&str, u32)] = &[
     ("a", 0x00),
@@ -287,7 +288,6 @@ pub fn parse(input: &str) -> Result<KeyCombo, ParseError> {
     return Ok(KeyCombo { key, modifiers });
 }
 
-#[cfg(test)]
 pub fn format(combo: &KeyCombo) -> String {
     let mut parts: Vec<String> = Vec::new();
     for modifier in canonical_modifiers(&combo.modifiers) {
@@ -325,7 +325,7 @@ pub fn reserved(combo: &KeyCombo) -> Option<&'static str> {
     return RESERVED.iter().find(|(name, needed, _)| *name == key && *needed == mask).map(|(_, _, owner)| *owner);
 }
 
-pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+pub fn validate_shape(candidate: &KeyCombo) -> Result<(), ValidationError> {
     if keycode(&candidate.key).is_none() {
         return Err(ValidationError::UnknownKey(candidate.key.clone()));
     }
@@ -336,6 +336,23 @@ pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -
     if let Some(owner) = reserved(candidate) {
         return Err(ValidationError::Reserved(owner));
     }
+    return Ok(());
+}
+
+pub fn validate_item(candidate: &KeyCombo, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+    validate_shape(candidate)?;
+    for other in HotkeyAction::ALL {
+        if let Some(existing) = hotkeys.get(other)
+            && same(existing, candidate)
+        {
+            return Err(ValidationError::Duplicate(other));
+        }
+    }
+    return Ok(());
+}
+
+pub fn validate(candidate: &KeyCombo, action: HotkeyAction, hotkeys: &Hotkeys) -> Result<(), ValidationError> {
+    validate_shape(candidate)?;
     for other in HotkeyAction::ALL.into_iter().filter(|other| *other != action) {
         if let Some(existing) = hotkeys.get(other)
             && same(existing, candidate)
@@ -546,6 +563,38 @@ mod tests {
             Err(ValidationError::Duplicate(HotkeyAction::TogglePause))
         );
         assert_eq!(validate(&parse("ctrl+opt+cmd+space").expect("parse"), HotkeyAction::TogglePause, &hotkeys), Ok(()));
+    }
+
+    #[test]
+    fn shape_validation_has_no_duplicate_check() {
+        assert_eq!(validate_shape(&parse("ctrl+opt+cmd+space").expect("parse")), Ok(()));
+        assert_eq!(validate_shape(&parse("cmd+space").expect("parse")), Err(ValidationError::Reserved("Spotlight")));
+        assert_eq!(validate_shape(&parse("a").expect("parse")), Err(ValidationError::MissingModifier));
+        assert_eq!(
+            validate_shape(&KeyCombo::new("banana", vec![Modifier::Control])),
+            Err(ValidationError::UnknownKey("banana".into()))
+        );
+    }
+
+    #[test]
+    fn item_validation_rejects_any_global_duplicate() {
+        let hotkeys = Hotkeys::default();
+        assert_eq!(
+            validate_item(&parse("ctrl+opt+cmd+space").expect("parse"), &hotkeys),
+            Err(ValidationError::Duplicate(HotkeyAction::TogglePause))
+        );
+        assert_eq!(
+            validate_item(&parse("cmd+space").expect("parse"), &hotkeys),
+            Err(ValidationError::Reserved("Spotlight"))
+        );
+        assert_eq!(validate_item(&parse("ctrl+opt+cmd+1").expect("parse"), &hotkeys), Ok(()));
+    }
+
+    #[test]
+    fn action_ids_stay_below_item_base() {
+        for action in HotkeyAction::ALL {
+            assert!(registration_id(action) < ITEM_BASE);
+        }
     }
 
     #[test]

@@ -112,10 +112,10 @@ fn validate(ui: &Ui, mtm: MainThreadMarker, menu_item: &NSMenuItem) -> bool {
         return selected.is_some_and(|item| item.playable);
     }
     if action == sel!(setLock:) {
-        return selected.is_some();
+        return selected.is_some() && !ui.library.lock_follows;
     }
     if action == sel!(lockFrame:) {
-        return selected.is_some_and(|item| item.kind == ItemKind::Video);
+        return !ui.library.lock_follows && selected.is_some_and(|item| item.kind == ItemKind::Video);
     }
     if action == sel!(resetSettings:) {
         return selected.is_some_and(|item| item.changed);
@@ -427,7 +427,7 @@ impl Menus {
                 command_item(mtm, HotkeyAction::TogglePause, "p", option, object),
                 command_item(mtm, HotkeyAction::VolumeUp, "\u{f700}", command, object),
                 command_item(mtm, HotkeyAction::VolumeDown, "\u{f701}", command, object),
-                command_item(mtm, HotkeyAction::ToggleMute, "m", shift, object),
+                command_item(mtm, HotkeyAction::ToggleMute, "\u{f701}", option, object),
             ],
         );
         let window = submenu(

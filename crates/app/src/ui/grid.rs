@@ -83,7 +83,15 @@ struct Cell {
     added: String,
     progress: Option<f64>,
     image: Option<Retained<objc2_app_kit::NSImage>>,
-    markers: Vec<(&'static str, String, bool)>,
+    markers: Vec<Mark>,
+}
+
+#[derive(Clone, PartialEq)]
+struct Mark {
+    icon: &'static str,
+    short: Option<String>,
+    tip: String,
+    active: bool,
 }
 
 impl Cell {
@@ -239,6 +247,25 @@ fn meta_font() -> Retained<NSFont> {
     return NSFont::systemFontOfSize(NSFont::smallSystemFontSize());
 }
 
+fn mark_view(mtm: MainThreadMarker, mark: &Mark) -> Option<Retained<NSView>> {
+    let image = folders::symbol(mark.icon)?;
+    let tint = if mark.active { NSColor::controlAccentColor() } else { NSColor::secondaryLabelColor() };
+    let glyph = NSImageView::imageViewWithImage(&image, mtm);
+    glyph.setContentTintColor(Some(&tint));
+    let Some(short) = &mark.short else {
+        glyph.setToolTip(Some(&ns(&mark.tip)));
+        return Some(Retained::into_super(Retained::into_super(glyph)));
+    };
+    let text = NSTextField::labelWithString(&ns(short), mtm);
+    text.setFont(Some(&meta_font()));
+    text.setTextColor(Some(&tint));
+    let row = NSStackView::stackViewWithViews(&NSArray::from_slice(&[&*glyph as &NSView, &text]), mtm);
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setSpacing(2.0);
+    row.setToolTip(Some(&ns(&mark.tip)));
+    return Some(Retained::into_super(row));
+}
+
 impl Tile {
     fn build(&self) {
         let mtm = self.mtm();
@@ -310,18 +337,7 @@ impl Tile {
             CATransaction::commit();
         }
         if let Some(marks) = self.part(3).and_then(|view| view.downcast::<NSStackView>().ok()) {
-            let views: Vec<Retained<NSImageView>> = cell
-                .markers
-                .iter()
-                .filter_map(|(icon, tip, active)| {
-                    let image = folders::symbol(icon)?;
-                    let view = NSImageView::imageViewWithImage(&image, mtm);
-                    let tint = if *active { NSColor::controlAccentColor() } else { NSColor::secondaryLabelColor() };
-                    view.setContentTintColor(Some(&tint));
-                    view.setToolTip(Some(&ns(tip)));
-                    return Some(view);
-                })
-                .collect();
+            let views: Vec<Retained<NSView>> = cell.markers.iter().filter_map(|mark| mark_view(mtm, mark)).collect();
             let refs: Vec<&NSView> = views.iter().map(AsRef::as_ref).collect();
             marks.setViews_inGravity(&NSArray::from_slice(&refs), objc2_app_kit::NSStackViewGravity::Trailing);
         }
@@ -894,7 +910,12 @@ impl Grid {
                     image: item.image.clone(),
                     markers: markers(library, *index, filter.scope)
                         .into_iter()
-                        .map(|marker| (marker.icon, marker.tip, marker.active))
+                        .map(|marker| Mark {
+                            icon: marker.icon,
+                            short: marker.short,
+                            tip: marker.tip,
+                            active: marker.active,
+                        })
                         .collect(),
                 };
             })
@@ -996,14 +1017,8 @@ fn list_cell(mtm: MainThreadMarker, cell: &Cell, identifier: &str) -> Retained<N
     let marks = NSStackView::new(mtm);
     marks.setSpacing(4.0);
     marks.setTranslatesAutoresizingMaskIntoConstraints(false);
-    for (icon, tip, active) in &cell.markers {
-        if let Some(image) = folders::symbol(icon) {
-            let glyph = NSImageView::imageViewWithImage(&image, mtm);
-            let tint = if *active { NSColor::controlAccentColor() } else { NSColor::secondaryLabelColor() };
-            glyph.setContentTintColor(Some(&tint));
-            glyph.setToolTip(Some(&ns(tip)));
-            marks.addArrangedSubview(&glyph);
-        }
+    for view in cell.markers.iter().filter_map(|mark| mark_view(mtm, mark)) {
+        marks.addArrangedSubview(&view);
     }
     view.addSubview(&marks);
     let bar = cell.progress.map(|value| {

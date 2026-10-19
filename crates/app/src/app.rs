@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSApplication;
 use objc2_foundation::NSTimer;
 use objc2_local_authentication::LAContext;
-use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, KeyCombo, Request, Response};
+use proto::{ApplyTarget, ErrorCode, FillMode, HotkeyAction, HotkeyScope, KeyCombo, Request, Response};
 use serde::Serialize;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ use crate::media::probe;
 use crate::media::{optimize, plan, thumb};
 use crate::menu::{Menu, MenuAction, MenuState};
 use crate::model::{
-    FolderId, IMAGE_PREFIX, Icon, Item, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch,
+    FolderId, IMAGE_PREFIX, Icon, Item, ItemHotkey, ItemId, ItemKind, Library, LockAssignment, Settings, apply_patch,
 };
 use crate::paths::{DirKind, Paths, Visibility};
 use crate::platform::hotkeys::{Hotkeys, RegisterError};
@@ -54,6 +54,7 @@ const SERIALIZATION_FAILED: &str = i18n::key("serialization failed");
 const INVALID_ICON: &str = i18n::key("icon must be symbol:<name> or image:<file>.png");
 const INVALID_COLOR: &str = i18n::key("color must be a tag name or a #RRGGBB hex value");
 const NO_SUCH_ICON: &str = i18n::key("no such icon image");
+const LOCK_FOLLOWS: &str = i18n::key("the lock screen follows the wallpaper");
 
 pub enum Event {
     Request(Request, oneshot::Sender<Response>),
@@ -84,6 +85,7 @@ pub enum Event {
     CoverTick { item: ItemId },
     TransitionDone { key: SurfaceKey },
     Hotkey(HotkeyAction),
+    ItemHotkey(u32),
     Menu(MenuAction),
     ImportDone { report: import::Report, folder: Option<FolderId>, reply: oneshot::Sender<Response> },
     OptimizeDone { item: ItemId, result: Result<optimize::Optimized, String> },
@@ -118,6 +120,7 @@ pub struct App {
     _observers: Observers,
     hotkeys: Hotkeys,
     hotkey_failures: std::collections::BTreeMap<HotkeyAction, String>,
+    item_hotkey_failures: std::collections::BTreeMap<ItemId, String>,
     menu: Menu,
     handle: tokio::runtime::Handle,
     optimize: Arc<optimize::Queue>,
@@ -286,6 +289,7 @@ impl App {
             _observers: Observers::install(mtm),
             hotkeys,
             hotkey_failures,
+            item_hotkey_failures: std::collections::BTreeMap::new(),
             menu,
             handle,
             optimize,
@@ -298,6 +302,7 @@ impl App {
         if app.library.migrate_colors() {
             app.persist_library();
         }
+        app.register_item_hotkeys();
         app.sync(false);
         app.refresh_rules();
         app.sync_idle_timer();
@@ -310,6 +315,11 @@ impl App {
             Event::Quit => self.shutdown(),
             Event::Request(request, reply) => self.request(request, reply),
             Event::Hotkey(action) => self.run_hotkey(action),
+            Event::ItemHotkey(id) => {
+                if let Some(item) = self.hotkeys.item_for(id) {
+                    self.toggle_item(item);
+                }
+            }
             Event::Menu(action) => self.run_menu(action),
             Event::ImportDone { report, folder, reply } => {
                 let response = self.finish_import(&report, folder);
@@ -752,7 +762,7 @@ impl App {
         let _ = self.set_item(&id.to_string(), Some(volume), None, Some(volume <= 0.0), None);
     }
 
-    fn showing_item(&self) -> Option<ItemId> {
+    pub fn showing_item(&self) -> Option<ItemId> {
         let (spaces, current) = self.desktops();
         let space = spaces.into_iter().nth(current)?;
         return self.library.resolve(Some(&space), self.unlocked);
@@ -817,6 +827,7 @@ impl App {
             stop_after: self.settings.stop_after_seconds,
             verdict: self.verdict.clone(),
             reveal: self.reveals_desktop(),
+            follow_lock: self.settings.lock_follows_wallpaper,
             silenced: self.previewing,
         };
     }
@@ -1154,6 +1165,9 @@ impl App {
             self.reapply();
             return ok(&serde_json::json!({ "lock": null }));
         };
+        if self.settings.lock_follows_wallpaper {
+            return Response::err(ErrorCode::Invalid, LOCK_FOLLOWS);
+        }
         let Some(entry) = self.library.items.iter().find(|entry| entry.id == item) else {
             return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
         };
@@ -1362,6 +1376,8 @@ impl App {
             Request::SetItem { item, volume, speed, muted, still_time } => {
                 self.set_item(item, *volume, *speed, *muted, *still_time)
             }
+            Request::LockScreen { item: None, .. } => self.set_lock(None),
+            Request::LockScreen { item: Some(id), time } => self.set_lock(Some((parse_item(id)?, *time))),
             Request::Spaces => ok(&serde_json::json!({
                 "separate_spaces": self.engine.separate_spaces(),
                 "topology": self.engine.spaces(),
@@ -1375,10 +1391,14 @@ impl App {
             Request::SettingsGet => ok(&self.settings),
             Request::SettingsSet { patch } => {
                 let rotation = self.rotation_settings();
+                let follows = self.settings.lock_follows_wallpaper;
                 if let Err(message) = apply_patch(&mut self.settings, patch) {
                     return Err(Response::err(ErrorCode::Invalid, message));
                 }
                 self.persist_settings();
+                if self.settings.lock_follows_wallpaper != follows {
+                    self.reapply();
+                }
                 if self.rotation_settings() != rotation {
                     self.restart_rotation();
                 }
@@ -1388,6 +1408,9 @@ impl App {
             }
             Request::HotkeysGet => ok(&self.hotkeys_report()),
             Request::HotkeysSet { action, combo } => self.set_hotkey(*action, combo.clone()),
+            Request::ItemHotkey { item, combo, scope } => {
+                self.set_item_hotkey(parse_item(item)?, combo.as_deref(), *scope)
+            }
             Request::LoginItemGet => ok(&serde_json::json!({
                 "status": if crate::dev::isolated() {
                     LoginItemStatus::NotRegistered
@@ -1483,6 +1506,238 @@ impl App {
                 self.hotkey_failures.insert(action, register_message(error));
             }
         }
+        if recording {
+            for item in self.hotkeys.registered_items() {
+                self.hotkeys.unregister_item(item);
+            }
+        } else {
+            self.register_item_hotkeys();
+        }
+    }
+
+    fn register_item_hotkeys(&mut self) {
+        self.item_hotkey_failures.clear();
+        let bound: Vec<(ItemId, KeyCombo)> = self
+            .library
+            .items
+            .iter()
+            .filter_map(|item| item.hotkey.as_ref().map(|hotkey| (item.id, hotkey.combo.clone())))
+            .collect();
+        for (item, combo) in bound {
+            if let Err(error) = self.hotkeys.register_item(item, &combo) {
+                self.item_hotkey_failures.insert(item, register_message(error));
+            }
+        }
+    }
+
+    fn register_item_hotkeys_for(&mut self, item: ItemId) {
+        let bound = self.library.items.iter().find(|entry| entry.id == item).and_then(|entry| entry.hotkey.clone());
+        if let Some(bound) = bound
+            && let Err(error) = self.hotkeys.register_item(item, &bound.combo)
+        {
+            self.item_hotkey_failures.insert(item, register_message(error));
+        }
+    }
+
+    pub fn item_hotkey_failure(&self, item: ItemId) -> Option<&str> {
+        return self.item_hotkey_failures.get(&item).map(String::as_str);
+    }
+
+    fn shown_title(&self, item: &Item) -> String {
+        if !self.unlocked && self.library.is_private(item) {
+            return i18n::tr("Private wallpaper");
+        }
+        return item.title.clone();
+    }
+
+    fn store_item_hotkey(&mut self, item: ItemId, bound: Option<ItemHotkey>) {
+        if let Some(entry) = self.library.items.iter_mut().find(|entry| entry.id == item) {
+            entry.hotkey = bound;
+        }
+        self.persist_library();
+    }
+
+    fn item_hotkey_report(item: ItemId, combo: &KeyCombo, scope: HotkeyScope, moved: Option<&str>) -> Response {
+        return ok(&serde_json::json!({
+            "item": item.to_string(),
+            "combo": hotkey::format(combo),
+            "display": hotkey::display(combo),
+            "scope": scope,
+            "moved": moved,
+        }));
+    }
+
+    pub fn set_item_hotkey(&mut self, item: ItemId, combo: Option<&str>, scope: HotkeyScope) -> Response {
+        if !self.library.items.iter().any(|entry| entry.id == item) {
+            return Response::err(ErrorCode::NotFound, NO_SUCH_ITEM);
+        }
+        let Some(text) = combo else {
+            self.hotkeys.unregister_item(item);
+            self.item_hotkey_failures.remove(&item);
+            self.store_item_hotkey(item, None);
+            return ok(&serde_json::json!({ "item": item.to_string(), "combo": null }));
+        };
+        let combo = match hotkey::parse(text) {
+            Ok(combo) => combo,
+            Err(error) => return Response::err(ErrorCode::Invalid, error.to_string()),
+        };
+        if let Err(error) = hotkey::validate_item(&combo, &self.settings.hotkeys) {
+            return Response::err(ErrorCode::Invalid, validation_message(&error, &combo));
+        }
+        let unchanged = self
+            .library
+            .items
+            .iter()
+            .find(|entry| entry.id == item)
+            .and_then(|entry| entry.hotkey.as_ref())
+            .is_some_and(|bound| hotkey::same(&bound.combo, &combo));
+        if unchanged && !self.item_hotkey_failures.contains_key(&item) {
+            self.store_item_hotkey(item, Some(ItemHotkey { combo: combo.clone(), scope }));
+            return Self::item_hotkey_report(item, &combo, scope, None);
+        }
+        let previous = self
+            .library
+            .items
+            .iter()
+            .find(|entry| {
+                entry.id != item && entry.hotkey.as_ref().is_some_and(|bound| hotkey::same(&bound.combo, &combo))
+            })
+            .map(|entry| (entry.id, self.shown_title(entry)));
+        if let Some((other, _)) = &previous {
+            self.hotkeys.unregister_item(*other);
+        }
+        if let Err(error) = self.hotkeys.register_item(item, &combo) {
+            if let Some((other, _)) = &previous {
+                self.register_item_hotkeys_for(*other);
+            }
+            let message = match error {
+                RegisterError::TakenByOtherApp => i18n::trf(
+                    "%@ is already used by another app. Press another combination.",
+                    &[i18n::Arg::Text(hotkey::display(&combo))],
+                ),
+                failed @ RegisterError::Failed(_) => register_message(failed),
+            };
+            return Response::err(ErrorCode::Invalid, message);
+        }
+        if let Some((other, _)) = &previous {
+            self.item_hotkey_failures.remove(other);
+            self.store_item_hotkey(*other, None);
+        }
+        self.item_hotkey_failures.remove(&item);
+        self.store_item_hotkey(item, Some(ItemHotkey { combo: combo.clone(), scope }));
+        let moved = previous.map(|(_, title)| {
+            return i18n::trf(
+                "%@ was moved from “%@”.",
+                &[i18n::Arg::Text(hotkey::display(&combo)), i18n::Arg::Text(title)],
+            );
+        });
+        return Self::item_hotkey_report(item, &combo, scope, moved.as_deref());
+    }
+
+    fn current_space(&self) -> Option<String> {
+        let (spaces, current) = self.desktops();
+        return spaces.into_iter().nth(current);
+    }
+
+    fn hotkey_target(&self, space: Option<&str>) -> ApplyTarget {
+        return space
+            .filter(|space| {
+                self.library.placement.spaces.get(*space).is_some_and(|assignment| assignment.item.is_some())
+            })
+            .map_or(ApplyTarget::Default, |space| ApplyTarget::Space { space: space.to_string() });
+    }
+
+    pub fn toggle_item(&mut self, item: ItemId) {
+        let Some(entry) = self.library.items.iter().find(|entry| entry.id == item && entry.playable) else {
+            return;
+        };
+        if !self.unlocked && self.library.is_private(entry) {
+            objc2_app_kit::NSBeep();
+            return;
+        }
+        let scope = effective_scope(
+            entry.hotkey.as_ref().map_or(HotkeyScope::Desktop, |bound| bound.scope),
+            self.settings.lock_follows_wallpaper,
+        );
+        let space = self.current_space();
+        let on_desktop = self.library.resolve(space.as_deref(), true) == Some(item);
+        let on_lock = self.library.placement.lock.map(|lock| lock.item) == Some(item);
+        let desktop_back = self
+            .library
+            .playable_item(space.as_ref().and_then(|space| self.library.placement.shortcut_back.get(space).copied()));
+        let lock_back = self
+            .library
+            .placement
+            .shortcut_lock_back
+            .filter(|lock| self.library.items.iter().any(|entry| entry.id == lock.item));
+        let plan = hotkey_toggle(scope, on_desktop, on_lock, desktop_back, lock_back);
+        if let Some(step) = plan.desktop {
+            self.move_desktop(item, space.as_deref(), step);
+        }
+        if let Some(step) = plan.lock {
+            self.move_lock(item, step);
+        }
+        self.persist_library();
+        self.reapply();
+        self.restart_rotation();
+    }
+
+    fn move_desktop(&mut self, item: ItemId, space: Option<&str>, step: DesktopMove) {
+        let target = self.hotkey_target(space);
+        match step {
+            DesktopMove::Show => {
+                if let Some(space) = space {
+                    match self.library.resolve(Some(space), true) {
+                        Some(current) => {
+                            self.library.placement.shortcut_back.insert(space.to_string(), current);
+                        }
+                        None => {
+                            self.library.placement.shortcut_back.remove(space);
+                        }
+                    }
+                }
+                self.apply_target(Some(item), &target);
+            }
+            DesktopMove::Back(previous) => {
+                if let Some(space) = space {
+                    self.library.placement.shortcut_back.remove(space);
+                }
+                self.apply_target(Some(previous), &target);
+            }
+            DesktopMove::Default => {
+                if let Some(space) = space {
+                    self.library.placement.shortcut_back.remove(space);
+                }
+                if let ApplyTarget::Space { space } = &target
+                    && let Some(assignment) = self.library.placement.spaces.get_mut(space)
+                {
+                    assignment.item = None;
+                }
+            }
+        }
+    }
+
+    fn move_lock(&mut self, item: ItemId, step: LockMove) {
+        let current = self.library.placement.lock;
+        match step {
+            LockMove::Show => {
+                if current.map(|lock| lock.item) == Some(item) {
+                    return;
+                }
+                let time = self
+                    .library
+                    .items
+                    .iter()
+                    .find(|entry| entry.id == item)
+                    .map_or(0.0, |entry| entry.still_time.max(0.0));
+                self.library.placement.shortcut_lock_back = current;
+                self.library.placement.lock = Some(LockAssignment { item, time });
+            }
+            LockMove::Restore(previous) => {
+                self.library.placement.shortcut_lock_back = current;
+                self.library.placement.lock = previous;
+            }
+        }
     }
 
     fn bind_hotkey(&mut self, action: HotkeyAction, combo: Option<KeyCombo>) -> Response {
@@ -1502,6 +1757,18 @@ impl App {
         };
         if let Err(error) = hotkey::validate(&combo, action, &self.settings.hotkeys) {
             return Err(Response::err(ErrorCode::Invalid, validation_message(&error, &combo)));
+        }
+        if let Some(entry) = self
+            .library
+            .items
+            .iter()
+            .find(|entry| entry.hotkey.as_ref().is_some_and(|bound| hotkey::same(&bound.combo, &combo)))
+        {
+            let message = i18n::trf(
+                "%@ is already used by %@. Press another combination.",
+                &[i18n::Arg::Text(hotkey::display(&combo)), i18n::Arg::Text(self.shown_title(entry))],
+            );
+            return Err(Response::err(ErrorCode::Invalid, message));
         }
         match self.hotkeys.register(action, &combo) {
             Ok(()) => {
@@ -1645,6 +1912,10 @@ impl App {
 
     fn remove_items(&mut self, ids: &[String]) -> usize {
         let parsed: Vec<Uuid> = ids.iter().filter_map(|value| value.parse::<Uuid>().ok()).collect();
+        for item in &parsed {
+            self.hotkeys.unregister_item(*item);
+            self.item_hotkey_failures.remove(item);
+        }
         let before = self.library.items.len();
         for item in self.library.items.iter().filter(|item| parsed.contains(&item.id)) {
             self.optimize.cancel(item.id);
@@ -1656,6 +1927,9 @@ impl App {
             assignment.item = clear_if_removed(assignment.item, &parsed);
         }
         self.library.placement.lock = self.library.placement.lock.filter(|lock| !parsed.contains(&lock.item));
+        self.library.placement.shortcut_back.retain(|_, id| !parsed.contains(id));
+        self.library.placement.shortcut_lock_back =
+            self.library.placement.shortcut_lock_back.filter(|lock| !parsed.contains(&lock.item));
         self.library.forget_safe(&parsed);
         return before - self.library.items.len();
     }
@@ -1709,6 +1983,56 @@ enum Selection {
     Next,
     Previous,
     Random,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopMove {
+    Show,
+    Back(ItemId),
+    Default,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LockMove {
+    Show,
+    Restore(Option<LockAssignment>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Toggle {
+    desktop: Option<DesktopMove>,
+    lock: Option<LockMove>,
+}
+
+fn effective_scope(scope: HotkeyScope, lock_follows: bool) -> HotkeyScope {
+    return if lock_follows { HotkeyScope::Desktop } else { scope };
+}
+
+fn hotkey_toggle(
+    scope: HotkeyScope,
+    on_desktop: bool,
+    on_lock: bool,
+    desktop_back: Option<ItemId>,
+    lock_back: Option<LockAssignment>,
+) -> Toggle {
+    let desktop = || match (on_desktop, desktop_back) {
+        (false, _) => DesktopMove::Show,
+        (true, Some(previous)) => DesktopMove::Back(previous),
+        (true, None) => DesktopMove::Default,
+    };
+    let restore = || LockMove::Restore(lock_back);
+    return match scope {
+        HotkeyScope::Desktop => Toggle { desktop: Some(desktop()), lock: None },
+        HotkeyScope::Lock => Toggle { desktop: None, lock: Some(if on_lock { restore() } else { LockMove::Show }) },
+        HotkeyScope::Both => Toggle {
+            desktop: Some(desktop()),
+            lock: match (on_desktop, on_lock) {
+                (false, _) => Some(LockMove::Show),
+                (true, true) => Some(restore()),
+                (true, false) => None,
+            },
+        },
+    };
 }
 
 fn clear_if_removed(item: Option<ItemId>, removed: &[Uuid]) -> Option<ItemId> {
@@ -1938,4 +2262,79 @@ pub fn post(event: Event) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_shortcut_switches_to_the_wallpaper_and_back() {
+        let previous = Uuid::new_v4();
+        let first = hotkey_toggle(HotkeyScope::Desktop, false, false, Some(previous), None);
+        assert_eq!(first, Toggle { desktop: Some(DesktopMove::Show), lock: None });
+        let second = hotkey_toggle(HotkeyScope::Desktop, true, false, Some(previous), None);
+        assert_eq!(second.desktop, Some(DesktopMove::Back(previous)));
+    }
+
+    #[test]
+    fn desktop_shortcut_without_a_back_slot_falls_back_to_the_default() {
+        let nowhere = hotkey_toggle(HotkeyScope::Desktop, true, false, None, None);
+        assert_eq!(nowhere.desktop, Some(DesktopMove::Default));
+    }
+
+    #[test]
+    fn lock_screen_shortcut_restores_the_previous_lock_screen_with_its_time() {
+        let previous = LockAssignment { item: Uuid::new_v4(), time: 3.0 };
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, false, false, None, None).lock, Some(LockMove::Show));
+        assert_eq!(
+            hotkey_toggle(HotkeyScope::Lock, false, true, None, Some(previous)).lock,
+            Some(LockMove::Restore(Some(previous)))
+        );
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, false, true, None, None).lock, Some(LockMove::Restore(None)));
+        assert_eq!(hotkey_toggle(HotkeyScope::Lock, true, true, None, None).desktop, None);
+    }
+
+    #[test]
+    fn both_lets_the_desktop_decide_the_direction() {
+        let toggle = hotkey_toggle(HotkeyScope::Both, false, true, None, None);
+        assert_eq!(toggle, Toggle { desktop: Some(DesktopMove::Show), lock: Some(LockMove::Show) });
+        let back = hotkey_toggle(HotkeyScope::Both, true, true, None, None);
+        assert_eq!(back, Toggle { desktop: Some(DesktopMove::Default), lock: Some(LockMove::Restore(None)) });
+        let mixed = hotkey_toggle(HotkeyScope::Both, true, false, None, None);
+        assert_eq!(mixed.lock, None, "a lock screen showing something else is left alone");
+    }
+
+    #[test]
+    fn following_lock_screen_forces_the_desktop_scope() {
+        assert_eq!(effective_scope(HotkeyScope::Both, true), HotkeyScope::Desktop);
+        assert_eq!(effective_scope(HotkeyScope::Lock, true), HotkeyScope::Desktop);
+        assert_eq!(effective_scope(HotkeyScope::Lock, false), HotkeyScope::Lock);
+        let toggle = hotkey_toggle(effective_scope(HotkeyScope::Both, true), false, false, None, None);
+        assert_eq!(toggle.lock, None);
+    }
+
+    #[test]
+    fn back_slots_survive_a_restart_per_space() {
+        let (before, shortcut) = (Uuid::new_v4(), Uuid::new_v4());
+        let earlier_lock = LockAssignment { item: before, time: 2.0 };
+        let mut library = Library::default();
+        library.placement.default.item = Some(shortcut);
+        library.placement.lock = Some(LockAssignment { item: shortcut, time: 4.5 });
+        library.placement.shortcut_back.insert("space-a".into(), before);
+        library.placement.shortcut_lock_back = Some(earlier_lock);
+        let saved = serde_json::to_string(&library).expect("save");
+        let restarted: Library = serde_json::from_str(&saved).expect("load");
+        assert_eq!(restarted.placement.shortcut_back.get("space-a"), Some(&before));
+        assert!(!restarted.placement.shortcut_back.contains_key("space-b"));
+        let toggle = hotkey_toggle(
+            HotkeyScope::Both,
+            true,
+            true,
+            restarted.placement.shortcut_back.get("space-a").copied(),
+            restarted.placement.shortcut_lock_back,
+        );
+        assert_eq!(toggle.desktop, Some(DesktopMove::Back(before)));
+        assert_eq!(toggle.lock, Some(LockMove::Restore(Some(earlier_lock))));
+    }
 }

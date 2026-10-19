@@ -262,6 +262,9 @@ fn every_verb() {
     let patched = ok_json(&socket, &["settings", "get"]);
     assert_eq!(patched["data"]["privacy"]["hide_desktop"], serde_json::json!(true), "privacy restore: {patched}");
 
+    lock_screen_verbs(&socket, &id);
+    item_hotkey_verbs(&socket, &id);
+
     let login = lwctl_run(&socket, &["login-item", "set", "false"]);
     assert!(matches!(login.status.code(), Some(0 | 1)), "login-item set exit: {:?}", login.status.code());
 
@@ -401,10 +404,8 @@ fn lwctl() -> &'static Path {
     return PATH.get_or_init(|| {
         let livewall = PathBuf::from(env!("CARGO_BIN_EXE_LiveWall"));
         let candidate = livewall.parent().expect("binary directory").join("lwctl");
-        if !candidate.exists() {
-            let status = Command::new(env!("CARGO")).args(["build", "-p", "lwctl"]).status();
-            assert!(status.is_ok_and(|status| status.success()), "cannot build lwctl");
-        }
+        let status = Command::new(env!("CARGO")).args(["build", "-p", "lwctl", "--locked"]).status();
+        assert!(status.is_ok_and(|status| status.success()), "cannot build lwctl");
         assert!(candidate.exists(), "lwctl not found at {}", candidate.display());
         return candidate;
     });
@@ -414,6 +415,36 @@ fn lwctl_run(socket: &Path, args: &[&str]) -> Output {
     let mut full = vec!["--json"];
     full.extend_from_slice(args);
     return Command::new(lwctl()).args(&full).env("LIVEWALL_SOCKET", socket).output().expect("lwctl");
+}
+
+fn lock_screen_verbs(socket: &Path, id: &str) {
+    ok_json(socket, &["lock-screen", "set", id, "--time", "1"]);
+    ok_json(socket, &["settings", "set", r#"{"lock_follows_wallpaper":true}"#]);
+    let followed = ok_json(socket, &["settings", "get"]);
+    assert_eq!(followed["data"]["lock_follows_wallpaper"], serde_json::json!(true), "follow stored: {followed}");
+    err(socket, &["lock-screen", "set", id]);
+    ok_json(socket, &["lock-screen", "clear"]);
+    ok_json(socket, &["settings", "set", r#"{"lock_follows_wallpaper":false}"#]);
+    ok_json(socket, &["lock-screen", "set", id]);
+    ok_json(socket, &["lock-screen", "clear"]);
+    err(socket, &["lock-screen", "set", MISSING]);
+}
+
+fn item_hotkey_verbs(socket: &Path, id: &str) {
+    let combo = "ctrl+opt+cmd+f17";
+    let bound = ok_json(socket, &["item-hotkey", id, combo, "--scope", "both"]);
+    assert_eq!(bound["data"]["scope"], serde_json::json!("both"), "item hotkey scope: {bound}");
+    assert_eq!(bound["data"]["display"], serde_json::json!("⌃⌥⌘F17"), "item hotkey display: {bound}");
+    assert!(bound["data"]["moved"].is_null(), "item hotkey moved: {bound}");
+    let listed = ok_json(socket, &["library", "list"]);
+    assert_eq!(listed["data"]["items"][0]["hotkey"]["scope"], serde_json::json!("both"), "hotkey stored: {listed}");
+    let rescoped = ok_json(socket, &["item-hotkey", id, combo, "--scope", "lock"]);
+    assert_eq!(rescoped["data"]["scope"], serde_json::json!("lock"), "item hotkey rescope: {rescoped}");
+    err(socket, &["item-hotkey", id, "ctrl+opt+cmd+banana"]);
+    err(socket, &["item-hotkey", MISSING, combo]);
+    ok_json(socket, &["item-hotkey", id]);
+    let cleared = ok_json(socket, &["library", "list"]);
+    assert!(cleared["data"]["items"][0]["hotkey"].is_null(), "hotkey cleared: {cleared}");
 }
 
 fn ok_json(socket: &Path, args: &[&str]) -> serde_json::Value {

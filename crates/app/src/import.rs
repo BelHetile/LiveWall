@@ -151,6 +151,7 @@ async fn import_one(
         muted: true,
         still_time: 0.0,
         optimized: false,
+        hotkey: None,
         width: prepared.probe.width,
         height: prepared.probe.height,
         duration: prepared.probe.duration,

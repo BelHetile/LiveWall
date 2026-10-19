@@ -130,7 +130,9 @@ pub fn menu(mtm: MainThreadMarker) -> Option<Retained<NSMenu>> {
         let wallpaper = submenu(mtm, &tr("Set as Wallpaper"), &destinations);
         wallpaper.setEnabled(item.playable);
         menu.addItem(&wallpaper);
-        menu.addItem(&entry(mtm, &tr("Set as Lock Screen"), sel!(setLock:), 0, target));
+        let lock = entry(mtm, &tr("Set as Lock Screen"), sel!(setLock:), 0, target);
+        lock.setEnabled(!ui.library.lock_follows);
+        menu.addItem(&lock);
         if item.optimizable {
             let optimize = entry(mtm, &tr("Optimize…"), sel!(optimize:), 0, target);
             optimize.setEnabled(item.progress.is_none());

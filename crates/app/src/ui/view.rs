@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2_app_kit::NSImage;
-use proto::{FillMode, Geometry};
+use proto::{FillMode, Geometry, HotkeyScope};
 use uuid::Uuid;
 
 use crate::app::{self, App};
@@ -49,6 +49,8 @@ pub struct Item {
     pub codec: Option<String>,
     pub duration: f64,
     pub bytes: u64,
+    pub hotkey: Option<(String, HotkeyScope)>,
+    pub hotkey_problem: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,7 @@ pub struct FolderLock {
 pub struct Library {
     pub items: Vec<Item>,
     pub lock: Option<Lock>,
+    pub lock_follows: bool,
     pub folders: Vec<String>,
     pub folder_ids: Vec<Uuid>,
     pub icons: Vec<Option<String>>,
@@ -234,6 +237,7 @@ pub fn icon_file(file: &Path) -> Option<Retained<NSImage>> {
     return Some(image);
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
     let model = app.library();
     let defaults = app.settings();
@@ -277,6 +281,8 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
                 codec: item.codec.clone(),
                 duration: item.duration,
                 bytes: fs::metadata(&item.path).map_or(0, |meta| meta.len()),
+                hotkey: item.hotkey.as_ref().map(|bound| (crate::hotkey::display(&bound.combo), bound.scope)),
+                hotkey_problem: app.item_hotkey_failure(item.id).map(ToString::to_string),
             };
         })
         .collect();
@@ -298,7 +304,14 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
             assignments.push((Target::Desktop(space), index));
         }
     }
-    let lock = placement.lock.and_then(|lock| {
+    let lock_follows = defaults.lock_follows_wallpaper;
+    let following = || {
+        let item = app.showing_item()?;
+        let time = model.items.iter().find(|entry| entry.id == item)?.still_time;
+        return Some(model::LockAssignment { item, time });
+    };
+    let pinned = if lock_follows { following() } else { placement.lock };
+    let lock = pinned.and_then(|lock| {
         let index = items.iter().position(|item| item.id == lock.item)?;
         assignments.push((Target::Lock, index));
         let entry = model.items.iter().find(|entry| entry.id == lock.item)?;
@@ -319,6 +332,7 @@ pub fn build(app: &App, thumbs: &mut Thumbs) -> Library {
 
     return Library {
         lock,
+        lock_follows,
         folders: folders.iter().map(|folder| folder.name.clone()).collect(),
         counts: (0..folder_ids.len())
             .map(|folder| items.iter().filter(|item| item.folder == Some(folder)).count())

@@ -73,6 +73,15 @@ pub struct Item {
     pub needs_optimize: bool,
     #[serde(default)]
     pub optimize_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<ItemHotkey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemHotkey {
+    pub combo: proto::KeyCombo,
+    #[serde(default)]
+    pub scope: proto::HotkeyScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +210,10 @@ pub struct Placement {
     pub safe_default: Option<ItemId>,
     #[serde(default)]
     pub safe: BTreeMap<String, ItemId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shortcut_back: BTreeMap<String, ItemId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_lock_back: Option<LockAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +362,7 @@ pub struct Settings {
     pub auto_rotate: bool,
     pub rotate_minutes: u32,
     pub shuffle: bool,
+    pub lock_follows_wallpaper: bool,
     pub pause_when_focused: bool,
     pub pause_when_maximized: bool,
     pub pause_when_fullscreen: bool,
@@ -375,6 +389,7 @@ impl Default for Settings {
             auto_rotate: false,
             rotate_minutes: 30,
             shuffle: false,
+            lock_follows_wallpaper: false,
             pause_when_focused: false,
             pause_when_maximized: true,
             pause_when_fullscreen: true,
@@ -528,6 +543,10 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: Some(ItemHotkey {
+                combo: proto::KeyCombo::new("1", vec![proto::Modifier::Control]),
+                scope: proto::HotkeyScope::Both,
+            }),
         };
         let text = serde_json::to_string(&item).expect("serialize");
         let back: Item = serde_json::from_str(&text).expect("deserialize");
@@ -559,7 +578,37 @@ mod tests {
             playable: true,
             needs_optimize: false,
             optimize_reason: None,
+            hotkey: None,
         };
+    }
+
+    #[test]
+    fn shortcut_fields_default_for_legacy_library_and_round_trip() {
+        let legacy: Library = serde_json::from_str(
+            r#"{"items":[{"id":"11111111-1111-1111-1111-111111111111","kind":"video","path":"/a.mp4","title":"A","added_at":"1970-01-01T00:00:00Z"}],"placement":{"default":{"item":null}}}"#,
+        )
+        .expect("legacy");
+        assert!(legacy.items[0].hotkey.is_none());
+        assert!(legacy.placement.shortcut_back.is_empty());
+        assert!(legacy.placement.shortcut_lock_back.is_none());
+        let written = serde_json::to_string(&legacy).expect("serialize");
+        assert!(!written.contains("hotkey"));
+        assert!(!written.contains("shortcut_back"));
+        assert!(!written.contains("shortcut_lock_back"));
+
+        let mut library = Library::default();
+        let mut item = sample_item();
+        item.hotkey = Some(ItemHotkey {
+            combo: proto::KeyCombo::new("2", vec![proto::Modifier::Command]),
+            scope: proto::HotkeyScope::Lock,
+        });
+        let id = item.id;
+        library.items.push(item);
+        library.placement.shortcut_back.insert("S".into(), id);
+        library.placement.shortcut_lock_back = Some(LockAssignment { item: id, time: 2.5 });
+        let text = serde_json::to_string(&library).expect("serialize");
+        let back: Library = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, library);
     }
 
     #[test]

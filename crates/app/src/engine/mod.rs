@@ -64,14 +64,17 @@ pub struct Engine {
     occlusion: Occlusion,
     wake: Wake,
     reveal: bool,
+    follow_lock: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Playback {
     pub paused: bool,
     pub muted: bool,
     pub stop_after: u32,
     pub verdict: rules::Verdict,
     pub reveal: bool,
+    pub follow_lock: bool,
     pub silenced: Option<ItemId>,
 }
 
@@ -108,6 +111,7 @@ impl Engine {
             occlusion: Occlusion::default(),
             wake: Wake::default(),
             reveal: true,
+            follow_lock: false,
         };
     }
 
@@ -129,6 +133,7 @@ impl Engine {
         transition: Option<&transition::ResolvedTransition>,
     ) {
         self.reveal = playback.reveal;
+        self.follow_lock = playback.follow_lock;
         self.apply_assignments(library, transition.is_some(), playback.reveal);
         self.apply_frames(library);
         self.begin_transitions(transition);
@@ -513,6 +518,7 @@ mod tests {
             muted: true,
             still_time: 0.0,
             optimized: false,
+            hotkey: None,
             width: 0,
             height: 0,
             duration: 0.0,

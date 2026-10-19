@@ -1,16 +1,18 @@
 use std::cell::{Cell, RefCell};
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSColor, NSControlSize, NSControlTextEditingDelegate, NSFont, NSImage, NSImageScaling,
-    NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenu, NSMenuDelegate, NSMenuItem, NSScrollView,
-    NSStackView, NSStackViewDistribution, NSTableCellView, NSTableColumn, NSTableView, NSTableViewDataSource,
-    NSTableViewDelegate, NSTableViewStyle, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSViewController,
+    NSBezelStyle, NSButton, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSEvent, NSFont, NSImage,
+    NSImageScaling, NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSScrollView, NSStackView, NSStackViewDistribution, NSTableCellView, NSTableColumn, NSTableView,
+    NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController,
 };
 use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSTableViewDropOperation};
 use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObject, NSObjectProtocol};
+use proto::Request;
 use uuid::Uuid;
 
 use crate::i18n::tr;
@@ -19,6 +21,8 @@ use crate::ui::view::{FolderLock, Library};
 use crate::ui::{UI, commit, context, dialogs, folders, ns, picker, submit, update};
 
 const NEW_TAG: isize = -1;
+const RETURN: u16 = 36;
+const ENTER: u16 = 76;
 
 #[derive(Clone)]
 struct FolderRow {
@@ -88,6 +92,31 @@ fn set_lock(tag: isize, locked: Option<bool>, toggle_hidden: bool) {
     submit(move |app| Some(app.set_folder_lock(id, locked, hidden)));
 }
 
+struct TableIvars {
+    source: RefCell<Option<Weak<SidebarSource>>>,
+}
+
+define_class!(
+    #[unsafe(super(NSTableView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = TableIvars]
+    struct SidebarTable;
+
+    unsafe impl NSObjectProtocol for SidebarTable {}
+
+    impl SidebarTable {
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let source = self.ivars().source.borrow().as_ref().and_then(Weak::load);
+            let handled = matches!(event.keyCode(), RETURN | ENTER)
+                && source.is_some_and(|source| source.rename_selected());
+            if !handled {
+                let () = unsafe { msg_send![super(self), keyDown: event] };
+            }
+        }
+    }
+);
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -96,7 +125,25 @@ define_class!(
 
     unsafe impl NSObjectProtocol for SidebarSource {}
 
-    unsafe impl NSControlTextEditingDelegate for SidebarSource {}
+    unsafe impl NSControlTextEditingDelegate for SidebarSource {
+        #[unsafe(method(controlTextDidEndEditing:))]
+        fn text_did_end_editing(&self, notification: &NSNotification) {
+            if let Some(field) = notification.object().and_then(|object| object.downcast::<NSTextField>().ok()) {
+                self.finish_rename(&field);
+            }
+        }
+
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, control: &NSControl, _text: &NSTextView, command: Sel) -> bool {
+            let cancel = command == sel!(cancelOperation:);
+            if cancel {
+                self.cancel_rename(control);
+            }
+            cancel
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for SidebarSource {}
 
     unsafe impl NSTableViewDataSource for SidebarSource {
         #[unsafe(method(numberOfRowsInTableView:))]
@@ -204,8 +251,15 @@ define_class!(
 
         #[unsafe(method(renameFolder:))]
         fn rename_folder(&self, sender: &NSMenuItem) {
-            if let Some((id, _)) = folder(sender.tag()) {
-                dialogs::rename_folder(self.mtm(), id);
+            if let Ok(index) = usize::try_from(sender.tag()) {
+                self.begin_rename(index);
+            }
+        }
+
+        #[unsafe(method(renameClicked:))]
+        fn rename_clicked(&self, _sender: Option<&AnyObject>) {
+            if let Some(row) = self.folder_at(self.ivars().table.clickedRow()) {
+                self.begin_rename(row.index);
             }
         }
 
@@ -270,6 +324,73 @@ impl SidebarSource {
         return self.ivars().rows.borrow().get(row).cloned();
     }
 
+    fn folder_at(&self, row: isize) -> Option<FolderRow> {
+        return match self.row_at(row)? {
+            Row::Folder(folder) if !folder.sealed => Some(folder),
+            _ => None,
+        };
+    }
+
+    fn rename_selected(&self) -> bool {
+        let Some(row) = self.folder_at(self.ivars().table.selectedRow()) else {
+            return false;
+        };
+        self.begin_rename(row.index);
+        return true;
+    }
+
+    fn begin_rename(&self, index: usize) {
+        let table = &self.ivars().table;
+        let position = self
+            .ivars()
+            .rows
+            .borrow()
+            .iter()
+            .position(|row| matches!(row, Row::Folder(folder) if folder.index == index && !folder.sealed));
+        let Some(row) = position.and_then(|position| isize::try_from(position).ok()) else {
+            return;
+        };
+        table.scrollRowToVisible(row);
+        let Some(cell) = table.viewAtColumn_row_makeIfNecessary(0, row, true) else {
+            return;
+        };
+        let Ok(cell) = cell.downcast::<NSTableCellView>() else {
+            return;
+        };
+        let Some(field) = (unsafe { cell.textField() }) else {
+            return;
+        };
+        field.setEditable(true);
+        unsafe { field.setDelegate(Some(ProtocolObject::from_ref(self))) };
+        unsafe { field.selectText(None) };
+    }
+
+    fn cancel_rename(&self, control: &NSControl) {
+        if let Some(row) = self.folder_at(self.ivars().table.rowForView(control)) {
+            control.setStringValue(&ns(&row.name));
+        }
+        if let Some(window) = control.window() {
+            window.makeFirstResponder(Some(&self.ivars().table));
+        }
+    }
+
+    fn finish_rename(&self, field: &NSTextField) {
+        field.setEditable(false);
+        let Some(row) = self.folder_at(self.ivars().table.rowForView(field)) else {
+            return;
+        };
+        let name = field.stringValue().to_string().trim().to_string();
+        if name.is_empty() || name == row.name {
+            field.setStringValue(&ns(&row.name));
+            return;
+        }
+        let Some((id, _)) = folder(isize::try_from(row.index).unwrap_or(NEW_TAG)) else {
+            return;
+        };
+        let request = Request::FolderRename { id: id.to_string(), name };
+        submit(move |app| Some(app.dispatch(&request)));
+    }
+
     fn entry(&self, title: &str, action: Sel, tag: isize, checked: bool) -> Retained<NSMenuItem> {
         let item = NSMenuItem::new(self.mtm());
         item.setTitle(&ns(&tr(title)));
@@ -295,7 +416,7 @@ impl SidebarSource {
         if let Some(row) = row.filter(|row| !row.sealed) {
             let tag = isize::try_from(row.index).unwrap_or(NEW_TAG);
             menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-            menu.addItem(&self.entry("Rename Folder…", sel!(renameFolder:), tag, false));
+            menu.addItem(&self.entry(crate::i18n::key("Rename"), sel!(renameFolder:), tag, false));
             menu.addItem(&self.entry("Folder Icon & Color…", sel!(styleFolder:), tag, false));
             menu.addItem(&self.entry("Delete Folder…", sel!(deleteFolder:), tag, false));
             menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
@@ -408,7 +529,8 @@ pub struct Sidebar {
 
 impl Sidebar {
     pub fn new(mtm: MainThreadMarker) -> Self {
-        let table = NSTableView::new(mtm);
+        let table = SidebarTable::alloc(mtm).set_ivars(TableIvars { source: RefCell::new(None) });
+        let table: Retained<SidebarTable> = unsafe { msg_send![super(table), init] };
         table.setStyle(NSTableViewStyle::SourceList);
         table.setHeaderView(None);
         table.setAllowsEmptySelection(false);
@@ -416,9 +538,13 @@ impl Sidebar {
         let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &ns("sidebar"));
         table.addTableColumn(&column);
         table.registerForDraggedTypes(&NSArray::from_retained_slice(&context::dragged_types()));
-        let source = SidebarSource::new(mtm, table.clone());
+        let source = SidebarSource::new(mtm, Retained::into_super(table.clone()));
+        *table.ivars().source.borrow_mut() = Some(Weak::new(&source));
+        let owner: &AnyObject = &source;
         let menu = NSMenu::new(mtm);
         unsafe {
+            table.setTarget(Some(owner));
+            table.setDoubleAction(Some(sel!(renameClicked:)));
             table.setDataSource(Some(ProtocolObject::from_ref(&*source)));
             table.setDelegate(Some(ProtocolObject::from_ref(&*source)));
             menu.setDelegate(Some(ProtocolObject::from_ref(&*source)));

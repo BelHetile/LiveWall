@@ -152,6 +152,7 @@ pub fn showing(library: &Library, scope: Scope) -> Showing {
 pub struct Marker {
     pub icon: &'static str,
     pub text: String,
+    pub short: Option<String>,
     pub tip: String,
     pub active: bool,
 }
@@ -177,10 +178,11 @@ pub fn markers(library: &Library, item: usize, scope: Scope) -> Vec<Marker> {
             (false, _) => trf("Desktops %@", &[Arg::Text(short.clone())]),
         };
         let active = mine.iter().any(|target| showing.contains(target));
-        out.push(Marker { icon: "desktopcomputer", text: short, tip: long, active });
+        let numbers = (!all).then(|| short.clone());
+        out.push(Marker { icon: "desktopcomputer", text: short, short: numbers, tip: long, active });
     }
     if targets.contains(&Target::Lock) {
-        out.push(Marker { icon: "lock", text: tr("Lock"), tip: lock_tip(library), active: false });
+        out.push(Marker { icon: "lock", text: tr("Lock"), short: None, tip: lock_tip(library), active: false });
     }
     return out;
 }

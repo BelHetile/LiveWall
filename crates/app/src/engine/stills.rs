@@ -152,7 +152,7 @@ impl Engine {
         let mut stills = BTreeMap::new();
         let mut blanked = Vec::new();
         for target in targets {
-            let Some((item_id, time)) = still_choice(library, &target.space, self.reveal) else {
+            let Some((item_id, time)) = still_choice(library, &target.space, self.reveal, self.follow_lock) else {
                 if library.blanked(&target.space) {
                     blanked.push(target.space.clone());
                 }
@@ -167,9 +167,9 @@ impl Engine {
     }
 }
 
-pub fn still_choice(library: &Library, space: &str, reveal: bool) -> Option<(ItemId, f32)> {
+pub fn still_choice(library: &Library, space: &str, reveal: bool, follow_lock: bool) -> Option<(ItemId, f32)> {
     let shown = |id: &ItemId| reveal || !library.is_private_id(*id);
-    if let Some(lock) = library.placement.lock
+    if let Some(lock) = library.placement.lock.filter(|_| !follow_lock)
         && let Some(item) = library.playable_item(Some(lock.item).filter(shown))
     {
         return Some((item, lock.time));
@@ -205,6 +205,7 @@ mod tests {
             muted: true,
             still_time,
             optimized: false,
+            hotkey: None,
             width: 0,
             height: 0,
             duration: 10.0,
@@ -235,18 +236,30 @@ mod tests {
     #[test]
     fn the_desktop_picture_follows_what_the_desktop_shows() {
         let (library, open, hidden) = private_desktop();
-        assert_eq!(still_choice(&library, "S", true), Some((hidden, 4.0)));
-        assert_eq!(still_choice(&library, "S", false), Some((open, 1.0)), "hidden from the desktop: public stand-in");
+        assert_eq!(still_choice(&library, "S", true, false), Some((hidden, 4.0)));
+        assert_eq!(
+            still_choice(&library, "S", false, false),
+            Some((open, 1.0)),
+            "hidden from the desktop: public stand-in"
+        );
     }
 
     #[test]
     fn a_private_lock_screen_follows_the_same_rule() {
         let (mut library, open, hidden) = private_desktop();
         library.placement.lock = Some(LockAssignment { item: hidden, time: 7.0 });
-        assert_eq!(still_choice(&library, "S", true), Some((hidden, 7.0)));
-        assert_eq!(still_choice(&library, "S", false), Some((open, 1.0)));
+        assert_eq!(still_choice(&library, "S", true, false), Some((hidden, 7.0)));
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 1.0)));
         library.placement.lock = Some(LockAssignment { item: open, time: 2.0 });
-        assert_eq!(still_choice(&library, "S", false), Some((open, 2.0)));
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 2.0)));
+    }
+
+    #[test]
+    fn following_the_wallpaper_ignores_the_pinned_lock_screen() {
+        let (mut library, open, hidden) = private_desktop();
+        library.placement.lock = Some(LockAssignment { item: open, time: 2.0 });
+        assert_eq!(still_choice(&library, "S", true, true), Some((hidden, 4.0)));
+        assert_eq!(still_choice(&library, "S", true, false), Some((open, 2.0)));
     }
 
     #[test]
@@ -259,16 +272,16 @@ mod tests {
         let id = hidden.id;
         library.items.push(hidden);
         library.placement.default.item = Some(id);
-        assert_eq!(still_choice(&library, "S", false), None);
-        assert_eq!(still_choice(&library, "S", true), Some((id, 4.0)));
+        assert_eq!(still_choice(&library, "S", false, false), None);
+        assert_eq!(still_choice(&library, "S", true, false), Some((id, 4.0)));
     }
 
     #[test]
     fn a_space_assignment_wins_over_the_default() {
         let (mut library, open, hidden) = private_desktop();
         library.placement.spaces.insert("S".into(), Assignment { item: Some(open), geometry_override: None });
-        assert_eq!(still_choice(&library, "S", true), Some((open, 1.0)));
-        assert_eq!(still_choice(&library, "S", false), Some((open, 1.0)));
+        assert_eq!(still_choice(&library, "S", true, false), Some((open, 1.0)));
+        assert_eq!(still_choice(&library, "S", false, false), Some((open, 1.0)));
         let _ = hidden;
     }
 

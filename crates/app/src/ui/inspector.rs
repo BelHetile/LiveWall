@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -20,7 +22,7 @@ use objc2_foundation::{
     NSObject, NSObjectProtocol, NSString, NSTimer,
 };
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspectFill};
-use proto::{ApplyTarget, FillMode, Geometry, Request};
+use proto::{ApplyTarget, FillMode, Geometry, HotkeyScope, Request};
 
 use crate::cf::file_url;
 use crate::geometry::{self, Size};
@@ -28,6 +30,7 @@ use crate::i18n::{self, Arg, tr, trf};
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
+use crate::ui::settings::{Bind, Recorder, rescope};
 use crate::ui::state::{Marker, Scope, TAG_ALL, desktop_name, duration, markers};
 use crate::ui::view::{Item, Library};
 use crate::ui::{Ui, context, folders, ns, submit, update};
@@ -52,6 +55,12 @@ const MODES: [(FillMode, &str); 5] = [
     (FillMode::Stretch, i18n::key("Stretch")),
     (FillMode::Center, i18n::key("Center")),
     (FillMode::Custom, i18n::key("Custom")),
+];
+
+const SCOPES: [(HotkeyScope, &str); 3] = [
+    (HotkeyScope::Desktop, i18n::key("Desktop")),
+    (HotkeyScope::Lock, i18n::key("Lock Screen")),
+    (HotkeyScope::Both, i18n::key("Desktop and Lock Screen")),
 ];
 
 define_class!(
@@ -223,6 +232,15 @@ define_class!(
             });
         }
 
+        #[unsafe(method(hotkeyScope:))]
+        fn hotkey_scope(&self, sender: &NSPopUpButton) {
+            let scope = usize::try_from(sender.indexOfSelectedItem())
+                .ok()
+                .and_then(|index| SCOPES.get(index))
+                .map_or(HotkeyScope::Desktop, |(scope, _)| *scope);
+            selected(move |ui, index| ui.inspector.choose_scope(&ui.library, index, scope));
+        }
+
         #[unsafe(method(optimize:))]
         fn optimize_item(&self, _sender: Option<&AnyObject>) {
             context::optimize();
@@ -373,6 +391,9 @@ struct Controls {
     play: Retained<NSButton>,
     listen: Retained<NSButton>,
     markers: Retained<NSStackView>,
+    preview: Retained<NSView>,
+    lock: Retained<NSButton>,
+    frame: Retained<NSButton>,
     destination: Retained<NSPopUpButton>,
     scrub: Retained<NSSlider>,
     time: Retained<NSTextField>,
@@ -385,6 +406,9 @@ struct Controls {
     offsets: [(Retained<NSSlider>, Retained<NSTextField>); 3],
     folder: Retained<NSPopUpButton>,
     reset: Retained<NSButton>,
+    recorder: Retained<Recorder>,
+    scope: Retained<NSPopUpButton>,
+    shortcut: Retained<NSGridView>,
 }
 
 pub struct Inspector {
@@ -402,6 +426,7 @@ pub struct Inspector {
     playing: bool,
     listening: Option<ItemId>,
     visible: bool,
+    scopes: HashMap<ItemId, HotkeyScope>,
 }
 
 fn up<T: Message + AsRef<NSView>>(view: &Retained<T>) -> Retained<NSView> {
@@ -574,6 +599,7 @@ impl Inspector {
             playing: true,
             listening: None,
             visible: false,
+            scopes: HashMap::new(),
         };
     }
 
@@ -607,6 +633,15 @@ impl Inspector {
             };
             self.build(item);
             self.shown = Some(key);
+        }
+        self.sync(library, index);
+    }
+
+    fn choose_scope(&mut self, library: &Library, index: usize, scope: HotkeyScope) {
+        let item = &library.items[index];
+        self.scopes.insert(item.id, scope);
+        if item.hotkey.is_some() {
+            rescope(item.id, scope);
         }
         self.sync(library, index);
     }
@@ -794,18 +829,11 @@ impl Inspector {
         frame.setImage(folders::symbol("film").as_deref());
         frame.setImagePosition(NSCellImagePosition::ImageLeading);
         wire(&frame, target, sel!(lockFrame:));
-        let bottom = if video {
-            let bottom = stack(mtm, &[&destination, &frame], false);
-            bottom.setDistribution(NSStackViewDistribution::Fill);
-            bottom
-        } else {
-            stack(mtm, &[&destination], false)
-        };
+        let bottom = stack(mtm, &[&destination, &frame], false);
+        bottom.setDistribution(NSStackViewDistribution::Fill);
         let actions = stack(mtm, &[&top, &bottom], true);
         destination.widthAnchor().constraintEqualToAnchor(&wallpaper.widthAnchor()).setActive(true);
-        if video {
-            frame.widthAnchor().constraintEqualToAnchor(&lock.widthAnchor()).setActive(true);
-        }
+        frame.widthAnchor().constraintEqualToAnchor(&lock.widthAnchor()).setActive(true);
         pin_width(&actions, &top);
         pin_width(&actions, &bottom);
 
@@ -893,18 +921,31 @@ impl Inspector {
         let buttons = stack(mtm, &[&reset, &remove], false);
         buttons.setDistribution(NSStackViewDistribution::FillEqually);
 
-        let mut sections: Vec<Retained<NSView>> = vec![up(&preview)];
-        if video {
-            sections.push(up(&transport));
+        let recorder = Recorder::new(mtm, Bind::Item(item.id));
+        let scope = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
+        scope.setControlSize(NSControlSize::Small);
+        for (_, name) in SCOPES {
+            scope.addItemWithTitle(&ns(&tr(name)));
         }
+        scope.setContentCompressionResistancePriority_forOrientation(250.0, NSLayoutConstraintOrientation::Horizontal);
+        wire(&scope, target, sel!(hotkeyScope:));
+        let shortcut = form(mtm, &[(&tr("Keys"), vec![&recorder]), (&tr("Switches"), vec![&scope])], 1);
+
+        let playback_rule = separator(mtm);
+        let playback_section = section(mtm, &tr("Playback"), &playback);
+        for view in [up(&transport), up(&playback_rule), up(&playback_section)] {
+            view.setHidden(!video);
+        }
+        let mut sections: Vec<Retained<NSView>> = vec![up(&preview)];
+        sections.push(up(&transport));
         sections.push(up(&header));
         sections.push(up(&actions));
-        if video {
-            sections.push(up(&separator(mtm)));
-            sections.push(up(&section(mtm, &tr("Playback"), &playback)));
-        }
+        sections.push(up(&playback_rule));
+        sections.push(up(&playback_section));
         sections.push(up(&separator(mtm)));
         sections.push(up(&section(mtm, &tr("Placement"), &placement)));
+        sections.push(up(&separator(mtm)));
+        sections.push(up(&section(mtm, &tr("Shortcut"), &shortcut)));
         sections.push(up(&separator(mtm)));
         sections.push(up(&section(mtm, &tr("Library"), &library_form)));
         sections.push(up(&buttons));
@@ -921,6 +962,9 @@ impl Inspector {
             play,
             listen,
             markers: marker_row,
+            preview,
+            lock,
+            frame,
             destination,
             scrub,
             time,
@@ -933,6 +977,9 @@ impl Inspector {
             offsets,
             folder,
             reset,
+            recorder,
+            scope,
+            shortcut,
         });
     }
 
@@ -983,7 +1030,31 @@ impl Inspector {
             field.setEnabled(enabled);
         }
         controls.reset.setEnabled(item.changed);
+        let frame_enabled = item.kind == ItemKind::Video && !library.lock_follows;
+        controls.lock.setEnabled(!library.lock_follows);
+        controls.frame.setEnabled(frame_enabled);
+        if let Some(entry) = controls.preview.menu().and_then(|menu| menu.itemAtIndex(0)) {
+            entry.setEnabled(frame_enabled);
+        }
         fill_folders(&controls.folder, library, item.folder);
+        let chosen = match (&item.hotkey, library.lock_follows) {
+            (Some((_, scope)), _) => *scope,
+            (None, true) => HotkeyScope::Desktop,
+            (None, false) => self.scopes.get(&item.id).copied().unwrap_or(HotkeyScope::Desktop),
+        };
+        controls.recorder.show_text(item.hotkey.as_ref().map(|(text, _)| text.as_str()));
+        controls.recorder.set_scope(chosen);
+        let hint =
+            item.hotkey_problem.clone().unwrap_or_else(|| tr("Click, then press a shortcut. ⌫ clears it, ⎋ cancels."));
+        controls.recorder.setToolTip(Some(&ns(&hint)));
+        controls.scope.selectItemAtIndex(
+            SCOPES
+                .iter()
+                .position(|(scope, _)| *scope == chosen)
+                .and_then(|position| isize::try_from(position).ok())
+                .unwrap_or(0),
+        );
+        controls.shortcut.rowAtIndex(1).setHidden(library.lock_follows);
 
         let mtm = self.controller.mtm();
         let views: Vec<Retained<NSView>> =
@@ -1031,6 +1102,7 @@ impl Inspector {
         if item.kind == ItemKind::Video {
             let target: &AnyObject = &self.target;
             let menu = NSMenu::new(mtm);
+            menu.setAutoenablesItems(false);
             let entry = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),

@@ -16,15 +16,15 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSDictionary, NSEdgeInsets, NSObject, NSObjectProtocol,
     NSString,
 };
-use proto::{HotkeyAction, Request, ResponseBody};
+use proto::{HotkeyAction, HotkeyScope, Request, ResponseBody};
 use serde_json::{Value, json};
 
 use crate::app;
 use crate::hotkey;
 use crate::i18n::{self, Arg, tr, trf};
-use crate::model::AppearanceMode;
+use crate::model::{AppearanceMode, ItemId};
 use crate::ui::inspector::{dragging, value_field};
-use crate::ui::{ns, submit, windows};
+use crate::ui::{changed, dialogs, ns, submit, windows};
 
 const INSET: CGFloat = 20.0;
 const SECTION_GAP: CGFloat = 14.0;
@@ -57,6 +57,7 @@ const LOCK_IDLE: isize = 19;
 const IDLE_AFTER: isize = 20;
 const HIDE_DESKTOP: isize = 21;
 const APPEARANCE: isize = 22;
+const LOCK_FOLLOWS: isize = 23;
 
 const MODES: [(AppearanceMode, &str, &str); 3] = [
     (AppearanceMode::System, "system", i18n::key("System")),
@@ -132,8 +133,15 @@ define_class!(
     }
 );
 
-struct RecorderIvars {
-    action: HotkeyAction,
+#[derive(Clone, Copy)]
+pub(crate) enum Bind {
+    Action(HotkeyAction),
+    Item(ItemId),
+}
+
+pub(crate) struct RecorderIvars {
+    bind: Bind,
+    scope: Cell<HotkeyScope>,
     recording: Cell<bool>,
 }
 
@@ -141,7 +149,7 @@ define_class!(
     #[unsafe(super(NSButton, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = RecorderIvars]
-    struct Recorder;
+    pub(crate) struct Recorder;
 
     unsafe impl NSObjectProtocol for Recorder {}
 
@@ -193,8 +201,12 @@ define_class!(
 );
 
 impl Recorder {
-    fn new(mtm: MainThreadMarker, action: HotkeyAction) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(RecorderIvars { action, recording: Cell::new(false) });
+    pub(crate) fn new(mtm: MainThreadMarker, bind: Bind) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(RecorderIvars {
+            bind,
+            scope: Cell::new(HotkeyScope::Desktop),
+            recording: Cell::new(false),
+        });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setBezelStyle(NSBezelStyle::Push);
         this.widthAnchor().constraintGreaterThanOrEqualToConstant(SLIDER_WIDTH).setActive(true);
@@ -202,11 +214,19 @@ impl Recorder {
     }
 
     fn show(&self, combo: Option<&proto::KeyCombo>) {
+        self.show_text(combo.map(hotkey::display).as_deref());
+    }
+
+    pub(crate) fn show_text(&self, text: Option<&str>) {
         if self.ivars().recording.get() {
             return;
         }
         self.setHighlighted(false);
-        self.setTitle(&ns(&combo.map_or_else(|| tr("None"), hotkey::display)));
+        self.setTitle(&ns(&text.map_or_else(|| tr("None"), str::to_owned)));
+    }
+
+    pub(crate) fn set_scope(&self, scope: HotkeyScope) {
+        self.ivars().scope.set(scope);
     }
 
     fn warn(&self, message: &str) {
@@ -238,12 +258,13 @@ impl Recorder {
     }
 
     fn key(&self, event: &NSEvent) {
-        let action = self.ivars().action;
+        let bind = self.ivars().bind;
+        let scope = self.ivars().scope.get();
         let code = event.keyCode();
         match code {
             ESCAPE => return self.finish(),
             DELETE | FORWARD_DELETE => {
-                let _ = rebind(action, None);
+                let _ = rebind(bind, scope, None);
                 return self.finish();
             }
             _ => {}
@@ -263,19 +284,52 @@ impl Recorder {
         .map(|(_, part)| part)
         .collect();
         parts.push(name);
-        match rebind(action, Some(parts.join("+"))) {
+        match rebind(bind, scope, Some(parts.join("+"))) {
             Ok(()) => self.finish(),
             Err(message) => self.warn(&message),
         }
     }
 }
 
-fn rebind(action: HotkeyAction, combo: Option<String>) -> Result<(), String> {
-    let response = app::with(|app| app.set_hotkey(action, combo)).ok_or_else(|| tr("LiveWall is busy"))?;
+fn rebind(bind: Bind, scope: HotkeyScope, combo: Option<String>) -> Result<(), String> {
+    let response = match bind {
+        Bind::Action(action) => app::with(|app| app.set_hotkey(action, combo)),
+        Bind::Item(item) => app::with(|app| app.set_item_hotkey(item, combo.as_deref(), scope)),
+    }
+    .ok_or_else(|| tr("LiveWall is busy"))?;
     return match response.body {
-        ResponseBody::Ok { .. } => Ok(()),
+        ResponseBody::Ok { data } => {
+            if let Bind::Item(_) = bind {
+                if let Some(moved) = data.get("moved").and_then(Value::as_str) {
+                    let moved = moved.to_owned();
+                    DispatchQueue::main().exec_async(move || dialogs::notice(&moved));
+                }
+                DispatchQueue::main().exec_async(changed);
+            }
+            Ok(())
+        }
         ResponseBody::Err(body) => Err(body.message),
     };
+}
+
+pub(crate) fn rescope(item: ItemId, scope: HotkeyScope) {
+    DispatchQueue::main().exec_async(move || {
+        let combo = app::with(|app| {
+            app.library()
+                .items
+                .iter()
+                .find(|entry| entry.id == item)
+                .and_then(|entry| entry.hotkey.as_ref())
+                .map(|bound| hotkey::format(&bound.combo))
+        })
+        .flatten();
+        let Some(combo) = combo else {
+            return;
+        };
+        if let Err(message) = rebind(Bind::Item(item), scope, Some(combo)) {
+            dialogs::notice(&message);
+        }
+    });
 }
 
 fn recording(on: bool) {
@@ -355,6 +409,7 @@ fn flag(tag: isize, on: bool) {
         SOUND => patch(json!({ "muted": !on })),
         SHUFFLE => patch(json!({ "shuffle": on })),
         ROTATE => patch(json!({ "auto_rotate": on })),
+        LOCK_FOLLOWS => patch(json!({ "lock_follows_wallpaper": on })),
         LOCK_SCREEN => patch(json!({ "privacy": { "lock_on_screen_lock": on } })),
         LOCK_IDLE => patch(json!({ "privacy": { "lock_on_idle": on } })),
         HIDE_DESKTOP => patch(json!({ "privacy": { "hide_desktop": on } })),
@@ -423,6 +478,7 @@ impl Panel {
                 TRANSITION => animate,
                 ROTATE => rotate,
                 SHUFFLE => on(&["shuffle"]),
+                LOCK_FOLLOWS => on(&["lock_follows_wallpaper"]),
                 LOCK_SCREEN => on(&["privacy", "lock_on_screen_lock"]),
                 LOCK_IDLE => idle,
                 HIDE_DESKTOP => on(&["privacy", "hide_desktop"]),
@@ -494,7 +550,9 @@ impl Panel {
             }
         }
         for recorder in &self.recorders {
-            recorder.show(hotkeys.get(recorder.ivars().action));
+            if let Bind::Action(action) = recorder.ivars().bind {
+                recorder.show(hotkeys.get(action));
+            }
         }
     }
 }
@@ -748,6 +806,8 @@ fn playback(build: &mut Builder) -> Retained<NSTabViewItem> {
     let shuffle = build.check(&tr("Shuffle"), SHUFFLE);
     form.row(&shuffle);
     build.group(ROTATE, vec![control(&every), control(&shuffle)]);
+    form.section(&tr("Lock Screen"), &build.check(&tr("Follow the Wallpaper"), LOCK_FOLLOWS));
+    form.note(&tr("Changes whenever the wallpaper changes"), CHECKBOX_INDENT);
     return form.page(&tr("Playback"), "play.rectangle");
 }
 
@@ -755,7 +815,7 @@ fn shortcuts(build: &mut Builder) -> Retained<NSTabViewItem> {
     let mtm = build.mtm;
     let mut form = Form::new(mtm);
     for (position, action) in HotkeyAction::ALL.iter().enumerate() {
-        let recorder = Recorder::new(mtm, *action);
+        let recorder = Recorder::new(mtm, Bind::Action(*action));
         let title = tr(hotkey::title(*action));
         if position == 0 {
             form.section(&title, &recorder);

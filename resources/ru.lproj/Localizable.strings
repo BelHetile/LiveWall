@@ -372,8 +372,6 @@
 	<string>Удалить «%@» из библиотеки?</string>
 	<key>Rename</key>
 	<string>Переименовать</string>
-	<key>Rename Folder</key>
-	<string>Переименовать папку</string>
 	<key>Reset</key>
 	<string>Сбросить</string>
 	<key>Reset to Defaults</key>
@@ -656,5 +654,21 @@
 	<string>осталось %@</string>
 	<key>Downloading %ld videos · %@</key>
 	<string>Загрузка видео: %ld · %@</string>
+	<key>Changes whenever the wallpaper changes</key>
+	<string>Меняется вместе с обоями</string>
+	<key>Follow the Wallpaper</key>
+	<string>Следовать за обоями</string>
+	<key>the lock screen follows the wallpaper</key>
+	<string>экран блокировки следует за обоями</string>
+	<key>%@ was moved from “%@”.</key>
+	<string>%@ перенесено с «%@».</string>
+	<key>Desktop and Lock Screen</key>
+	<string>Рабочий стол и экран блокировки</string>
+	<key>Keys</key>
+	<string>Клавиши</string>
+	<key>Shortcut</key>
+	<string>Сочетание клавиш</string>
+	<key>Switches</key>
+	<string>Переключает</string>
 </dict>
 </plist>
