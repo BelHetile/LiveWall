@@ -4,12 +4,12 @@ All notable changes to LiveWall are listed here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.1.0] - 2026-10-19
 
 ### Added
 - A folder sidebar replaces the toolbar folder menu: All Wallpapers plus every folder with its wallpaper count.
   Right-click a folder to change its icon and color, rename it in place, lock it, hide it while locked or
-  delete it; ⌃⌘S shows and hides the sidebar.
+  delete it; ⌥⌘S shows and hides the sidebar, ⌥⌘I the inspector.
 - Folder icons and colors: pick an SF Symbol, one of the eight Finder tag colors or any #RRGGBB color (previewed
   as you type), or use your own PNG, JPEG or HEIC image; drop an image on the picker to add it. A locked folder
   shows a lock until you give it an icon of its own. `lwctl folder style` and `lwctl icon` do the same from the
@@ -19,19 +19,40 @@ All notable changes to LiveWall are listed here. The format is based on
 - Settings → Privacy → *Take Private Wallpapers off the Desktop*. It is on: locking the folders replaces a private
   wallpaper on the desktop with a safe one. Turn it off to keep a private wallpaper on the desktop and the lock
   screen while locked; the library and the menu bar still hide it.
-
-### Fixed
-- Spaces whose desktop picture file was deleted elsewhere no longer block LiveWall: they play a wallpaper like
-  any other Space, and quitting leaves them alone instead of writing a dead path back.
+- Per-wallpaper shortcuts (from BelHetile): record one under Shortcut in the inspector and choose whether it
+  switches the desktop, the lock screen or both. A second press switches back; ✕ clears it. `lwctl item-hotkey
+  ID [COMBO] [--scope desktop|lock|both]` sets or clears it from the command line.
+- Settings → Playback → Lock Screen → *Follow the Wallpaper*: the lock screen changes along with the wallpaper
+  on Next, Previous and rotation instead of keeping the one picked with Set as Lock Screen.
+  `lwctl lock-screen set ID [--time S]` and `lwctl lock-screen clear` pick or unpin it from the command line.
+- Library keys: Return sets the selected wallpaper, Space plays or pauses it, comma and period step a frame, Esc
+  clears the selection.
+- The menu bar item has Settings… and Lock or Unlock Private Folders; Next, Previous and Random are disabled
+  with fewer than two playable wallpapers.
 
 ### Changed
-- One design scale for spacing, corner radii, type, icons and motion across the library, inspector, sidebar,
-  toolbar, settings and pickers. Every color now follows light and dark mode, Increase Contrast, Reduce
-  Transparency and Reduce Motion, and updates live when the macOS accent color changes.
-- Tile chips are readable over any wallpaper without forcing dark mode.
+- The library window, sidebar, inspector, toolbar and Settings are rebuilt from standard macOS controls. They
+  follow light and dark mode, the accent color, Increase Contrast and Reduce Transparency like any Mac app, and
+  use Liquid Glass on macOS 26 and newer.
+- File → Add Files… (⌘O) takes files and folders in one panel; Add Folder… is gone.
+- Delete and the 1–9 and ` keys act on the selected wallpaper instead of the one under the pointer; Delete asks
+  first.
+- The Dock icon stays while Settings is open or the library window is minimized.
+- Tiles show which desktops a wallpaper is on: a desktop icon for all desktops, the icon and the desktop numbers
+  otherwise.
+- Wallpaper → Mute is ⌥⌘↓, next to ⌘↑ and ⌘↓ for the volume.
 - Folder colors picked from the old presets become the nearest tag color.
 - The whole app is in English and Russian and follows the macOS language; pick a language for LiveWall alone in
   System Settings → General → Language & Region → Applications. The language setting inside LiveWall is gone.
+
+### Removed
+- Color themes and the custom accent color. Appearance keeps light, dark and system; older settings load and
+  are rewritten without them.
+
+### Fixed
+- Photos load upright from their EXIF orientation, and rotated videos stay upright after Optimize for This Mac.
+- Spaces whose desktop picture file was deleted elsewhere no longer block LiveWall: they play a wallpaper like
+  any other Space, and quitting leaves them alone instead of writing a dead path back.
 - After a crash, LiveWall no longer puts an old still of its own back as your desktop picture; quitting keeps the
   current wallpaper on screen instead, and a desktop picture you set yourself is never overwritten.
 

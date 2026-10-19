@@ -664,11 +664,9 @@
 	<string>%@ перенесено с «%@».</string>
 	<key>Desktop and Lock Screen</key>
 	<string>Рабочий стол и экран блокировки</string>
-	<key>Keys</key>
-	<string>Клавиши</string>
 	<key>Shortcut</key>
 	<string>Сочетание клавиш</string>
-	<key>Switches</key>
-	<string>Переключает</string>
+	<key>Clear Shortcut</key>
+	<string>Удалить сочетание клавиш</string>
 </dict>
 </plist>

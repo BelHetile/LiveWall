@@ -30,7 +30,7 @@ use crate::i18n::{self, Arg, tr, trf};
 use crate::media::av::CM_TIMESCALE;
 use crate::model::{ItemId, ItemKind};
 use crate::platform::{cancel_timer, schedule_block};
-use crate::ui::settings::{Bind, Recorder, rescope};
+use crate::ui::settings::{Bind, Recorder, rescope, unbind};
 use crate::ui::state::{Marker, Scope, TAG_ALL, desktop_name, duration, markers};
 use crate::ui::view::{Item, Library};
 use crate::ui::{Ui, context, folders, ns, submit, update};
@@ -241,6 +241,11 @@ define_class!(
             selected(move |ui, index| ui.inspector.choose_scope(&ui.library, index, scope));
         }
 
+        #[unsafe(method(clearHotkey:))]
+        fn clear_hotkey(&self, _sender: Option<&AnyObject>) {
+            selected(|ui, index| unbind(ui.library.items[index].id));
+        }
+
         #[unsafe(method(optimize:))]
         fn optimize_item(&self, _sender: Option<&AnyObject>) {
             context::optimize();
@@ -407,8 +412,8 @@ struct Controls {
     folder: Retained<NSPopUpButton>,
     reset: Retained<NSButton>,
     recorder: Retained<Recorder>,
+    clear: Retained<NSButton>,
     scope: Retained<NSPopUpButton>,
-    shortcut: Retained<NSGridView>,
 }
 
 pub struct Inspector {
@@ -922,6 +927,7 @@ impl Inspector {
         buttons.setDistribution(NSStackViewDistribution::FillEqually);
 
         let recorder = Recorder::new(mtm, Bind::Item(item.id));
+        recorder.setControlSize(NSControlSize::Small);
         let scope = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), CGRect::ZERO, false);
         scope.setControlSize(NSControlSize::Small);
         for (_, name) in SCOPES {
@@ -929,7 +935,15 @@ impl Inspector {
         }
         scope.setContentCompressionResistancePriority_forOrientation(250.0, NSLayoutConstraintOrientation::Horizontal);
         wire(&scope, target, sel!(hotkeyScope:));
-        let shortcut = form(mtm, &[(&tr("Keys"), vec![&recorder]), (&tr("Switches"), vec![&scope])], 1);
+        let clear = symbol_button(mtm, "xmark.circle.fill");
+        clear.setToolTip(Some(&ns(&tr("Clear Shortcut"))));
+        wire(&clear, target, sel!(clearHotkey:));
+        recorder.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+        clear.setContentHuggingPriority_forOrientation(1000.0, NSLayoutConstraintOrientation::Horizontal);
+        let keys = stack(mtm, &[&recorder, &clear], false);
+        let shortcut = stack(mtm, &[&keys, &scope], true);
+        pin_width(&shortcut, &keys);
+        pin_width(&shortcut, &scope);
 
         let playback_rule = separator(mtm);
         let playback_section = section(mtm, &tr("Playback"), &playback);
@@ -978,8 +992,8 @@ impl Inspector {
             folder,
             reset,
             recorder,
+            clear,
             scope,
-            shortcut,
         });
     }
 
@@ -1054,7 +1068,8 @@ impl Inspector {
                 .and_then(|position| isize::try_from(position).ok())
                 .unwrap_or(0),
         );
-        controls.shortcut.rowAtIndex(1).setHidden(library.lock_follows);
+        controls.scope.setHidden(library.lock_follows);
+        controls.clear.setEnabled(item.hotkey.is_some());
 
         let mtm = self.controller.mtm();
         let views: Vec<Retained<NSView>> =

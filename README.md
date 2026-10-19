@@ -63,7 +63,7 @@ cd LiveWall
   paste a video link (YouTube first; other sites [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports may work).
   New files land in the folder you are viewing. Folders live in the sidebar: created private right away if you
   like, renamed in place, given an SF Symbol or your own image and a Finder tag color (or any hex color), and filled
-  by dragging wallpapers or files onto them. Search, grid and list views; Delete removes the wallpaper under the pointer.
+  by dragging wallpapers or files onto them. Search, grid and list views; Delete removes the selected wallpaper after asking.
 - **Per-wallpaper settings:** **Fill, Fit, Stretch, Center** or **Custom** (position and zoom), volume, mute and
   playback speed. The inspector preview can play with sound while the desktop copy stays silent.
 - **Transitions:** fade, wipe, wave, grow, directional sweeps and more between wallpapers, rendered on the GPU.
@@ -78,7 +78,8 @@ cd LiveWall
   the wallpaper keeps playing.
 - **Lock screen:** the macOS desktop picture follows the wallpaper as a still frame, so the lock screen and
   Mission Control match. Pick the frame in the inspector, or choose a separate lock screen wallpaper. Your own
-  desktop picture comes back when LiveWall quits, even after a crash.
+  desktop picture comes back when LiveWall quits, even after a crash. Turn on **Settings → Playback → Lock Screen →
+  Follow the Wallpaper** to have the lock screen change along with the wallpaper.
 - **Locked folders:** mark a folder as locked and its wallpapers disappear from the library and the menu bar
   until you unlock with Touch ID (or your Mac password). Locking replaces a private wallpaper on the desktop with
   a safe one; turn off **Settings → Privacy → Take Private Wallpapers off the Desktop** to keep it on the desktop
@@ -87,7 +88,7 @@ cd LiveWall
   This keeps wallpapers away from casual glances; the files are not encrypted.
 - **Rotation:** change the wallpaper on a timer, in order or shuffled.
 - **Hotkeys, menu bar and Dock:** global hotkeys, a menu bar item, launch at login. The Dock icon shows only
-  while the library window is open.
+  while the library or Settings window is open.
 - **Appearance:** light, dark or system.
 - **Languages:** English and Russian, following the macOS language. To pick one for LiveWall only, use
   **System Settings → General → Language & Region → Applications** and reopen LiveWall.
@@ -109,6 +110,11 @@ Change or clear them in **Settings → Shortcuts**:
 
 Hotkeys need no permissions. Combinations macOS already uses are refused, and LiveWall says what uses them.
 
+Any wallpaper can have its own shortcut: select it and record one under **Shortcut** in the inspector, then pick
+whether it switches the desktop, the lock screen or both. Press it to show that wallpaper on the current desktop,
+press it again to go back to what was there before, or to the All Desktops wallpaper. ✕ next to the shortcut
+clears it.
+
 ## Command line
 
 `lwctl` is inside the app. Link it somewhere on your `PATH` if you like:
@@ -126,11 +132,13 @@ status  current  quit  spaces  windows  desktop  rules
 library {list,add [--folder ID],remove,rename,move}
 folder {create,rename,delete,lock,style ID [--icon symbol:NAME|image:FILE|none] [--color TAG|#RRGGBB|none]}
 icon {import PATH,list,remove image:FILE}
+lock-screen {set ID [--time S],clear}
 apply [--item ID] [--target default|space] [--target-id ID]
 set-geometry ID --mode fill|fit|stretch|center|custom [--x N --y N --zoom N]
 set-item ID [--volume N --speed N --muted BOOL --still-time N]
 settings {get,set JSON}
 hotkeys {get,set ACTION [COMBO]}
+item-hotkey ID [COMBO] [--scope desktop|lock|both]
 login-item {get,set BOOL}
 menu  tools  tools-install TOOL [--consent]
 probe PATH
@@ -173,6 +181,9 @@ Everything lives in `~/Library/Application Support/LiveWall/`:
 Quit LiveWall from the menu bar (this puts your desktop picture back), then delete
 `/Applications/LiveWall.app`. To remove your wallpapers and settings too, delete
 `~/Library/Application Support/LiveWall`.
+
+macOS keeps its own copy of every picture an app sets as the desktop, so the still frames LiveWall puts on the
+desktop also show up in **System Settings → Wallpaper → Your Photos**. Remove them there.
 
 ## License
 

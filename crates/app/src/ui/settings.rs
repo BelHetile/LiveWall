@@ -332,6 +332,14 @@ pub(crate) fn rescope(item: ItemId, scope: HotkeyScope) {
     });
 }
 
+pub(crate) fn unbind(item: ItemId) {
+    DispatchQueue::main().exec_async(move || {
+        if let Err(message) = rebind(Bind::Item(item), HotkeyScope::Desktop, None) {
+            dialogs::notice(&message);
+        }
+    });
+}
+
 fn recording(on: bool) {
     DispatchQueue::main().exec_async(move || {
         app::with(|app| app.record_hotkey(on));
