@@ -918,13 +918,11 @@ impl App {
     }
 
     fn detect(&self) -> rules::Snapshot {
-        let display = self.engine.display();
-        let frame = rules::Rect::new(
-            display.frame.origin.x,
-            display.frame.origin.y,
-            display.frame.size.width,
-            display.frame.size.height,
-        );
+        let to_rect = |value: objc2_core_foundation::CGRect| {
+            return rules::Rect::new(value.origin.x, value.origin.y, value.size.width, value.size.height);
+        };
+        let frame = to_rect(self.engine.display().frame);
+        let usable = to_rect(self.engine.usable_frame());
         let signals = detect::Signals {
             display_asleep: self.display_asleep,
             screen_locked: self.screen_locked,
@@ -933,7 +931,7 @@ impl App {
             thermal_hot: self.thermal_hot,
             low_power: self.low_power,
         };
-        return detect::snapshot(frame, signals);
+        return detect::snapshot(frame, usable, signals);
     }
 
     fn refresh_rules(&mut self) {

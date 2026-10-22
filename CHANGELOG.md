@@ -26,6 +26,8 @@ All notable changes to LiveWall are listed here. The format is based on
 - Some optimized videos showed shifted or turned.
 - The toolbar fits again on macOS 26: Add, Search and Settings no longer hide behind ». Buttons stay readable
   when the window is in the background, and Russian labels are no longer cut off.
+- *Pause When Desktop Is Covered* works again with a zoomed window: coverage is measured on the screen between the
+  menu bar and the Dock, as in 1.x, so a window that fills it pauses the wallpaper.
 
 ## [2.0.0] - 2026-10-16
 

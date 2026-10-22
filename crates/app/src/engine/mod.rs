@@ -193,6 +193,10 @@ impl Engine {
         return &self.display;
     }
 
+    pub fn usable_frame(&self) -> CGRect {
+        return self.display.usable(self.mtm);
+    }
+
     pub fn max_display_px(&self) -> u32 {
         return self.display.max_px();
     }

@@ -21,15 +21,17 @@ pub struct Signals {
     pub low_power: bool,
 }
 
-pub fn snapshot(frame: rules::Rect, signals: Signals) -> rules::Snapshot {
+pub fn snapshot(frame: rules::Rect, usable: rules::Rect, signals: Signals) -> rules::Snapshot {
     let windows = on_screen_windows(frame);
     let own = own_pid();
     let candidates: Vec<rules::Rect> =
         windows.iter().filter(|window| is_candidate(window, own)).map(|window| window.bounds).collect();
     let fullscreen = candidates.iter().any(|window| approximately_covers(*window, frame, FULLSCREEN_TOLERANCE));
-    let coverage = coverage_fraction(&candidates, frame);
+    let usable = coverage_area(frame, usable);
+    let coverage = coverage_fraction(&candidates, usable);
     return rules::Snapshot {
         frame,
+        usable,
         fullscreen,
         coverage,
         frontmost: frontmost_bundle(),
@@ -92,6 +94,11 @@ fn cf_rect(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Optio
 
 fn is_candidate(window: &Window, own: i32) -> bool {
     return window.pid != own && window.layer == 0 && window.alpha > 0.0;
+}
+
+// A zoomed window stops at the menu bar and the Dock, so coverage is measured on the area left between them.
+fn coverage_area(frame: rules::Rect, usable: rules::Rect) -> rules::Rect {
+    return usable.intersection(frame).filter(|area| area.area() > 0.0).unwrap_or(frame);
 }
 
 fn coverage_fraction(windows: &[rules::Rect], screen: rules::Rect) -> f64 {
@@ -241,6 +248,22 @@ mod tests {
         let screen = rect(0.0, 0.0, 10.0, 10.0);
         assert!(approx(coverage_fraction(&[rect(0.0, 0.0, 1000.0, 1000.0)], screen), 1.0));
         assert!(approx(coverage_fraction(&[], screen), 0.0));
+    }
+
+    #[test]
+    fn a_zoomed_window_covers_the_area_between_the_menu_bar_and_the_dock() {
+        let frame = rect(0.0, 0.0, 1352.0, 878.0);
+        let usable = rect(0.0, 78.0, 1352.0, 771.0);
+        let zoomed = rect(0.0, 79.0, 1352.0, 770.0);
+        assert!(coverage_fraction(&[zoomed], frame) < rules::COVERAGE_THRESHOLD);
+        assert!(coverage_fraction(&[zoomed], coverage_area(frame, usable)) >= rules::COVERAGE_THRESHOLD);
+    }
+
+    #[test]
+    fn coverage_falls_back_to_the_frame_without_a_usable_area() {
+        let frame = rect(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(coverage_area(frame, rect(0.0, 0.0, 0.0, 0.0)), frame);
+        assert_eq!(coverage_area(frame, rect(500.0, 500.0, 10.0, 10.0)), frame);
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub struct Snapshot {
     #[serde(default)]
     pub frame: Rect,
     #[serde(default)]
+    pub usable: Rect,
+    #[serde(default)]
     pub fullscreen: bool,
     #[serde(default)]
     pub coverage: f64,

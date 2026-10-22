@@ -25,6 +25,15 @@ impl Display {
         };
     }
 
+    // The menu bar and the Dock can change at any time, so this is read fresh instead of cached.
+    pub fn usable(&self, mtm: MainThreadMarker) -> CGRect {
+        let screens = NSScreen::screens(mtm);
+        if screens.count() == 0 {
+            return self.frame;
+        }
+        return screens.objectAtIndex(0).visibleFrame();
+    }
+
     pub fn max_px(&self) -> u32 {
         let width = pixel_size(self.frame.size.width * self.scale);
         let height = pixel_size(self.frame.size.height * self.scale);
