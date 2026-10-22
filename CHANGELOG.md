@@ -28,6 +28,9 @@ All notable changes to LiveWall are listed here. The format is based on
   when the window is in the background, and Russian labels are no longer cut off.
 - *Pause When Desktop Is Covered* works again with a zoomed window: coverage is measured on the screen between the
   menu bar and the Dock, as in 1.x, so a window that fills it pauses the wallpaper.
+- Settings open in their own window again, with Liquid Glass on macOS 26 and newer. As a sheet they were taller
+  than the library on smaller screens and left the library window moved down after closing. Pages scroll when
+  the screen is too short.
 
 ## [2.0.0] - 2026-10-16
 

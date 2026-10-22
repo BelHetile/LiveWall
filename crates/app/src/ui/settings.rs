@@ -5,9 +5,9 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSSegmentSwitchTracking, NSSegmentedControl, NSSlider,
-    NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView,
-    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask,
+    NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSSlider, NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField,
+    NSView, NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask,
     NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
@@ -27,7 +27,8 @@ const FORWARD_DELETE: u32 = 117;
 pub const ROTATE: isize = 1;
 pub const TRANSITION: isize = 2;
 pub const PAUSE: isize = 3;
-const CLOSE_INSET: CGFloat = 18.0;
+const SCREEN_MARGIN: CGFloat = 16.0;
+const MIN_HEIGHT: CGFloat = 320.0;
 const LOGIN: isize = 4;
 const OPEN_LIBRARY: isize = 5;
 const FULLSCREEN: isize = 7;
@@ -343,6 +344,8 @@ pub struct Settings {
     idle: Vec<Retained<NSView>>,
     recorders: Vec<Retained<RecorderView>>,
     tabs: Retained<NSTabViewController>,
+    height: CGFloat,
+    placed: Cell<bool>,
 }
 
 struct General {
@@ -389,7 +392,7 @@ impl Settings {
         let size = objc2_foundation::NSSize::new(WIDTH, height);
         for (title, icon, view) in pages {
             let controller = NSViewController::new(mtm);
-            controller.setView(view);
+            controller.setView(&scrolling(mtm, view));
             controller.setTitle(Some(&widgets::ns(title)));
             controller.setPreferredContentSize(size);
             let item = NSTabViewItem::tabViewItemWithViewController(&controller);
@@ -404,7 +407,7 @@ impl Settings {
         unsafe { window.setReleasedWhenClosed(false) };
         window.setPreventsApplicationTerminationWhenModal(false);
         window.setContentSize(size);
-        add_close(mtm, &window, style, target);
+        close_on_escape(&window);
         return Self {
             window,
             mode,
@@ -421,6 +424,8 @@ impl Settings {
             idle,
             recorders,
             tabs,
+            height,
+            placed: Cell::new(false),
         };
     }
 
@@ -428,10 +433,30 @@ impl Settings {
         if let Some(tab) = tab {
             self.tabs.setSelectedTabViewItemIndex(tab);
         }
-        if self.window.sheetParent().is_none() {
-            parent.beginSheet_completionHandler(&self.window, None);
+        if !self.window.isVisible() {
+            self.fit(parent);
+            if !self.placed.replace(true) {
+                self.window.center();
+            }
         }
+        self.window.makeKeyAndOrderFront(None);
         self.window.makeFirstResponder(None);
+    }
+
+    // The tallest page does not fit on smaller screens, so the pages scroll in a window that does.
+    fn fit(&self, parent: &NSWindow) {
+        let Some(screen) = parent.screen().or_else(|| self.window.screen()) else {
+            return;
+        };
+        let content = self.window.contentView().map_or(0.0, |view| view.frame().size.height);
+        let chrome = (self.window.frame().size.height - content).max(0.0);
+        let room = screen.visibleFrame().size.height - chrome - SCREEN_MARGIN;
+        let size = objc2_foundation::NSSize::new(WIDTH, self.height.min(room).max(MIN_HEIGHT));
+        let controllers = self.tabs.childViewControllers();
+        for index in 0..controllers.count() {
+            controllers.objectAtIndex(index).setPreferredContentSize(size);
+        }
+        self.window.setContentSize(size);
     }
 
     pub fn tab(&self) -> isize {
@@ -439,8 +464,8 @@ impl Settings {
     }
 
     pub fn close(&self) {
-        if let Some(parent) = self.window.sheetParent() {
-            parent.endSheet(&self.window);
+        if self.window.isVisible() {
+            self.window.close();
         }
     }
 
@@ -612,22 +637,10 @@ fn show_choice(popup: &NSPopUpButton, base: usize, index: Option<usize>, extra: 
     }
 }
 
-fn add_close(mtm: MainThreadMarker, window: &NSWindow, style: NSWindowStyleMask, target: &AnyObject) {
-    let Some(close) = NSWindow::standardWindowButton_forStyleMask(NSWindowButton::CloseButton, style, mtm) else {
-        return;
-    };
-    let Some(frame) = window.contentView().and_then(|content| unsafe { content.superview() }) else {
-        return;
-    };
-    unsafe {
-        close.setTarget(Some(target));
-        close.setAction(Some(sel!(closeSettings:)));
+fn close_on_escape(window: &NSWindow) {
+    if let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) {
+        close.setKeyEquivalent(&widgets::ns("\u{1b}"));
     }
-    close.setKeyEquivalent(&widgets::ns("\u{1b}"));
-    frame.addSubview(&close);
-    close.setTranslatesAutoresizingMaskIntoConstraints(false);
-    close.leadingAnchor().constraintEqualToAnchor_constant(&frame.leadingAnchor(), CLOSE_INSET).setActive(true);
-    close.topAnchor().constraintEqualToAnchor_constant(&frame.topAnchor(), CLOSE_INSET).setActive(true);
 }
 
 fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
@@ -647,6 +660,24 @@ fn page(mtm: MainThreadMarker, sections: &[&NSView]) -> Retained<NSView> {
     stack.trailingAnchor().constraintEqualToAnchor(&container.trailingAnchor()).setActive(true);
     stack.bottomAnchor().constraintLessThanOrEqualToAnchor(&container.bottomAnchor()).setActive(true);
     return Retained::into_super(container);
+}
+
+fn scrolling(mtm: MainThreadMarker, page: &NSView) -> Retained<NSView> {
+    let scroll = NSScrollView::new(mtm);
+    scroll.setDrawsBackground(false);
+    scroll.setHasVerticalScroller(true);
+    scroll.setAutohidesScrollers(true);
+    page.setTranslatesAutoresizingMaskIntoConstraints(false);
+    scroll.setDocumentView(Some(page));
+    let clip = scroll.contentView();
+    page.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
+    page.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
+    page.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
+    page.heightAnchor().constraintGreaterThanOrEqualToAnchor(&clip.heightAnchor()).setActive(true);
+    let fill = page.heightAnchor().constraintEqualToAnchor(&clip.heightAnchor());
+    fill.setPriority(objc2_app_kit::NSLayoutPriorityDefaultLow);
+    fill.setActive(true);
+    return Retained::into_super(scroll);
 }
 
 fn form(mtm: MainThreadMarker, title: &str, rows: &[Retained<NSView>]) -> Retained<NSView> {

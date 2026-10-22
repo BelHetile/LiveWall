@@ -196,15 +196,6 @@ define_class!(
             update(|ui, mtm| ui.show_settings(mtm, None));
         }
 
-        #[unsafe(method(closeSettings:))]
-        fn close_settings(&self, _sender: Option<&AnyObject>) {
-            later(|ui, _| {
-                if let Some(settings) = &ui.settings {
-                    settings.close();
-                }
-            });
-        }
-
         #[unsafe(method(listen:))]
         fn listen(&self, _sender: Option<&AnyObject>) {
             update(|ui, _| {

@@ -230,6 +230,9 @@ impl Ui {
     }
 
     fn end_sheets(&self) {
+        if let Some(settings) = &self.settings {
+            settings.close();
+        }
         while let Some(sheet) = self.window.attachedSheet() {
             self.window.endSheet(&sheet);
             if self.window.attachedSheet().is_some_and(|other| other == sheet) {
