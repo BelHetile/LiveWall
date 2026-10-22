@@ -34,6 +34,9 @@ use crate::ui::widgets::{self, NumberField, Units, Weight};
 
 const WIDTH: CGFloat = 340.0;
 const INSET: CGFloat = 20.0;
+const PANEL_MARGIN: CGFloat = 8.0;
+const PANEL_RADIUS: CGFloat = 18.0;
+const PANEL_TINT: CGFloat = 0.35;
 const LOCK_WIDTH: CGFloat = 136.0;
 const VOLUME_WIDTH: CGFloat = 108.0;
 const SLIDER_WIDTH: CGFloat = 138.0;
@@ -92,9 +95,11 @@ struct Controls {
 }
 
 pub struct Inspector {
-    pub scroll: Retained<NSScrollView>,
+    pub view: Retained<NSView>,
+    scroll: Retained<NSScrollView>,
     pub target: Option<Scope>,
-    backdrop: Retained<objc2_app_kit::NSBox>,
+    canvas: Retained<objc2_app_kit::NSBox>,
+    panel: Retained<NSView>,
     content: Retained<NSStackView>,
     shown: Option<Shown>,
     player: Option<(Retained<AVQueuePlayer>, Retained<AVPlayerLooper>)>,
@@ -113,7 +118,7 @@ impl Inspector {
         scroll.setAutomaticallyAdjustsContentInsets(true);
         let content = widgets::stack(mtm, &[], true, 14.0);
         content.setAlignment(NSLayoutAttribute::Leading);
-        content.setEdgeInsets(widgets::insets(10.0, INSET, 20.0, INSET));
+        content.setEdgeInsets(widgets::insets(10.0, inset(), 20.0, inset()));
         content.setWantsLayer(true);
         let document = widgets::Flipped::new(mtm);
         document.setTranslatesAutoresizingMaskIntoConstraints(false);
@@ -124,13 +129,19 @@ impl Inspector {
         document.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
         document.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
         document.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
-        let backdrop = widgets::card(mtm, &theme.chrome, 0.0);
-        scroll.addSubview_positioned_relativeTo(&backdrop, objc2_app_kit::NSWindowOrderingMode::Below, None);
-        widgets::pin(&backdrop, &scroll, 0.0);
+        let view = NSView::new(mtm);
+        let canvas = widgets::card(mtm, &theme.canvas, 0.0);
+        view.addSubview(&canvas);
+        widgets::pin(&canvas, &view, 0.0);
+        let panel = widgets::surface(mtm, &scroll, panel_radius(), &theme.chrome, Some(&panel_tint(theme)));
+        view.addSubview(&panel);
+        float_panel(&panel, &view);
         return Self {
+            view,
             scroll,
             target: None,
-            backdrop,
+            canvas,
+            panel,
             content,
             shown: None,
             player: None,
@@ -146,7 +157,8 @@ impl Inspector {
     }
 
     pub fn restyle(&mut self, theme: &Theme) {
-        self.backdrop.setFillColor(&theme.chrome);
+        self.canvas.setFillColor(&theme.canvas);
+        widgets::retint(&self.panel, &theme.chrome, Some(&panel_tint(theme)));
         self.shown = None;
         self.controls = None;
     }
@@ -313,9 +325,11 @@ impl Inspector {
         ]);
         for view in &sections {
             self.content.addArrangedSubview(view);
-            view.leadingAnchor().constraintEqualToAnchor_constant(&self.content.leadingAnchor(), INSET).setActive(true);
+            view.leadingAnchor()
+                .constraintEqualToAnchor_constant(&self.content.leadingAnchor(), inset())
+                .setActive(true);
             view.trailingAnchor()
-                .constraintEqualToAnchor_constant(&self.content.trailingAnchor(), -INSET)
+                .constraintEqualToAnchor_constant(&self.content.trailingAnchor(), -inset())
                 .setActive(true);
         }
         self.content.setCustomSpacing_afterView(if video { 4.0 } else { 12.0 }, &preview);
@@ -872,4 +886,31 @@ fn slider(
     slider.setControlSize(NSControlSize::Small);
     slider.setTag(tag);
     return slider;
+}
+
+// With Liquid Glass the inspector floats as a glass panel over the same canvas as the wall; the content
+// keeps its distance from the panel's edge, so rows stay as wide as on a flat inspector.
+fn inset() -> CGFloat {
+    return if widgets::liquid_glass() { INSET - PANEL_MARGIN } else { INSET };
+}
+
+fn panel_radius() -> CGFloat {
+    return if widgets::liquid_glass() { PANEL_RADIUS } else { 0.0 };
+}
+
+fn panel_tint(theme: &Theme) -> Retained<NSColor> {
+    return theme.chrome.colorWithAlphaComponent(PANEL_TINT);
+}
+
+fn float_panel(panel: &NSView, view: &NSView) {
+    if !widgets::liquid_glass() {
+        widgets::pin(panel, view, 0.0);
+        return;
+    }
+    panel.setTranslatesAutoresizingMaskIntoConstraints(false);
+    let safe = view.safeAreaLayoutGuide();
+    panel.topAnchor().constraintEqualToAnchor_constant(&safe.topAnchor(), PANEL_MARGIN).setActive(true);
+    panel.bottomAnchor().constraintEqualToAnchor_constant(&view.bottomAnchor(), -PANEL_MARGIN).setActive(true);
+    panel.leadingAnchor().constraintEqualToAnchor_constant(&view.leadingAnchor(), PANEL_MARGIN).setActive(true);
+    panel.trailingAnchor().constraintEqualToAnchor_constant(&view.trailingAnchor(), -PANEL_MARGIN).setActive(true);
 }

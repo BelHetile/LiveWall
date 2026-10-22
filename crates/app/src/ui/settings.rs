@@ -5,10 +5,10 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSColor, NSColorWell, NSColorWellStyle, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSLayoutAttribute, NSPopUpButton, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSSlider, NSSwitch, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField,
-    NSView, NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSEventModifierFlags, NSLayoutAttribute, NSLayoutConstraintOrientation, NSPopUpButton, NSScrollView,
+    NSSegmentSwitchTracking, NSSegmentedControl, NSSlider, NSStackView, NSSwitch, NSTabViewController,
+    NSTabViewControllerTabStyle, NSTabViewItem, NSTextAlignment, NSTextField, NSView, NSViewController,
+    NSViewControllerTransitionOptions, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::{CGFloat, CGRect};
 use objc2_foundation::{NSArray, NSString};
@@ -28,6 +28,7 @@ pub const ROTATE: isize = 1;
 pub const TRANSITION: isize = 2;
 pub const PAUSE: isize = 3;
 const SCREEN_MARGIN: CGFloat = 16.0;
+const CARD_RADIUS: CGFloat = 12.0;
 const MIN_HEIGHT: CGFloat = 320.0;
 const LOGIN: isize = 4;
 const OPEN_LIBRARY: isize = 5;
@@ -667,6 +668,8 @@ fn scrolling(mtm: MainThreadMarker, page: &NSView) -> Retained<NSView> {
     scroll.setDrawsBackground(false);
     scroll.setHasVerticalScroller(true);
     scroll.setAutohidesScrollers(true);
+    // A classic scroll bar would take its width from the fixed-width page.
+    scroll.setScrollerStyle(objc2_app_kit::NSScrollerStyle::Overlay);
     page.setTranslatesAutoresizingMaskIntoConstraints(false);
     scroll.setDocumentView(Some(page));
     let clip = scroll.contentView();
@@ -674,14 +677,14 @@ fn scrolling(mtm: MainThreadMarker, page: &NSView) -> Retained<NSView> {
     page.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
     page.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
     page.heightAnchor().constraintGreaterThanOrEqualToAnchor(&clip.heightAnchor()).setActive(true);
+    // Lowest priority: anything higher squeezes the padding of the page's stack views on pages that scroll.
     let fill = page.heightAnchor().constraintEqualToAnchor(&clip.heightAnchor());
-    fill.setPriority(objc2_app_kit::NSLayoutPriorityDefaultLow);
+    fill.setPriority(1.0);
     fill.setActive(true);
     return Retained::into_super(scroll);
 }
 
 fn form(mtm: MainThreadMarker, title: &str, rows: &[Retained<NSView>]) -> Retained<NSView> {
-    let card = widgets::card(mtm, &NSColor::quaternarySystemFillColor(), 10.0);
     let mut views: Vec<Retained<NSView>> = Vec::new();
     for (position, row) in rows.iter().enumerate() {
         if position > 0 {
@@ -697,8 +700,7 @@ fn form(mtm: MainThreadMarker, title: &str, rows: &[Retained<NSView>]) -> Retain
         view.leadingAnchor().constraintEqualToAnchor_constant(&body.leadingAnchor(), 0.0).setActive(true);
         view.trailingAnchor().constraintEqualToAnchor(&body.trailingAnchor()).setActive(true);
     }
-    card.addSubview(&body);
-    widgets::pin(&body, &card, 0.0);
+    let card = widgets::surface(mtm, &body, CARD_RADIUS, &NSColor::quaternarySystemFillColor(), None);
     let header = widgets::label(mtm, title, 13.0, &Weight::Semibold, &NSColor::labelColor());
     let section = widgets::stack(mtm, &[&header, &card], true, 8.0);
     section.setAlignment(NSLayoutAttribute::Leading);
@@ -724,6 +726,11 @@ fn line(mtm: MainThreadMarker, title: &str, note: Option<&str>, control: &NSView
     row.setEdgeInsets(widgets::insets(0.0, 12.0, 0.0, 12.0));
     row.heightAnchor().constraintGreaterThanOrEqualToConstant(if note.is_some() { 50.0 } else { 40.0 }).setActive(true);
     return widgets::view(&row);
+}
+
+// A row's top and bottom padding only holds at its hugging priority, which the page's stacks share by default.
+fn keep_padding(row: &NSStackView) {
+    row.setHuggingPriority_forOrientation(999.0, NSLayoutConstraintOrientation::Vertical);
 }
 
 fn switch(mtm: MainThreadMarker, tag: isize, target: &AnyObject) -> Retained<NSSwitch> {
@@ -999,6 +1006,7 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
         let refs: Vec<&NSView> = indices.iter().filter_map(|index| swatches.get(*index)).map(|view| &***view).collect();
         let row = widgets::stack(mtm, &refs, false, 14.0);
         row.setEdgeInsets(widgets::insets(14.0, 12.0, 12.0, 12.0));
+        keep_padding(&row);
         return widgets::view(&row);
     };
     let mut built_in: Vec<usize> = (0..look.themes.len()).filter(|index| !look.is_saved(*index)).collect();
@@ -1016,6 +1024,7 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
         );
         let holder = widgets::stack(mtm, &[&empty], false, 0.0);
         holder.setEdgeInsets(widgets::insets(12.0, 12.0, 12.0, 12.0));
+        keep_padding(&holder);
         style_rows.push(widgets::view(&holder));
     }
     let save = widgets::compact(mtm, "Save as Style…", Some(sel!(saveStyle:)), Some(target));
@@ -1025,6 +1034,7 @@ fn appearance(mtm: MainThreadMarker, look: &Look, target: &AnyObject) -> Appeara
     let gap = widgets::spacer(mtm);
     let tools = widgets::stack(mtm, &[&save, &import, &export, &gap, &delete], false, 8.0);
     tools.setEdgeInsets(widgets::insets(8.0, 12.0, 8.0, 12.0));
+    keep_padding(&tools);
     style_rows.push(widgets::view(&tools));
     mode.setSelectedSegmentBezelColor(Some(&look.colors.accent));
     let well = |tag: isize| {

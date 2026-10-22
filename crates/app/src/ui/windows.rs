@@ -47,7 +47,7 @@ pub fn panes(mtm: MainThreadMarker, wall: &WallView, inspector: &Inspector) -> P
     let wall_controller = NSViewController::new(mtm);
     wall_controller.setView(wall);
     let inspector_controller = NSViewController::new(mtm);
-    inspector_controller.setView(&inspector.scroll);
+    inspector_controller.setView(&inspector.view);
     let split = NSSplitViewController::new(mtm);
     let wall_item = NSSplitViewItem::splitViewItemWithViewController(&wall_controller);
     wall_item.setAutomaticallyAdjustsSafeAreaInsets(false);

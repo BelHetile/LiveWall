@@ -6,13 +6,13 @@ use objc2::runtime::{AnyClass, AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
-    NSAppearanceNameDarkAqua, NSApplication, NSBezelStyle, NSBox, NSBoxType, NSButton, NSCellImagePosition, NSColor,
-    NSControl, NSControlBorderShape, NSControlSize, NSControlStateValueMixed, NSControlTextEditingDelegate,
-    NSEventModifierFlags, NSFocusRingType, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName, NSGlassEffectView, NSImage,
-    NSImageSymbolConfiguration, NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenuItem, NSStackView,
-    NSStackViewDistribution, NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView, NSTintProminence,
-    NSTitlePosition, NSUserInterfaceLayoutOrientation, NSView,
+    NSAppearanceNameDarkAqua, NSApplication, NSAutoresizingMaskOptions, NSBezelStyle, NSBox, NSBoxType, NSButton,
+    NSCellImagePosition, NSColor, NSControl, NSControlBorderShape, NSControlSize, NSControlStateValueMixed,
+    NSControlTextEditingDelegate, NSEventModifierFlags, NSFocusRingType, NSFont, NSFontAttributeName, NSFontWeight,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName, NSGlassEffectView,
+    NSImage, NSImageSymbolConfiguration, NSImageView, NSLayoutConstraintOrientation, NSLineBreakMode, NSMenuItem,
+    NSStackView, NSStackViewDistribution, NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSTintProminence, NSTitlePosition, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGFloat;
 use objc2_core_graphics::CGColor;
@@ -421,6 +421,47 @@ pub fn glass(mtm: MainThreadMarker, content: &NSView, radius: CGFloat, tint: Opt
     return Retained::into_super(card);
 }
 
+// A panel behind `content`: Liquid Glass where the system has it, a flat card in `fill` before macOS 26.
+// The backdrop stays out of Auto Layout and only follows the holder: a glass view's own constraints
+// win over the padding of rows without a fixed height.
+pub fn surface(
+    mtm: MainThreadMarker,
+    content: &NSView,
+    radius: CGFloat,
+    fill: &NSColor,
+    tint: Option<&NSColor>,
+) -> Retained<NSView> {
+    let holder = NSView::new(mtm);
+    let backdrop: Retained<NSView> = if liquid_glass() {
+        let glass = NSGlassEffectView::new(mtm);
+        glass.setCornerRadius(radius);
+        glass.setTintColor(tint);
+        Retained::into_super(glass)
+    } else {
+        Retained::into_super(card(mtm, fill, radius))
+    };
+    backdrop.setTranslatesAutoresizingMaskIntoConstraints(true);
+    backdrop.setFrame(holder.bounds());
+    backdrop.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    holder.addSubview(&backdrop);
+    holder.addSubview(content);
+    pin(content, &holder, 0.0);
+    return holder;
+}
+
+pub fn retint(surface: &NSView, fill: &NSColor, tint: Option<&NSColor>) {
+    let Some(backdrop) = surface.subviews().firstObject() else {
+        return;
+    };
+    if let Some(glass) = backdrop.downcast_ref::<NSGlassEffectView>() {
+        glass.setTintColor(tint);
+    } else if let Some(card) = backdrop.downcast_ref::<NSBox>() {
+        card.setFillColor(fill);
+    }
+}
+
 pub fn chip(mtm: MainThreadMarker, marker: &Marker, theme: &Theme) -> Retained<NSView> {
     let white = NSColor::whiteColor();
     let glyph = symbol_view(mtm, marker.icon, 10.0, &white);
@@ -487,6 +528,7 @@ pub fn compact(
     target: Option<&AnyObject>,
 ) -> Retained<NSButton> {
     let button = unsafe { NSButton::buttonWithTitle_target_action(&ns(title), target, action, mtm) };
+    glass_bezel(&button);
     button.setControlSize(NSControlSize::Small);
     return button;
 }
